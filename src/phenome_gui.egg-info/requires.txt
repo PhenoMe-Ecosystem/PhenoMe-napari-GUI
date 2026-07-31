@@ -1,0 +1,7 @@
+numpy
+magicgui
+qtpy
+scikit-image
+
+[all]
+napari[all]

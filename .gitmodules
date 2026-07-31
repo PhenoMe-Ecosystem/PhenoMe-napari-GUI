@@ -1,0 +1,3 @@
+[submodule "external/PhenoMe"]
+	path = external/PhenoMe
+	url = https://github.com/AAitorG/PhenoMe.git

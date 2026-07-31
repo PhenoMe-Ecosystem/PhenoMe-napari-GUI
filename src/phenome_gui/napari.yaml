@@ -1,0 +1,36 @@
+name: phenome-gui
+display_name: PhenoMe GUI
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
+# categories: []
+contributions:
+  commands:
+    - id: phenome-gui.make_container_widget
+      python_name: phenome_gui._widget:ImageThreshold
+      title: Make threshold Container widget
+    - id: phenome-gui.make_magic_widget
+      python_name: phenome_gui._widget:threshold_magic_widget
+      title: Make threshold magic widget
+    - id: phenome-gui.make_function_widget
+      python_name: phenome_gui._widget:threshold_autogenerate_widget
+      title: Make threshold function widget
+    - id: phenome-gui.make_qwidget
+      python_name: phenome_gui._widget:ExampleQWidget
+      title: Make example QWidget
+  widgets:
+    - command: phenome-gui.make_container_widget
+      display_name: Container Threshold
+    - command: phenome-gui.make_magic_widget
+      display_name: Magic Threshold
+    - command: phenome-gui.make_function_widget
+      autogenerate: true
+      display_name: Autogenerate Threshold
+    - command: phenome-gui.make_qwidget
+      display_name: Example QWidget
+  menus:
+    napari/layers/segment:
+      - command: phenome-gui.make_container_widget
+      - command: phenome-gui.make_magic_widget
+      - command: phenome-gui.make_function_widget
+      - command: phenome-gui.make_qwidget
