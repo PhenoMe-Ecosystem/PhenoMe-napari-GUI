@@ -1,2 +1,0 @@
-[napari.manifest]
-phenome-gui = phenome_gui:napari.yaml
