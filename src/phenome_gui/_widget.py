@@ -32,10 +32,11 @@ Replace code below according to your needs.
 from typing import TYPE_CHECKING
 
 from magicgui.widgets import CheckBox, Container, create_widget
-from qtpy.QtWidgets import QSizePolicy, QGroupBox, QRadioButton, QHBoxLayout, QStackedLayout, QVBoxLayout, QPushButton, QWidget, QTabWidget
+from qtpy.QtWidgets import QAbstractItemView, QLabel, QSizePolicy, QGroupBox, QRadioButton, QHBoxLayout, QStackedLayout, QVBoxLayout, QPushButton, QWidget, QTabWidget
 from skimage.util import img_as_float
 
 from phenome import PhenoMe
+from .data_loading import load_data_csv, load_data_path, update_metadata_table
 
 if TYPE_CHECKING:
     import napari
@@ -47,6 +48,7 @@ DEFAULT_PARAMS = {
         'masks':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_masks",
         'metadata':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/metadata.csv",
         'data_path':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example",
+        'template':".../(condition)/(timepoint)/(filename).*",
         'checkpoint':'./checkpoint.hdf5'
     },
     'process':{
@@ -71,6 +73,7 @@ class PhenoMeWidget(QWidget):
         # Initialize PhenoMe object for API access
         self.pheno = PhenoMe(seed=42)
         self.params = DEFAULT_PARAMS.copy()
+        self.metadata_df = None  # Initialize metadata dataframe
 
         # Build the panel structure of the widget
         self._tabs = QTabWidget()
@@ -123,6 +126,10 @@ class PhenoMeWidget(QWidget):
             label='Metadata Directory...', annotation=str, widget_type='FileEdit',
             options={'mode': 'r', 'filter': 'CSV Files (*.csv)', 'value':self.params['paths']['metadata']}
         )
+        self._path_template = create_widget(
+            label='Template', annotation=str, widget_type='LineEdit', options={'value':self.params['paths']['template']}
+        )
+        self._path_template_label = QLabel('Template')
         self._path_dialog = create_widget(
             label='Data Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self.params['paths']['images']}
         )
@@ -146,11 +153,17 @@ class PhenoMeWidget(QWidget):
         self._mask_dir_dialog.changed.connect(self._on_directory_changed)
         self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
         self._path_dialog.changed.connect(self._on_directory_changed)
+        self._path_template.changed.connect(self._on_directory_changed)
+
+        # Connect buttons to load data
+        self._csv_load_data_btn.clicked.connect(lambda: load_data_csv(self))
+        self._path_load_data_btn.clicked.connect(lambda: load_data_path(self))
 
         # Data table to view metadata
         self._metadata_table = create_widget(
             label='Metadata Table', widget_type='Table', options={'value': None}
         )
+        self._metadata_table.native.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers) # Prevent editing
         self._metadata_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout.addWidget(structure_group, 0)
@@ -173,6 +186,10 @@ class PhenoMeWidget(QWidget):
         path_page = QWidget()
         path_loading_layout = QVBoxLayout(path_page)
         path_loading_layout.addWidget(self._path_dialog.native)
+        template_row = QHBoxLayout()
+        template_row.addWidget(self._path_template.native)
+        template_row.addWidget(self._path_template_label)
+        path_loading_layout.addLayout(template_row)
         path_loading_layout.addStretch(0) 
         path_loading_layout.addWidget(self._path_load_data_btn) 
 
@@ -194,8 +211,7 @@ class PhenoMeWidget(QWidget):
         self.params['paths']['masks'] = self._mask_dir_dialog.value
         self.params['paths']['metadata'] = self._metadata_dir_dialog.value
         self.params['paths']['data_path'] = self._path_dialog.value
-
-        print(self.params['paths'])  # For debugging purposes
+        self.params['paths']['template'] = self._path_template.value
 
     def _build_process_tab(self):
         layout = QVBoxLayout()
