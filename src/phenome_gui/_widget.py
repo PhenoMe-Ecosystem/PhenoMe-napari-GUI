@@ -36,7 +36,7 @@ from qtpy.QtWidgets import QAbstractItemView, QLabel, QSizePolicy, QGroupBox, QR
 from skimage.util import img_as_float
 
 from phenome import PhenoMe
-from .data_loading import load_data_csv, load_data_path, update_metadata_table
+from .data_loading import load_data_csv, load_data_path, update_metadata_table, display_table_image
 
 if TYPE_CHECKING:
     import napari
@@ -165,6 +165,7 @@ class PhenoMeWidget(QWidget):
         )
         self._metadata_table.native.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers) # Prevent editing
         self._metadata_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._metadata_table.native.selectionModel().selectionChanged.connect(lambda: display_table_image(self))
 
         layout.addWidget(structure_group, 0)
         layout.addWidget(loading_group, 0)
@@ -207,11 +208,11 @@ class PhenoMeWidget(QWidget):
         """
         Update the parameters when a directory is changed.
         """
-        self.params['paths']['images'] = self._image_dir_dialog.value
-        self.params['paths']['masks'] = self._mask_dir_dialog.value
-        self.params['paths']['metadata'] = self._metadata_dir_dialog.value
-        self.params['paths']['data_path'] = self._path_dialog.value
-        self.params['paths']['template'] = self._path_template.value
+        self.params['paths']['images'] = str(self._image_dir_dialog.value)
+        self.params['paths']['masks'] = str(self._mask_dir_dialog.value)
+        self.params['paths']['metadata'] = str(self._metadata_dir_dialog.value)
+        self.params['paths']['data_path'] = str(self._path_dialog.value)
+        self.params['paths']['template'] = str(self._path_template.value)
 
     def _build_process_tab(self):
         layout = QVBoxLayout()
