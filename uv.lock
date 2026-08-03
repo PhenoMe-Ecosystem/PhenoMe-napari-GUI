@@ -3300,6 +3300,7 @@ dependencies = [
     { name = "magicgui" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "phenome" },
     { name = "qtpy" },
     { name = "scikit-image" },
 ]
@@ -3312,7 +3313,6 @@ all = [
 [package.dev-dependencies]
 dev = [
     { name = "napari", extra = ["qt"] },
-    { name = "phenome" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
@@ -3324,6 +3324,7 @@ requires-dist = [
     { name = "magicgui" },
     { name = "napari", extras = ["all"], marker = "extra == 'all'" },
     { name = "numpy" },
+    { name = "phenome", editable = "external/PhenoMe" },
     { name = "qtpy" },
     { name = "scikit-image" },
 ]
@@ -3332,7 +3333,6 @@ provides-extras = ["all"]
 [package.metadata.requires-dev]
 dev = [
     { name = "napari", extras = ["qt"] },
-    { name = "phenome", editable = "external/PhenoMe" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
