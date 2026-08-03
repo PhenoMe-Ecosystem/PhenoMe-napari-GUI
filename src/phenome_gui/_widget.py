@@ -47,8 +47,7 @@ DEFAULT_PARAMS = {
         'images':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_images",
         'masks':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_masks",
         'metadata':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/metadata.csv",
-        'data_path':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example",
-        'template':".../(condition)/(timepoint)/(filename).*",
+        'template':".../(drug_name)/(time)/(filename).*",
         'checkpoint':'./checkpoint.hdf5'
     },
     'process':{
@@ -116,6 +115,7 @@ class PhenoMeWidget(QWidget):
         loading_group = QGroupBox("Data loading")
         self._loading_stack = QStackedLayout()
 
+        # .csv metadata widgets
         self._image_dir_dialog = create_widget(
             label='Images Directory...', annotation=str, widget_type='FileEdit', options={'label':'test', 'mode': 'd', 'value':self.params['paths']['images']}
         )
@@ -123,20 +123,28 @@ class PhenoMeWidget(QWidget):
             label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self.params['paths']['masks']}
         )
         self._metadata_dir_dialog = create_widget(
-            label='Metadata Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'r', 'filter': 'CSV Files (*.csv)', 'value':self.params['paths']['metadata']}
+            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/metadata.csv"}
+        )
+
+        # path-based metadata widgets
+        self._path_image_dir_dialog = create_widget(
+            label='Images Directory...', annotation=str, widget_type='FileEdit',
+            options={'mode': 'd', 'value':self.params['paths']['images']}
+        )
+        self._path_mask_dir_dialog = create_widget(
+            label='Masks Directory...', annotation=str, widget_type='FileEdit',
+            options={'mode': 'd', 'value':self.params['paths']['masks']}
         )
         self._path_template = create_widget(
             label='Template', annotation=str, widget_type='LineEdit', options={'value':self.params['paths']['template']}
         )
         self._path_template_label = QLabel('Template')
-        self._path_dialog = create_widget(
-            label='Data Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self.params['paths']['images']}
-        )
+
         self._image_dir_dialog.choose_btn.text = 'Images Directory...'
         self._mask_dir_dialog.choose_btn.text = 'Masks Directory...'
-        self._metadata_dir_dialog.choose_btn.text = 'Metadata Directory...'
-        self._path_dialog.choose_btn.text = 'Data Path...'
+        self._path_image_dir_dialog.choose_btn.text = 'Images Directory...'
+        self._path_mask_dir_dialog.choose_btn.text = 'Masks Directory...'
+        self._path_template_label.text = 'Template'
 
         self._csv_load_data_btn = QPushButton('Load Data')
         self._path_load_data_btn = QPushButton('Load Data')
@@ -151,8 +159,9 @@ class PhenoMeWidget(QWidget):
         # Connect signals to update parameters when directories change
         self._image_dir_dialog.changed.connect(self._on_directory_changed)
         self._mask_dir_dialog.changed.connect(self._on_directory_changed)
+        self._path_image_dir_dialog.changed.connect(self._on_directory_changed)
+        self._path_mask_dir_dialog.changed.connect(self._on_directory_changed)
         self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
-        self._path_dialog.changed.connect(self._on_directory_changed)
         self._path_template.changed.connect(self._on_directory_changed)
 
         # Connect buttons to load data
@@ -176,6 +185,8 @@ class PhenoMeWidget(QWidget):
         """
         Build one loading page per data structure and stack them.
         """
+
+        # .csv metadata structure
         csv_page = QWidget()
         csv_loading_layout = QVBoxLayout(csv_page)
         csv_loading_layout.addWidget(self._image_dir_dialog.native)
@@ -184,9 +195,11 @@ class PhenoMeWidget(QWidget):
         csv_loading_layout.addStretch(0)  
         csv_loading_layout.addWidget(self._csv_load_data_btn)
 
+        # path-based metadata structure
         path_page = QWidget()
         path_loading_layout = QVBoxLayout(path_page)
-        path_loading_layout.addWidget(self._path_dialog.native)
+        path_loading_layout.addWidget(self._path_image_dir_dialog.native)
+        path_loading_layout.addWidget(self._path_mask_dir_dialog.native)
         template_row = QHBoxLayout()
         template_row.addWidget(self._path_template.native)
         template_row.addWidget(self._path_template_label)
@@ -201,6 +214,13 @@ class PhenoMeWidget(QWidget):
         """
         Show the loading page matching the checked structure radio button.
         """
+        # Change text of corresponding widgets
+        self._image_dir_dialog.value = self.params['paths']['images']
+        self._mask_dir_dialog.value = self.params['paths']['masks']
+        self._path_image_dir_dialog.value = self.params['paths']['images']
+        self._path_mask_dir_dialog.value = self.params['paths']['masks']
+
+        # Change page
         page = 0 if self._csv_radio.isChecked() else 1
         self._loading_stack.setCurrentIndex(page)
 
@@ -208,11 +228,14 @@ class PhenoMeWidget(QWidget):
         """
         Update the parameters when a directory is changed.
         """
-        self.params['paths']['images'] = str(self._image_dir_dialog.value)
-        self.params['paths']['masks'] = str(self._mask_dir_dialog.value)
-        self.params['paths']['metadata'] = str(self._metadata_dir_dialog.value)
-        self.params['paths']['data_path'] = str(self._path_dialog.value)
-        self.params['paths']['template'] = str(self._path_template.value)
+        if self._csv_radio.isChecked():
+            self.params['paths']['images'] = str(self._image_dir_dialog.value)
+            self.params['paths']['masks'] = str(self._mask_dir_dialog.value)
+            self.params['paths']['metadata'] = str(self._metadata_dir_dialog.value)
+        else:
+            self.params['paths']['images'] = str(self._path_image_dir_dialog.value)
+            self.params['paths']['masks'] = str(self._path_mask_dir_dialog.value)
+            self.params['paths']['template'] = str(self._path_template.value)
 
     def _build_process_tab(self):
         layout = QVBoxLayout()

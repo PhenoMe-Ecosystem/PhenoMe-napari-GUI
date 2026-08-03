@@ -25,8 +25,10 @@ def load_data_path(parent):
     """
     Find files using the paths in the parameters and load them into the parent object.
     """
+    images_folder = parent.params['paths']['images']
+    masks_folder = parent.params['paths']['masks']
     metadata_fn = get_metadata_from_path(parent.params['paths']['template'])
-    parent.metadata_df = parent.pheno.find_files(parent.params['paths']['data_path'], metadata_fn=metadata_fn)
+    parent.metadata_df = parent.pheno.find_files(images_folder, mask_dir=masks_folder, metadata_fn=metadata_fn)
     update_metadata_table(parent)
 
 def update_metadata_table(parent):
