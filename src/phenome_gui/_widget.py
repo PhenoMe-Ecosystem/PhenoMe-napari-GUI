@@ -31,99 +31,178 @@ Replace code below according to your needs.
 
 from typing import TYPE_CHECKING
 
-from magicgui import magic_factory
 from magicgui.widgets import CheckBox, Container, create_widget
-from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
+from qtpy.QtWidgets import QSizePolicy, QGroupBox, QRadioButton, QHBoxLayout, QStackedLayout, QVBoxLayout, QPushButton, QWidget, QTabWidget
 from skimage.util import img_as_float
+
+from phenome import PhenoMe
 
 if TYPE_CHECKING:
     import napari
 
+# This dictionary will be used to initialize the parameters for every function.
+DEFAULT_PARAMS = {
+    'paths':{
+        'images':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_images",
+        'masks':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_masks",
+        'metadata':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/metadata.csv",
+        'data_path':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example",
+        'checkpoint':'./checkpoint.hdf5'
+    },
+    'process':{
+        'model':''
+    },
+    'properties':{
+        'preset':''
+    },
+    'clustering':{
+        'clustering_method':'kmeans',
+        'n_clusters':5,
+        'dbscan_eps':0.5,
+        'dbscan_min_samples':50
+    }
+}
 
-# Uses the `autogenerate: true` flag in the plugin manifest
-# to indicate it should be wrapped as a magicgui to autogenerate
-# a widget.
-def threshold_autogenerate_widget(
-    img: 'napari.types.ImageData',
-    threshold: 'float',
-) -> 'napari.types.LabelsData':
-    return img_as_float(img) > threshold
-
-
-# the magic_factory decorator lets us customize aspects of our widget
-# we specify a widget type for the threshold parameter
-# and use auto_call=True so the function is called whenever
-# the value of a parameter changes
-@magic_factory(
-    threshold={'widget_type': 'FloatSlider', 'max': 1}, auto_call=True
-)
-def threshold_magic_widget(
-    img_layer: 'napari.layers.Image', threshold: 'float'
-) -> 'napari.types.LabelsData':
-    return img_as_float(img_layer.data) > threshold
-
-
-# if we want even more control over our widget, we can use
-# magicgui `Container`
-class ImageThreshold(Container):
+class PhenoMeWidget(QWidget):
     def __init__(self, viewer: 'napari.viewer.Viewer'):
         super().__init__()
         self._viewer = viewer
-        # use create_widget to generate widgets from type annotations
-        self._image_layer_combo = create_widget(
-            label='Image', annotation='napari.layers.Image'
+
+        # Initialize PhenoMe object for API access
+        self.pheno = PhenoMe(seed=42)
+        self.params = DEFAULT_PARAMS.copy()
+
+        # Build the panel structure of the widget
+        self._tabs = QTabWidget()
+
+        # Panel 1: Data loading and table view of metadata
+        self._tab_loading = QWidget()
+        self._tabs.addTab(self._tab_loading, "Data loading")
+        self._build_loading_tab()
+
+        # Panel 2: Image processing and properties computing
+        self._tab_process = QWidget()
+        self._tabs.addTab(self._tab_process, "Processing")
+        self._build_process_tab()
+
+        # Panel 3: Analysis and plotting
+        self._tab_analysis = QWidget()
+        self._tabs.addTab(self._tab_analysis, "Analysis")
+        self._build_analysis_tab()
+
+        self.setLayout(QVBoxLayout())
+        self.layout().addWidget(self._tabs)
+
+    def _build_loading_tab(self):
+        layout = QVBoxLayout()
+
+        # Group for radio buttons to select data structure
+        structure_group = QGroupBox("Metadata structure")
+        structure_layout = QHBoxLayout()
+
+        self._csv_radio = QRadioButton(".CSV file")
+        self._csv_radio.setChecked(True)  # Default selection
+        self._path_radio = QRadioButton("Path-based")
+
+        structure_layout.addWidget(self._csv_radio)
+        structure_layout.addWidget(self._path_radio)
+        structure_group.setLayout(structure_layout)
+
+        # Group for data loading params, holding one page per metadata
+        # structure and showing the one matching the checked radio button.
+        loading_group = QGroupBox("Data loading")
+        self._loading_stack = QStackedLayout()
+
+        self._image_dir_dialog = create_widget(
+            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'label':'test', 'mode': 'd', 'value':self.params['paths']['images']}
         )
-        self._threshold_slider = create_widget(
-            label='Threshold', annotation=float, widget_type='FloatSlider'
+        self._mask_dir_dialog = create_widget(
+            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self.params['paths']['masks']}
         )
-        self._threshold_slider.min = 0
-        self._threshold_slider.max = 1
-        # use magicgui widgets directly
-        self._invert_checkbox = CheckBox(text='Keep pixels below threshold')
-
-        # connect your own callbacks
-        self._threshold_slider.changed.connect(self._threshold_im)
-        self._invert_checkbox.changed.connect(self._threshold_im)
-
-        # append into/extend the container with your widgets
-        self.extend(
-            [
-                self._image_layer_combo,
-                self._threshold_slider,
-                self._invert_checkbox,
-            ]
+        self._metadata_dir_dialog = create_widget(
+            label='Metadata Directory...', annotation=str, widget_type='FileEdit',
+            options={'mode': 'r', 'filter': 'CSV Files (*.csv)', 'value':self.params['paths']['metadata']}
         )
+        self._path_dialog = create_widget(
+            label='Data Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self.params['paths']['images']}
+        )
+        self._image_dir_dialog.choose_btn.text = 'Images Directory...'
+        self._mask_dir_dialog.choose_btn.text = 'Masks Directory...'
+        self._metadata_dir_dialog.choose_btn.text = 'Metadata Directory...'
+        self._path_dialog.choose_btn.text = 'Data Path...'
 
-    def _threshold_im(self):
-        image_layer = self._image_layer_combo.value
-        if image_layer is None:
-            return
+        self._csv_load_data_btn = QPushButton('Load Data')
+        self._path_load_data_btn = QPushButton('Load Data')
 
-        image = img_as_float(image_layer.data)
-        name = image_layer.name + '_thresholded'
-        threshold = self._threshold_slider.value
-        if self._invert_checkbox.value:
-            thresholded = image < threshold
-        else:
-            thresholded = image > threshold
-        if name in self._viewer.layers:
-            self._viewer.layers[name].data = thresholded
-        else:
-            self._viewer.add_labels(thresholded, name=name)
+        self._build_loading_group()
+        loading_group.setLayout(self._loading_stack)
 
+        self._csv_radio.toggled.connect(self._on_structure_changed)
+        self._path_radio.toggled.connect(self._on_structure_changed)
+        self._on_structure_changed()
 
-class ExampleQWidget(QWidget):
-    # your QWidget.__init__ can optionally request the napari viewer instance
-    # use a type annotation of 'napari.viewer.Viewer' for any parameter
-    def __init__(self, viewer: 'napari.viewer.Viewer'):
-        super().__init__()
-        self.viewer = viewer
+        # Connect signals to update parameters when directories change
+        self._image_dir_dialog.changed.connect(self._on_directory_changed)
+        self._mask_dir_dialog.changed.connect(self._on_directory_changed)
+        self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
+        self._path_dialog.changed.connect(self._on_directory_changed)
 
-        btn = QPushButton('Click me!')
-        btn.clicked.connect(self._on_click)
+        # Data table to view metadata
+        self._metadata_table = create_widget(
+            label='Metadata Table', widget_type='Table', options={'value': None}
+        )
+        self._metadata_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.setLayout(QHBoxLayout())
-        self.layout().addWidget(btn)
+        layout.addWidget(structure_group, 0)
+        layout.addWidget(loading_group, 0)
+        layout.addWidget(self._metadata_table.native, 1)
+        self._tab_loading.setLayout(layout)
 
-    def _on_click(self):
-        print('napari has', len(self.viewer.layers), 'layers')
+    def _build_loading_group(self):
+        """
+        Build one loading page per data structure and stack them.
+        """
+        csv_page = QWidget()
+        csv_loading_layout = QVBoxLayout(csv_page)
+        csv_loading_layout.addWidget(self._image_dir_dialog.native)
+        csv_loading_layout.addWidget(self._mask_dir_dialog.native)
+        csv_loading_layout.addWidget(self._metadata_dir_dialog.native)
+        csv_loading_layout.addStretch(0)  
+        csv_loading_layout.addWidget(self._csv_load_data_btn)
+
+        path_page = QWidget()
+        path_loading_layout = QVBoxLayout(path_page)
+        path_loading_layout.addWidget(self._path_dialog.native)
+        path_loading_layout.addStretch(0) 
+        path_loading_layout.addWidget(self._path_load_data_btn) 
+
+        self._loading_stack.insertWidget(0, csv_page)
+        self._loading_stack.insertWidget(1, path_page)
+  
+    def _on_structure_changed(self):
+        """
+        Show the loading page matching the checked structure radio button.
+        """
+        page = 0 if self._csv_radio.isChecked() else 1
+        self._loading_stack.setCurrentIndex(page)
+
+    def _on_directory_changed(self):
+        """
+        Update the parameters when a directory is changed.
+        """
+        self.params['paths']['images'] = self._image_dir_dialog.value
+        self.params['paths']['masks'] = self._mask_dir_dialog.value
+        self.params['paths']['metadata'] = self._metadata_dir_dialog.value
+        self.params['paths']['data_path'] = self._path_dialog.value
+
+        print(self.params['paths'])  # For debugging purposes
+
+    def _build_process_tab(self):
+        layout = QVBoxLayout()
+        self._tab_process.setLayout(layout)
+
+    def _build_analysis_tab(self):
+        layout = QVBoxLayout()
+        self._tab_analysis.setLayout(layout)
+
+    

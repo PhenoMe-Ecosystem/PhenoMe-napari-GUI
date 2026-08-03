@@ -31,6 +31,7 @@ dependencies = [
     "magicgui",
     "qtpy",
     "scikit-image",
+    "phenome",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +46,6 @@ dev = [
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "napari[qt]",  # test with napari's default Qt bindings
-    "phenome",
 ]
 
 [project.entry-points."napari.manifest"]
