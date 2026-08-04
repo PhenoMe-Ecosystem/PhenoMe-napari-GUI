@@ -1,15 +1,20 @@
-# launch_napari.py
+"""
+This script runs napari with the plugin already launched, for developping purposes
+"""
+
 from napari import Viewer, run
 
-"""
-This scripts run napari with the plugin already launched, for developping purposes
-"""
 
-def main():
+def main() -> None:
+    """ Open a napari viewer with the PhenoMe widget already docked, and run the event loop.
+
+    Args:
+        None
+    Returns:
+        None
+    """
     viewer = Viewer()
-    dock_widget, plugin_widget = viewer.window.add_plugin_dock_widget(
-        'phenome-gui', 'PhenoMe'
-    )
+    viewer.window.add_plugin_dock_widget('phenome-gui', 'PhenoMe')
     run()
 
 
