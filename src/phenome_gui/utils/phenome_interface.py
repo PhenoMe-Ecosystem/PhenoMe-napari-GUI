@@ -1,10 +1,3 @@
-"""
-Interface between the GUI and the PhenoMe API.
-
-This module owns the `PhenoMe` pipeline object and every parameter feeding it.
-The GUI talks only to `PhenoMeInterface` and never imports `phenome` itself, so
-that widget code stays free of pipeline logic and of the metadata schema.
-"""
 from copy import deepcopy
 from logging import getLogger
 from pathlib import Path
@@ -14,6 +7,8 @@ import pandas as pd
 from phenome import PhenoMe
 
 from .data_loading import DataLoading
+from .image_processing import ImageProcessing
+from .models import MODEL_OPTIONS
 
 logger = getLogger(__name__)
 
@@ -27,7 +22,7 @@ DEFAULT_PARAMS = {
         'checkpoint':'./checkpoint.hdf5'
     },
     'process':{
-        'model':''
+        'model':'Small (ViT-S/14)'
     },
     'properties':{
         'preset':''
@@ -61,11 +56,10 @@ class PhenoMeInterface:
         self.pheno = PhenoMe(seed=seed)
         self.params = deepcopy(DEFAULT_PARAMS)
         self.metadata_df = None
+        self.model = None
 
-        # Components hold no parameter: the interface reads the params dict and
-        # passes the values they need as arguments.
         self.data_loading = DataLoading(self.pheno)
-
+        self.image_processing = ImageProcessing(self.pheno)
     # ------------------------------------------------------------------
     # Parameters
     # ------------------------------------------------------------------
@@ -153,6 +147,26 @@ class PhenoMeInterface:
         template = self.get_path('template')
         self.metadata_df = self.data_loading.load_data_path(images_folder, template, masks_folder)
         return self.metadata_df
+
+    # ------------------------------------------------------------------
+    # Processing
+    # ------------------------------------------------------------------
+
+    def load_model(self) -> None:
+        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        model_name = self.get_param('process', 'model')
+
+        real_model_name = MODEL_OPTIONS.get(model_name)
+        if real_model_name:
+            self.model = self.image_processing.load_model(real_model_name)
+        else:
+            logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
     # ------------------------------------------------------------------
     # Metadata access

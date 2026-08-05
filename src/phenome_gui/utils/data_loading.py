@@ -8,7 +8,7 @@ logger = getLogger(__name__)
 class DataLoading:
     """ Data loading component of the PhenoMe interface.
 
-    Turns the loading parameters into a metadata dataframe through the PhenoMe API. Holds no GUI state.
+    Turns the loading parameters into a metadata dataframe through the PhenoMe API.
     """
 
     def __init__(self, pheno: PhenoMe) -> None:

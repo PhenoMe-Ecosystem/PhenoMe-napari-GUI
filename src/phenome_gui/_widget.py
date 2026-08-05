@@ -1,21 +1,15 @@
-"""
-The napari dock widget of the PhenoMe plugin.
-
-This module holds GUI code only: everything related to PhenoMe and its
-parameters lives behind the `PhenoMeInterface` object instantiated below.
-"""
-
 import logging
-import logging.config
 from typing import TYPE_CHECKING
 
 import pandas as pd
 from magicgui.widgets import create_widget
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -26,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from .utils.image_viewer import ImageViewer
+from .utils.models import MODEL_OPTIONS
 from .utils.phenome_interface import PhenoMeInterface
 
 logger = logging.getLogger("main_logger")
@@ -301,7 +296,58 @@ class PhenoMeWidget(QWidget):
             None
         """
         layout = QVBoxLayout()
+
+        # Group for embedding extraction
+        embeddings_group = QGroupBox("Embeddings")
+        embeddings_layout = QVBoxLayout()
+
+        # Model selection combo box
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Model"))
+        self._model_selection_combo = QComboBox()
+        self._model_selection_combo.addItems(MODEL_OPTIONS.keys())
+        self._model_selection_combo.setCurrentText(self._phenome.get_param('process', 'model'))
+        self._model_selection_combo.currentTextChanged.connect(self._on_model_selection_changed)
+        model_row.addWidget(self._model_selection_combo)
+        embeddings_layout.addLayout(model_row)
+        embeddings_group.setLayout(embeddings_layout)
+        # Load model button
+        self._load_model_button = QPushButton("Load Model")
+        self._load_model_button.clicked.connect(self._on_load_model_clicked)
+        embeddings_layout.addWidget(self._load_model_button)
+
+        # Group for properties calculation
+        properties_group = QGroupBox("Properties")
+
+        # Progress bar
+        self._progress_bar = QProgressBar()
+
+
+        layout.addWidget(embeddings_group)
+        layout.addWidget(properties_group)
+        layout.addWidget(self._progress_bar)
         self._tab_process.setLayout(layout)
+
+    def _on_model_selection_changed(self) -> None:
+        """ Update the model parameter when the selection changes.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        model_name = self._model_selection_combo.currentText()
+        self._phenome.set_param('process', 'model', model_name)
+
+    def _on_load_model_clicked(self) -> None:
+        """ Load the model for embedding extraction when the button is clicked.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._phenome.load_model()
 
     def _build_analysis_tab(self) -> None:
         """ Build the analysis tab and its widgets.
