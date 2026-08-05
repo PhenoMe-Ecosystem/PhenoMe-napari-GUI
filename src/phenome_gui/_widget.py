@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 from magicgui.widgets import create_widget
+from napari.qt.threading import thread_worker
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -34,6 +36,11 @@ class PhenoMeWidget(QWidget):
 
     Holds one tab per step of the workflow: data loading, processing and analysis. Every call to PhenoMe goes through the PhenoMeInterface object it instantiates.
     """
+
+    # PhenoMe runs its progress callback on the worker thread, which must not touch widgets. Emitting
+    # this signal from there hands (current, total, desc) back to the main thread through a queued
+    # connection. Its signature matches phenome.utils.ProgressCallback, so `emit` is itself a valid callback.
+    progress_updated = Signal(int, int, str)
 
     def __init__(self, viewer: 'napari.viewer.Viewer') -> None:
         """ Build the widget, its interface to PhenoMe and its three tabs.
@@ -181,7 +188,7 @@ class PhenoMeWidget(QWidget):
         csv_loading_layout.addWidget(self._image_dir_dialog.native)
         csv_loading_layout.addWidget(self._mask_dir_dialog.native)
         csv_loading_layout.addWidget(self._metadata_dir_dialog.native)
-        csv_loading_layout.addStretch(0)  
+        csv_loading_layout.addStretch(0)
         csv_loading_layout.addWidget(self._csv_load_data_btn)
 
         # path-based metadata structure
@@ -193,8 +200,8 @@ class PhenoMeWidget(QWidget):
         template_row.addWidget(self._path_template.native)
         template_row.addWidget(self._path_template_label)
         path_loading_layout.addLayout(template_row)
-        path_loading_layout.addStretch(0) 
-        path_loading_layout.addWidget(self._path_load_data_btn) 
+        path_loading_layout.addStretch(0)
+        path_loading_layout.addWidget(self._path_load_data_btn)
 
         self._loading_stack.insertWidget(0, csv_page)
         self._loading_stack.insertWidget(1, path_page)
@@ -266,9 +273,11 @@ class PhenoMeWidget(QWidget):
         """
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
+            self._refresh_process_button()
             raise ValueError("Could not load data. Please check the provided paths and files.")
         else:
             self._metadata_table.value = metadata_df
+            self._refresh_process_button()
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table.
@@ -301,6 +310,18 @@ class PhenoMeWidget(QWidget):
         embeddings_group = QGroupBox("Embeddings")
         embeddings_layout = QVBoxLayout()
 
+        # Device selection radio buttons
+        device_group = QGroupBox("Processing Device")
+        device_layout = QHBoxLayout()
+        self._cpu_radio = QRadioButton("CPU")
+        self._cpu_radio.setChecked(True)  # Default selection
+        self._cuda_radio = QRadioButton("CUDA")
+        self._cuda_radio.setEnabled(self._phenome.cuda_available)
+        device_layout.addWidget(self._cpu_radio)
+        device_layout.addWidget(self._cuda_radio)
+        device_group.setLayout(device_layout)
+        embeddings_layout.addWidget(device_group)
+
         # Model selection combo box
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Model"))
@@ -316,17 +337,51 @@ class PhenoMeWidget(QWidget):
         self._load_model_button.clicked.connect(self._on_load_model_clicked)
         embeddings_layout.addWidget(self._load_model_button)
 
+        # Checkpoint path selection
+        self._checkpoint_path_dialog = create_widget(
+            label='Checkpoint path', annotation=str, widget_type='FileEdit',
+            options={'mode': 'w', 'filter': 'HDF5 Files (*.hdf5)','value':self._phenome.get_path('checkpoint')}
+        )
+        self._checkpoint_path_dialog.choose_btn.text = 'Checkpoint path...'
+        self._checkpoint_path_dialog.changed.connect(self._on_checkpoint_path_changed)
+        embeddings_layout.addWidget(self._checkpoint_path_dialog.native)
+
+        # Advanced parameters button
+        self._advanced_parameters_button = QPushButton("Avanced parameters...")
+        self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
+        embeddings_layout.addWidget(self._advanced_parameters_button)
+
+        # Extract embeddings button, enabled only once both data and a model are available
+        self._process_button = QPushButton("Extract Embeddings")
+        self._process_button.clicked.connect(self._on_process_clicked)
+        embeddings_layout.addWidget(self._process_button)
+        self._refresh_process_button()
+
         # Group for properties calculation
         properties_group = QGroupBox("Properties")
 
-        # Progress bar
+        # Progress bar, driven from the worker thread through the progress_updated signal
         self._progress_bar = QProgressBar()
-
+        self._progress_bar.setRange(0, 1)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFormat('')
+        self.progress_updated.connect(self._on_progress)
 
         layout.addWidget(embeddings_group)
         layout.addWidget(properties_group)
         layout.addWidget(self._progress_bar)
         self._tab_process.setLayout(layout)
+
+    def _on_device_changed(self) -> None:
+        """ Update the device parameter when the selection is changed.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        device = 'cpu' if self._cpu_radio.isChecked else 'CUDA'
+        self._phenome.set_param('process', 'device', device)
 
     def _on_model_selection_changed(self) -> None:
         """ Update the model parameter when the selection changes.
@@ -347,7 +402,149 @@ class PhenoMeWidget(QWidget):
         Returns:
             None
         """
+        worker = self._load_model_worker()
+        worker.returned.connect(self._finish_load_model)
+        worker.start()
+
+        self._load_model_button.setText('Downloading model...')
+        self._load_model_button.setEnabled(False)
+
+    def _finish_load_model(self) -> None:
+        """ Called when model is finished loading. Re-enables the button and changes text, and displays which model is loaded.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._load_model_button.setText('Load Model')
+        self._load_model_button.setEnabled(True)
+        self._refresh_process_button()
+
+    def _refresh_process_button(self) -> None:
+        """ Enable the embedding extraction button only when both data and a model are loaded.
+
+        Reads the state from the interface rather than tracking it separately, so it stays correct
+        whichever loading tab was used. Called after each loading step and once processing finishes.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        metadata_df = self._phenome.metadata_df
+        has_data = metadata_df is not None and not metadata_df.empty
+        has_model = self._phenome.model is not None
+
+        self._process_button.setEnabled(has_data and has_model)
+
+        missing = []
+        if not has_data:
+            missing.append('load data')
+        if not has_model:
+            missing.append('load a model')
+        self._process_button.setToolTip(f"Please {' and '.join(missing)} first." if missing else '')
+
+    @thread_worker
+    def _load_model_worker(self) -> None:
+        """ Create worker to load model on a parallel thread.
+
+        Args:
+            None
+        Returns:
+            None
+        """
         self._phenome.load_model()
+
+    def _on_checkpoint_path_changed(self) -> None:
+        """ Change the checkpoint path parameter when the value is changed.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._phenome.set_path('checkpoint', self._checkpoint_path_dialog.value)
+
+    def _on_advanced_parameters_clicked(self) -> None:
+        """ Opens a parameter form for advanced users.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        return
+
+    def _on_process_clicked(self) -> None:
+        """ Begins the image processing/embedding extraction task
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        worker = self._process_images_worker()
+        worker.returned.connect(self._on_finish_process)
+        worker.start()
+
+        self._process_button.setText('Processing images...')
+        self._process_button.setEnabled(False)
+
+        # PhenoMe stays silent while it builds the dataloader and scans the checkpoint, so show a busy
+        # indicator until the first batch is reported.
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setFormat('Preparing...')
+
+    def _on_progress(self, current: int, total: int, desc: str) -> None:
+        """ Update the progress bar from a PhenoMe progress report.
+
+        Runs on the main thread via the progress_updated signal. Keyed off desc rather than the step it
+        comes from, so the embedding and properties steps can share it.
+
+        Args:
+            current: Units completed so far. Batches for embedding extraction, images for properties.
+            total: Expected total number of units. PhenoMe documents 0 as "unknown".
+            desc: Short stage label, e.g. "Processing batches".
+        Returns:
+            None
+        """
+        if total > 0:
+            if self._progress_bar.maximum() != total:
+                self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(current)
+            self._progress_bar.setFormat(f"{desc}: %v/%m (%p%)")
+        else:
+            self._progress_bar.setRange(0, 0)
+            self._progress_bar.setFormat(desc)
+
+    def _on_finish_process(self) -> None:
+        """ Called when processing is done. Re-enables the button and changes text.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._process_button.setText('Extract Embeddings')
+        self._refresh_process_button()
+
+        # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
+        # here instead of relying on a final callback.
+        self._progress_bar.setRange(0, 1)
+        self._progress_bar.setValue(1)
+        self._progress_bar.setFormat('Done!')
+
+    @thread_worker
+    def _process_images_worker(self) -> None:
+        """ Create worker to process images on a parallel thread.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._phenome.process_images(progress_callback=self.progress_updated.emit)
 
     def _build_analysis_tab(self) -> None:
         """ Build the analysis tab and its widgets.

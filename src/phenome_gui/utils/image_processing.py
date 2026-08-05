@@ -1,8 +1,13 @@
 from logging import getLogger
+from typing import TYPE_CHECKING
 
 from phenome import PhenoMe
+from phenome.utils import ProgressCallback
 
 from .models import get_model
+
+if TYPE_CHECKING:
+    from phenome import ModelWrapper
 
 logger = getLogger(__name__)
 
@@ -31,3 +36,18 @@ class ImageProcessing:
             None
         """
         return get_model(model_name, device=device)
+
+    def process_images(self, model_wrapper: ModelWrapper, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, **kwargs) -> None:
+        """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
+
+        Args:
+            model_wrapper: PhenoMe wrapper of the used model.
+            checkpoint_path: Path of the .hdf5 file to save results in. If None, no checkpoint is created.
+            progress_callback: Hook called as (current, total, desc) after each batch. PhenoMe reports the
+                1-based batch index and the total number of batches, and disables its tqdm bar when set.
+                If None, PhenoMe keeps its default tqdm bar.
+            **kwargs: Any arguments included in the PhenoMe process_images() method.
+        Returns:
+            None
+        """
+        self.pheno.process_images(model_wrapper=model_wrapper, checkpoint_path=checkpoint_path, progress_callback=progress_callback, **kwargs)

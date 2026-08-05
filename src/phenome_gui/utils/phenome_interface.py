@@ -5,6 +5,8 @@ from typing import Any
 
 import pandas as pd
 from phenome import PhenoMe
+from phenome.utils import ProgressCallback
+from torch import cuda
 
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
@@ -22,7 +24,8 @@ DEFAULT_PARAMS = {
         'checkpoint':'./checkpoint.hdf5'
     },
     'process':{
-        'model':'Small (ViT-S/14)'
+        'model':'Small (ViT-S/14)',
+        'device':'cpu'
     },
     'properties':{
         'preset':''
@@ -57,6 +60,7 @@ class PhenoMeInterface:
         self.params = deepcopy(DEFAULT_PARAMS)
         self.metadata_df = None
         self.model = None
+        self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
         self.image_processing = ImageProcessing(self.pheno)
@@ -164,9 +168,26 @@ class PhenoMeInterface:
 
         real_model_name = MODEL_OPTIONS.get(model_name)
         if real_model_name:
-            self.model = self.image_processing.load_model(real_model_name)
+            self.model = self.image_processing.load_model(real_model_name, device=self.get_param('process', 'device'))
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
+
+    def process_images(self, progress_callback: ProgressCallback | None=None) -> None:
+        """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
+
+        Uses the params dict to feed arguments.
+
+        TODO: Include advanced parameters from a form.
+
+        Args:
+            progress_callback: Hook called as (current, total, desc) after each batch. Called from the
+                calling thread, so a caller running this in a worker thread must not touch widgets in it.
+        Returns:
+            None
+        """
+        checkpoint_path = self.get_path('checkpoint')
+
+        self.image_processing.process_images(self.model, checkpoint_path, progress_callback=progress_callback)
 
     # ------------------------------------------------------------------
     # Metadata access
