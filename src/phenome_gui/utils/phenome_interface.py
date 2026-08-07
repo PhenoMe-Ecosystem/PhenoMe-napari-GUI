@@ -25,10 +25,11 @@ DEFAULT_PARAMS = {
     },
     'process':{
         'model':'Small (ViT-S/14)',
-        'device':'cpu'
+        'device':'cpu',
+        'batch_size':32
     },
     'properties':{
-        'preset':''
+        'preset':'Basic'
     },
     'clustering':{
         'clustering_method':'kmeans',
@@ -59,6 +60,7 @@ class PhenoMeInterface:
         self.pheno = PhenoMe(seed=seed)
         self.params = deepcopy(DEFAULT_PARAMS)
         self.metadata_df = None
+        self.properties_df = None
         self.model = None
         self.cuda_available = cuda.is_available()
 
@@ -177,7 +179,7 @@ class PhenoMeInterface:
 
         Uses the params dict to feed arguments.
 
-        TODO: Include advanced parameters from a form.
+        TODO: Include the remaining advanced parameters from the form.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
@@ -187,7 +189,48 @@ class PhenoMeInterface:
         """
         checkpoint_path = self.get_path('checkpoint')
 
-        self.image_processing.process_images(self.model, checkpoint_path, progress_callback=progress_callback)
+        self.image_processing.process_images(
+            self.model, checkpoint_path, progress_callback=progress_callback,
+            batch_size=self.get_param('process', 'batch_size')
+        )
+
+    @property
+    def has_processed_images(self) -> bool:
+        """ Whether images have been processed, which the properties step needs to run.
+
+        Reads the same state PhenoMe itself checks in compute_properties(), rather than tracking
+        the processing step separately.
+
+        Args:
+            None
+        Returns:
+            bool: True once the pipeline holds processed images.
+        """
+        return self.pheno.results.n_images > 0
+
+    def compute_properties(self, progress_callback: ProgressCallback | None=None) -> pd.DataFrame:
+        """ Compute the per-image properties using PhenoMe.compute_properties(). Stores them in self.properties_df.
+
+        Uses the params dict to feed arguments.
+
+        TODO: Computing a different preset over an existing checkpoint may need force_update=True, otherwise
+        PhenoMe warns about the property keys missing from the checkpoint.
+
+        Args:
+            progress_callback: Hook called as (current, total, desc) after each image. Called from the
+                calling thread, so a caller running this in a worker thread must not touch widgets in it.
+        Returns:
+            pd.DataFrame: One row per image, holding the image path and the computed properties.
+        """
+        checkpoint_path = self.get_path('checkpoint')
+
+        # PhenoMe only knows its presets by their lower case name, while the GUI displays them capitalized
+        preset = self.get_param('properties', 'preset').lower()
+
+        self.properties_df = self.image_processing.compute_properties(
+            preset, checkpoint_path, progress_callback=progress_callback
+        )
+        return self.properties_df
 
     # ------------------------------------------------------------------
     # Metadata access

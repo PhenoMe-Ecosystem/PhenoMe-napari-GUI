@@ -1,6 +1,7 @@
 from logging import getLogger
 from typing import TYPE_CHECKING
 
+import pandas as pd
 from phenome import PhenoMe
 from phenome.utils import ProgressCallback
 
@@ -51,3 +52,18 @@ class ImageProcessing:
             None
         """
         self.pheno.process_images(model_wrapper=model_wrapper, checkpoint_path=checkpoint_path, progress_callback=progress_callback, **kwargs)
+
+    def compute_properties(self, property_preset: str, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, **kwargs) -> pd.DataFrame:
+        """ Compute the per-image properties using PhenoMe.compute_properties(). Also saves them in-place in the PhenoMe object.
+
+        Args:
+            property_preset: Name of the PhenoMe property preset to compute, e.g. 'basic'. Lower case only.
+            checkpoint_path: Path of the .hdf5 file to save results in. If None, no checkpoint is created.
+            progress_callback: Hook called as (current, total, desc) after each image. PhenoMe reports the
+                number of images computed and the total number of images to compute, and disables its
+                tqdm bar when set. If None, PhenoMe keeps its default tqdm bar.
+            **kwargs: Any arguments included in the PhenoMe compute_properties() method.
+        Returns:
+            pd.DataFrame: One row per image, holding the image path and the computed properties.
+        """
+        return self.pheno.compute_properties(property_preset=property_preset, checkpoint_path=checkpoint_path, progress_callback=progress_callback, **kwargs)

@@ -8,6 +8,9 @@ from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -15,6 +18,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QSpinBox,
     QStackedLayout,
     QTabWidget,
     QVBoxLayout,
@@ -309,6 +313,7 @@ class PhenoMeWidget(QWidget):
         # Group for embedding extraction
         embeddings_group = QGroupBox("Embeddings")
         embeddings_layout = QVBoxLayout()
+        embeddings_group.setLayout(embeddings_layout)
 
         # Device selection radio buttons
         device_group = QGroupBox("Processing Device")
@@ -331,7 +336,6 @@ class PhenoMeWidget(QWidget):
         self._model_selection_combo.currentTextChanged.connect(self._on_model_selection_changed)
         model_row.addWidget(self._model_selection_combo)
         embeddings_layout.addLayout(model_row)
-        embeddings_group.setLayout(embeddings_layout)
         # Load model button
         self._load_model_button = QPushButton("Load Model")
         self._load_model_button.clicked.connect(self._on_load_model_clicked)
@@ -346,7 +350,8 @@ class PhenoMeWidget(QWidget):
         self._checkpoint_path_dialog.changed.connect(self._on_checkpoint_path_changed)
         embeddings_layout.addWidget(self._checkpoint_path_dialog.native)
 
-        # Advanced parameters button
+        # Advanced parameters button, opening a form built on first use
+        self._advanced_parameters_dialog = None
         self._advanced_parameters_button = QPushButton("Avanced parameters...")
         self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
         embeddings_layout.addWidget(self._advanced_parameters_button)
@@ -359,6 +364,25 @@ class PhenoMeWidget(QWidget):
 
         # Group for properties calculation
         properties_group = QGroupBox("Properties")
+        properties_layout = QVBoxLayout()
+        properties_group.setLayout(properties_layout)
+
+        # Properties selection combo box
+        props_row = QHBoxLayout()
+        props_row.addWidget(QLabel("Properties"))
+        self._props_selection_combo = QComboBox()
+        self._props_selection_combo.addItems(['Basic', 'Standard', 'Complete', 'Shape', 'Intensity'])
+        self._props_selection_combo.setCurrentText(self._phenome.get_param('properties', 'preset'))
+        self._props_selection_combo.currentTextChanged.connect(self._on_properties_changed)
+
+        props_row.addWidget(self._props_selection_combo)
+        properties_layout.addLayout(props_row)
+
+        # Properties calculation button, enabled only once the images have been processed
+        self._props_button = QPushButton('Calculate Properties')
+        self._props_button.clicked.connect(self._on_properties_clicked)
+        properties_layout.addWidget(self._props_button)
+        self._refresh_props_button()
 
         # Progress bar, driven from the worker thread through the progress_updated signal
         self._progress_bar = QProgressBar()
@@ -469,12 +493,56 @@ class PhenoMeWidget(QWidget):
     def _on_advanced_parameters_clicked(self) -> None:
         """ Opens a parameter form for advanced users.
 
+        The form is built on first use and kept afterwards, but its fields are reloaded from the current
+        parameters every time it opens, so the values of a cancelled edit are never kept nor shown again.
+        The parameters are only written back when the form is confirmed.
+
+        For now, the advanced parameters include batch size only.
+        TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
+
         Args:
             None
         Returns:
             None
         """
-        return
+        if self._advanced_parameters_dialog is None:
+            self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
+
+        self._batch_size_spinbox.setValue(self._phenome.get_param('process', 'batch_size'))
+
+        if self._advanced_parameters_dialog.exec_():
+            self._phenome.set_param('process', 'batch_size', self._batch_size_spinbox.value())
+
+    def _build_advanced_parameters_dialog(self) -> QDialog:
+        """ Build the advanced processing parameters window.
+
+        Only builds the form, without filling it. The fields are loaded from the parameters by the
+        caller, which also reads them back when the form is confirmed.
+
+        Args:
+            None
+        Returns:
+            QDialog: The parameter form, parented to the widget so it closes with it.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Processing parameters")
+        dialog.setFixedSize(300, 100)
+
+        form_layout = QFormLayout()
+
+        # Number of images PhenoMe feeds to the model at once
+        self._batch_size_spinbox = QSpinBox()
+        self._batch_size_spinbox.setRange(1, 1024)
+        form_layout.addRow("Batch size", self._batch_size_spinbox)
+
+        # OK closes the form with an accepted result, which is what tells the caller to apply the values
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        form_layout.addRow(button_box)
+
+        dialog.setLayout(form_layout)
+        return dialog
 
     def _on_process_clicked(self) -> None:
         """ Begins the image processing/embedding extraction task
@@ -529,6 +597,9 @@ class PhenoMeWidget(QWidget):
         self._process_button.setText('Extract Embeddings')
         self._refresh_process_button()
 
+        # The properties step runs on the images processed here, so it only becomes available now
+        self._refresh_props_button()
+
         # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
         # here instead of relying on a final callback.
         self._progress_bar.setRange(0, 1)
@@ -545,6 +616,82 @@ class PhenoMeWidget(QWidget):
             None
         """
         self._phenome.process_images(progress_callback=self.progress_updated.emit)
+
+    def _on_properties_changed(self) -> None:
+        """ Update the properties preset parameter when the selection changes.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        preset = self._props_selection_combo.currentText()
+        self._phenome.set_param('properties', 'preset', preset)
+
+    def _refresh_props_button(self) -> None:
+        """ Enable the properties calculation button only once the images have been processed.
+
+        PhenoMe computes the properties over the images held by the pipeline, and raises when there are
+        none, so the state is read from the interface. Called when building the tab and once processing
+        or a properties calculation finishes.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        has_processed_images = self._phenome.has_processed_images
+
+        self._props_button.setEnabled(has_processed_images)
+        self._props_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
+
+    def _on_properties_clicked(self) -> None:
+        """ Begins the properties calculation task
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        worker = self._compute_properties_worker()
+        worker.returned.connect(self._on_finish_properties)
+        worker.start()
+
+        self._props_button.setText('Calculating properties...')
+        self._props_button.setEnabled(False)
+
+        # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a busy
+        # indicator until the first image is reported.
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setFormat('Preparing...')
+
+    def _on_finish_properties(self) -> None:
+        """ Called when the properties calculation is done. Re-enables the button and changes text.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._props_button.setText('Calculate Properties')
+        self._refresh_props_button()
+
+        # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
+        # here instead of relying on a final callback.
+        self._progress_bar.setRange(0, 1)
+        self._progress_bar.setValue(1)
+        self._progress_bar.setFormat('Done!')
+
+    @thread_worker
+    def _compute_properties_worker(self) -> None:
+        """ Create worker to compute the properties on a parallel thread.
+
+        Args:
+            None
+        Returns:
+            None
+        """
+        self._phenome.compute_properties(progress_callback=self.progress_updated.emit)
 
     def _build_analysis_tab(self) -> None:
         """ Build the analysis tab and its widgets.
