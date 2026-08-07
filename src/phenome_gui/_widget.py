@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from magicgui.widgets import create_widget
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -60,6 +60,10 @@ class PhenoMeWidget(QWidget):
         # Interface to PhenoMe, holding the pipeline object and its parameters
         self._phenome = PhenoMeInterface(seed=42)
         self._image_viewer = ImageViewer(viewer)
+
+        # Both processing tasks work on the same pipeline object and share the progress bar, so only one
+        # of them may run at a time. Read by the button refresh methods to lock the other button.
+        self._task_running = False
 
         # Build the panel structure of the widget
         self._tabs = QTabWidget()
@@ -310,6 +314,15 @@ class PhenoMeWidget(QWidget):
         """
         layout = QVBoxLayout()
 
+        # Checkpoint path selection, used to save both embeddings AND properties
+        self._checkpoint_path_dialog = create_widget(
+            label='Checkpoint path', annotation=str, widget_type='FileEdit',
+            options={'mode': 'w', 'filter': 'HDF5 Files (*.hdf5)','value':self._phenome.get_path('checkpoint')}
+        )
+        self._checkpoint_path_dialog.choose_btn.text = 'Checkpoint path...'
+        self._checkpoint_path_dialog.changed.connect(self._on_checkpoint_path_changed)
+        layout.addWidget(self._checkpoint_path_dialog.native, 0)
+
         # Group for embedding extraction
         embeddings_group = QGroupBox("Embeddings")
         embeddings_layout = QVBoxLayout()
@@ -329,26 +342,26 @@ class PhenoMeWidget(QWidget):
 
         # Model selection combo box
         model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Model"))
+        model_row.addWidget(QLabel("Model to load"))
         self._model_selection_combo = QComboBox()
         self._model_selection_combo.addItems(MODEL_OPTIONS.keys())
         self._model_selection_combo.setCurrentText(self._phenome.get_param('process', 'model'))
         self._model_selection_combo.currentTextChanged.connect(self._on_model_selection_changed)
         model_row.addWidget(self._model_selection_combo)
         embeddings_layout.addLayout(model_row)
+
+        # Current loaded model
+        current_model_row = QHBoxLayout()
+        current_model_row.addWidget(QLabel("Loaded model:"))
+        self._current_model_label = QLabel("None")
+        self._current_model_label.setAlignment(Qt.AlignRight)
+        current_model_row.addWidget(self._current_model_label)
+        embeddings_layout.addLayout(current_model_row)
+
         # Load model button
         self._load_model_button = QPushButton("Load Model")
         self._load_model_button.clicked.connect(self._on_load_model_clicked)
         embeddings_layout.addWidget(self._load_model_button)
-
-        # Checkpoint path selection
-        self._checkpoint_path_dialog = create_widget(
-            label='Checkpoint path', annotation=str, widget_type='FileEdit',
-            options={'mode': 'w', 'filter': 'HDF5 Files (*.hdf5)','value':self._phenome.get_path('checkpoint')}
-        )
-        self._checkpoint_path_dialog.choose_btn.text = 'Checkpoint path...'
-        self._checkpoint_path_dialog.changed.connect(self._on_checkpoint_path_changed)
-        embeddings_layout.addWidget(self._checkpoint_path_dialog.native)
 
         # Advanced parameters button, opening a form built on first use
         self._advanced_parameters_dialog = None
@@ -391,8 +404,8 @@ class PhenoMeWidget(QWidget):
         self._progress_bar.setFormat('')
         self.progress_updated.connect(self._on_progress)
 
-        layout.addWidget(embeddings_group)
-        layout.addWidget(properties_group)
+        layout.addWidget(embeddings_group,1)
+        layout.addWidget(properties_group,1)
         layout.addWidget(self._progress_bar)
         self._tab_process.setLayout(layout)
 
@@ -432,6 +445,7 @@ class PhenoMeWidget(QWidget):
 
         self._load_model_button.setText('Downloading model...')
         self._load_model_button.setEnabled(False)
+        self._model_selection_combo.setEnabled(False)
 
     def _finish_load_model(self) -> None:
         """ Called when model is finished loading. Re-enables the button and changes text, and displays which model is loaded.
@@ -442,14 +456,30 @@ class PhenoMeWidget(QWidget):
             None
         """
         self._load_model_button.setText('Load Model')
+        self._current_model_label.setText(self._phenome.get_param('process', 'model'))
         self._load_model_button.setEnabled(True)
+        self._model_selection_combo.setEnabled(True)
         self._refresh_process_button()
 
+    def _set_task_running(self, running: bool) -> None:
+        """ Mark a processing task as running or finished, and lock the buttons accordingly.
+
+        Both processing buttons go through here, so starting either one disables the other until it is done.
+
+        Args:
+            running (bool): True when a task has just been started, False once it has finished.
+        Returns:
+            None
+        """
+        self._task_running = running
+        self._refresh_process_button()
+        self._refresh_props_button()
+
     def _refresh_process_button(self) -> None:
-        """ Enable the embedding extraction button only when both data and a model are loaded.
+        """ Enable the embedding extraction button only when both data and a model are loaded, and no task is running.
 
         Reads the state from the interface rather than tracking it separately, so it stays correct
-        whichever loading tab was used. Called after each loading step and once processing finishes.
+        whichever loading tab was used. Called after each loading step and whenever a task starts or finishes.
 
         Args:
             None
@@ -460,7 +490,11 @@ class PhenoMeWidget(QWidget):
         has_data = metadata_df is not None and not metadata_df.empty
         has_model = self._phenome.model is not None
 
-        self._process_button.setEnabled(has_data and has_model)
+        self._process_button.setEnabled(has_data and has_model and not self._task_running)
+
+        if self._task_running:
+            self._process_button.setToolTip('Please wait for the running task to finish.')
+            return
 
         missing = []
         if not has_data:
@@ -557,7 +591,7 @@ class PhenoMeWidget(QWidget):
         worker.start()
 
         self._process_button.setText('Processing images...')
-        self._process_button.setEnabled(False)
+        self._set_task_running(True)
 
         # PhenoMe stays silent while it builds the dataloader and scans the checkpoint, so show a busy
         # indicator until the first batch is reported.
@@ -594,11 +628,10 @@ class PhenoMeWidget(QWidget):
         Returns:
             None
         """
+        # Releasing the lock also re-enables the properties button, whose step runs on the images
+        # processed here and only becomes available now.
         self._process_button.setText('Extract Embeddings')
-        self._refresh_process_button()
-
-        # The properties step runs on the images processed here, so it only becomes available now
-        self._refresh_props_button()
+        self._set_task_running(False)
 
         # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
         # here instead of relying on a final callback.
@@ -629,11 +662,11 @@ class PhenoMeWidget(QWidget):
         self._phenome.set_param('properties', 'preset', preset)
 
     def _refresh_props_button(self) -> None:
-        """ Enable the properties calculation button only once the images have been processed.
+        """ Enable the properties calculation button only once the images have been processed, and no task is running.
 
         PhenoMe computes the properties over the images held by the pipeline, and raises when there are
-        none, so the state is read from the interface. Called when building the tab and once processing
-        or a properties calculation finishes.
+        none, so the state is read from the interface. Called when building the tab and whenever a task
+        starts or finishes.
 
         Args:
             None
@@ -642,8 +675,12 @@ class PhenoMeWidget(QWidget):
         """
         has_processed_images = self._phenome.has_processed_images
 
-        self._props_button.setEnabled(has_processed_images)
-        self._props_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
+        self._props_button.setEnabled(has_processed_images and not self._task_running)
+
+        if self._task_running:
+            self._props_button.setToolTip('Please wait for the running task to finish.')
+        else:
+            self._props_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
 
     def _on_properties_clicked(self) -> None:
         """ Begins the properties calculation task
@@ -658,7 +695,7 @@ class PhenoMeWidget(QWidget):
         worker.start()
 
         self._props_button.setText('Calculating properties...')
-        self._props_button.setEnabled(False)
+        self._set_task_running(True)
 
         # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a busy
         # indicator until the first image is reported.
@@ -674,7 +711,7 @@ class PhenoMeWidget(QWidget):
             None
         """
         self._props_button.setText('Calculate Properties')
-        self._refresh_props_button()
+        self._set_task_running(False)
 
         # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
         # here instead of relying on a final callback.
