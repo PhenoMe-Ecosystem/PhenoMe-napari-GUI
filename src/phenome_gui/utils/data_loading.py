@@ -16,8 +16,6 @@ class DataLoading:
 
         Args:
             pheno: The PhenoMe pipeline object owned by the interface.
-        Returns:
-            None
         """
         self.pheno = pheno
 

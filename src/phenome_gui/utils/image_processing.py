@@ -22,8 +22,6 @@ class ImageProcessing:
 
         Args:
             pheno: The PhenoMe pipeline object owned by the interface.
-        Returns:
-            None
         """
         self.pheno = pheno
 
@@ -33,8 +31,6 @@ class ImageProcessing:
         Args:
             model_name: Name of the model to load.
             device: The device to load the model on.
-        Returns:
-            None
         """
         return get_model(model_name, device=device)
 
@@ -48,8 +44,6 @@ class ImageProcessing:
                 1-based batch index and the total number of batches, and disables its tqdm bar when set.
                 If None, PhenoMe keeps its default tqdm bar.
             **kwargs: Any arguments included in the PhenoMe process_images() method.
-        Returns:
-            None
         """
         self.pheno.process_images(model_wrapper=model_wrapper, checkpoint_path=checkpoint_path, progress_callback=progress_callback, **kwargs)
 

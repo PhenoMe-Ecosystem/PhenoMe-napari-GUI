@@ -32,8 +32,6 @@ class ImageViewer:
             mask_paths (list[str]): Paths of the corresponding masks, added as label layers. None to display the images alone.
             row_data (list[dict]): Metadata attached to each layer, one dict per image. None to attach no metadata.
             names (list[str]): Name given to each image layer, the mask layers being suffixed with ' - Mask'. None to name every layer 'Image'.
-        Returns:
-            None
         """
         self._viewer.layers.clear()
 

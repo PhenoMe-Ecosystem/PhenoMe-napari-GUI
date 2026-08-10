@@ -17,11 +17,11 @@ logger = getLogger(__name__)
 # This dictionary will be used to initialize the parameters for every function.
 DEFAULT_PARAMS = {
     'paths':{
-        'images':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_images",
-        'masks':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/Ecoli_masks",
-        'metadata':"/Users/renaud/python-projects/phenome-project/PhenoMe/Notebooks/tutorials/toy_dataset/Ecoli_toy_example/metadata.csv",
+        'images':Path("~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_images"),
+        'masks':Path("~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_masks"),
+        'metadata':Path("~/datasets/toy_dataset/Ecoli_toy_example/metadata.csv"),
         'template':".../(drug_name)/(time)/(filename).*",
-        'checkpoint':'./checkpoint.hdf5'
+        'checkpoint':Path("./checkpoint.hdf5")
     },
     'process':{
         'model':'Small (ViT-S/14)',
@@ -54,8 +54,6 @@ class PhenoMeInterface:
 
         Args:
             seed (int): Random seed passed to the PhenoMe pipeline, for reproducibility.
-        Returns:
-            None
         """
         self.pheno = PhenoMe(seed=seed)
         self.params = deepcopy(DEFAULT_PARAMS)
@@ -92,18 +90,16 @@ class PhenoMeInterface:
             section (str): Name of the parameter section, e.g. 'paths' or 'clustering'.
             key (str): Name of the parameter inside that section.
             value: New value of the parameter.
-        Returns:
-            None
         """
         self.params[section][key] = value
 
-    def get_path(self, key: str) -> str:
+    def get_path(self, key: str) -> str | Path:
         """ Return a path parameter.
 
         Args:
             key (str): Name of the path parameter, e.g. 'images' or 'metadata'.
         Returns:
-            str: The current value of the path parameter.
+            The current value of the path parameter.
         """
         try:
             return self.get_param('paths', key)
@@ -117,10 +113,8 @@ class PhenoMeInterface:
         Args:
             key (str): Name of the path parameter, e.g. 'images' or 'metadata'.
             value: New path, coerced to a string before being stored.
-        Returns:
-            None
         """
-        self.set_param('paths', key, str(value))
+        self.set_param('paths', key, Path(value))
 
     # ------------------------------------------------------------------
     # Data loading
@@ -129,27 +123,23 @@ class PhenoMeInterface:
     def load_data_csv(self) -> pd.DataFrame:
         """ Load the dataset using a .csv file as metadata source.
 
-        Args:
-            None
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
-        images_folder = self.get_path('images')
-        masks_folder = self.get_path('masks')
-        metadata_csv = self.get_path('metadata')
+        images_folder = str(self.get_path('images'))
+        masks_folder = str(self.get_path('masks'))
+        metadata_csv = str(self.get_path('metadata'))
         self.metadata_df = self.data_loading.load_data_csv(images_folder, metadata_csv, masks_folder)
         return self.metadata_df
 
     def load_data_path(self) -> pd.DataFrame:
         """ Load the dataset by extracting the metadata from the file paths.
 
-        Args:
-            None
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
-        images_folder = self.get_path('images')
-        masks_folder = self.get_path('masks')
+        images_folder = str(self.get_path('images'))
+        masks_folder = str(self.get_path('masks'))
         template = self.get_path('template')
         self.metadata_df = self.data_loading.load_data_path(images_folder, template, masks_folder)
         return self.metadata_df
@@ -159,13 +149,7 @@ class PhenoMeInterface:
     # ------------------------------------------------------------------
 
     def load_model(self) -> None:
-        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline. """
         model_name = self.get_param('process', 'model')
 
         real_model_name = MODEL_OPTIONS.get(model_name)
@@ -183,9 +167,7 @@ class PhenoMeInterface:
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
-                calling thread, so a caller running this in a worker thread must not touch widgets in it.
-        Returns:
-            None
+            calling thread, so a caller running this in a worker thread must not touch widgets in it.
         """
         checkpoint_path = self.get_path('checkpoint')
 
@@ -201,8 +183,6 @@ class PhenoMeInterface:
         Reads the same state PhenoMe itself checks in compute_properties(), rather than tracking
         the processing step separately.
 
-        Args:
-            None
         Returns:
             bool: True once the pipeline holds processed images.
         """

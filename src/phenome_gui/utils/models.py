@@ -47,10 +47,10 @@ def get_model(model_name: str, **kwargs) -> "ModelWrapper":
     """
     try:
         loader = MODEL_LOADERS[model_name]
-    except KeyError:
+    except KeyError as err:
         raise ValueError(
             f"Unknown model: {model_name!r}. "
             f"Available models: {', '.join(MODEL_LOADERS)}"
-        )
+        ) from err
 
     return loader(model_name, **kwargs)

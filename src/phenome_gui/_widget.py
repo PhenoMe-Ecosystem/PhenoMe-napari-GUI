@@ -51,8 +51,6 @@ class PhenoMeWidget(QWidget):
 
         Args:
             viewer (napari.viewer.Viewer): The napari viewer the widget is docked in.
-        Returns:
-            None
         """
         super().__init__()
         self._viewer = viewer
@@ -63,7 +61,7 @@ class PhenoMeWidget(QWidget):
 
         # Both processing tasks work on the same pipeline object and share the progress bar, so only one
         # of them may run at a time. Read by the button refresh methods to lock the other button.
-        self._task_running = False
+        self._processing_task_running = False
 
         # Build the panel structure of the widget
         self._tabs = QTabWidget()
@@ -90,11 +88,6 @@ class PhenoMeWidget(QWidget):
         """ Builds the data loading tab and its widgets.
 
         Includes radio buttons to select the metadata structure, file dialogs to select the directories and files, a button to load the data, and a table to display the metadata.
-
-        Args:
-            None
-        Returns:
-            None
         """
         layout = QVBoxLayout()
 
@@ -117,13 +110,13 @@ class PhenoMeWidget(QWidget):
 
         # .csv metadata widgets
         self._image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'label':'test', 'mode': 'd', 'value':self._phenome.get_path('images')}
+            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.get_path('images'))}
         )
         self._mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':self._phenome.get_path('masks')}
+            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.get_path('masks'))}
         )
         self._metadata_dir_dialog = create_widget(
-            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':self._phenome.get_path('metadata')}
+            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':str(self._phenome.get_path('metadata'))}
         )
 
         # path-based metadata widgets
@@ -142,6 +135,7 @@ class PhenoMeWidget(QWidget):
 
         self._image_dir_dialog.choose_btn.text = 'Images Directory...'
         self._mask_dir_dialog.choose_btn.text = 'Masks Directory...'
+        self._metadata_dir_dialog.choose_btn.text = 'Metadata Path...'
         self._path_image_dir_dialog.choose_btn.text = 'Images Directory...'
         self._path_mask_dir_dialog.choose_btn.text = 'Masks Directory...'
         self._path_template_label.text = 'Template'
@@ -179,16 +173,12 @@ class PhenoMeWidget(QWidget):
         layout.addWidget(structure_group, 0)
         layout.addWidget(loading_group, 0)
         layout.addWidget(self._metadata_table.native, 1)
+
+        self._on_directory_changed()
         self._tab_loading.setLayout(layout)
 
     def _build_loading_group(self) -> None:
-        """ Builds the parameter widgets for the two possible data structures.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Builds the parameter widgets for the two possible data structures. """
 
         # .csv metadata structure
         csv_page = QWidget()
@@ -215,31 +205,20 @@ class PhenoMeWidget(QWidget):
         self._loading_stack.insertWidget(1, path_page)
 
     def _on_structure_changed(self) -> None:
-        """ Update the displayed page of the loading stack when the metadata structure selection changes.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Update the displayed page of the loading stack when the metadata structure selection changes. """
         # Change text of corresponding widgets
-        self._image_dir_dialog.value = self._phenome.get_path('images')
-        self._mask_dir_dialog.value = self._phenome.get_path('masks')
-        self._path_image_dir_dialog.value = self._phenome.get_path('images')
-        self._path_mask_dir_dialog.value = self._phenome.get_path('masks')
+        self._image_dir_dialog.value = str(self._phenome.get_path('images'))
+        self._mask_dir_dialog.value = str(self._phenome.get_path('masks'))
+        self._path_image_dir_dialog.value = str(self._phenome.get_path('images'))
+        self._path_mask_dir_dialog.value = str(self._phenome.get_path('masks'))
+        self._metadata_dir_dialog.value = str(self._phenome.get_path('metadata'))
 
         # Change page
         page = 0 if self._csv_radio.isChecked() else 1
         self._loading_stack.setCurrentIndex(page)
 
     def _on_directory_changed(self) -> None:
-        """ Update the parameters when a directory is changed.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Update the parameters when a directory is changed. """
         if self._csv_radio.isChecked():
             self._phenome.set_path('images', self._image_dir_dialog.value)
             self._phenome.set_path('masks', self._mask_dir_dialog.value)
@@ -250,23 +229,11 @@ class PhenoMeWidget(QWidget):
             self._phenome.set_path('template', self._path_template.value)
 
     def _on_load_data_csv(self) -> None:
-        """ Load the data using a .csv metadata file and show it in the table.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Load the data using a .csv metadata file and show it in the table. """
         self._update_metadata_table(self._phenome.load_data_csv())
 
     def _on_load_data_path(self) -> None:
-        """ Load the data using path-based metadata and show it in the table.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Load the data using path-based metadata and show it in the table. """
         self._update_metadata_table(self._phenome.load_data_path())
 
     def _update_metadata_table(self, metadata_df: pd.DataFrame | None) -> None:
@@ -274,8 +241,6 @@ class PhenoMeWidget(QWidget):
 
         Args:
             metadata_df (pd.DataFrame): The metadata dataframe to display in the table.
-        Returns:
-            None
         Raises:
             ValueError: If the dataframe is None or empty, the table being cleared beforehand.
         """
@@ -288,13 +253,7 @@ class PhenoMeWidget(QWidget):
             self._refresh_process_button()
 
     def _on_table_selection_changed(self) -> None:
-        """ Display corresponding image and mask when a row is selected from the table.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Display corresponding image and mask when a row is selected from the table. """
         row = self._metadata_table.native.currentRow()
         if row < 0:
             return
@@ -306,11 +265,6 @@ class PhenoMeWidget(QWidget):
         """ Build the image processing tab and its widgets.
 
         Includes widgets to select processing and properties parameters and running the embedding task and the properties calculation.
-
-        Args:
-            None
-        Returns:
-            None
         """
         layout = QVBoxLayout()
 
@@ -410,35 +364,17 @@ class PhenoMeWidget(QWidget):
         self._tab_process.setLayout(layout)
 
     def _on_device_changed(self) -> None:
-        """ Update the device parameter when the selection is changed.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Update the device parameter when the selection is changed. """
         device = 'cpu' if self._cpu_radio.isChecked else 'CUDA'
         self._phenome.set_param('process', 'device', device)
 
     def _on_model_selection_changed(self) -> None:
-        """ Update the model parameter when the selection changes.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Update the model parameter when the selection changes. """
         model_name = self._model_selection_combo.currentText()
         self._phenome.set_param('process', 'model', model_name)
 
     def _on_load_model_clicked(self) -> None:
-        """ Load the model for embedding extraction when the button is clicked.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Load the model for embedding extraction when the button is clicked. """
         worker = self._load_model_worker()
         worker.returned.connect(self._finish_load_model)
         worker.start()
@@ -448,30 +384,22 @@ class PhenoMeWidget(QWidget):
         self._model_selection_combo.setEnabled(False)
 
     def _finish_load_model(self) -> None:
-        """ Called when model is finished loading. Re-enables the button and changes text, and displays which model is loaded.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Called when model is finished loading. Re-enables the button and changes text, and displays which model is loaded. """
         self._load_model_button.setText('Load Model')
         self._current_model_label.setText(self._phenome.get_param('process', 'model'))
         self._load_model_button.setEnabled(True)
         self._model_selection_combo.setEnabled(True)
         self._refresh_process_button()
 
-    def _set_task_running(self, running: bool) -> None:
+    def _set_processing_task_running(self, running: bool) -> None:
         """ Mark a processing task as running or finished, and lock the buttons accordingly.
 
         Both processing buttons go through here, so starting either one disables the other until it is done.
 
         Args:
             running (bool): True when a task has just been started, False once it has finished.
-        Returns:
-            None
         """
-        self._task_running = running
+        self._processing_task_running = running
         self._refresh_process_button()
         self._refresh_props_button()
 
@@ -480,19 +408,14 @@ class PhenoMeWidget(QWidget):
 
         Reads the state from the interface rather than tracking it separately, so it stays correct
         whichever loading tab was used. Called after each loading step and whenever a task starts or finishes.
-
-        Args:
-            None
-        Returns:
-            None
         """
         metadata_df = self._phenome.metadata_df
         has_data = metadata_df is not None and not metadata_df.empty
         has_model = self._phenome.model is not None
 
-        self._process_button.setEnabled(has_data and has_model and not self._task_running)
+        self._process_button.setEnabled(has_data and has_model and not self._processing_task_running)
 
-        if self._task_running:
+        if self._processing_task_running:
             self._process_button.setToolTip('Please wait for the running task to finish.')
             return
 
@@ -505,23 +428,11 @@ class PhenoMeWidget(QWidget):
 
     @thread_worker
     def _load_model_worker(self) -> None:
-        """ Create worker to load model on a parallel thread.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Create worker to load model on a parallel thread. """
         self._phenome.load_model()
 
     def _on_checkpoint_path_changed(self) -> None:
-        """ Change the checkpoint path parameter when the value is changed.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Change the checkpoint path parameter when the value is changed. """
         self._phenome.set_path('checkpoint', self._checkpoint_path_dialog.value)
 
     def _on_advanced_parameters_clicked(self) -> None:
@@ -533,11 +444,6 @@ class PhenoMeWidget(QWidget):
 
         For now, the advanced parameters include batch size only.
         TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
-
-        Args:
-            None
-        Returns:
-            None
         """
         if self._advanced_parameters_dialog is None:
             self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
@@ -553,8 +459,6 @@ class PhenoMeWidget(QWidget):
         Only builds the form, without filling it. The fields are loaded from the parameters by the
         caller, which also reads them back when the form is confirmed.
 
-        Args:
-            None
         Returns:
             QDialog: The parameter form, parented to the widget so it closes with it.
         """
@@ -579,19 +483,13 @@ class PhenoMeWidget(QWidget):
         return dialog
 
     def _on_process_clicked(self) -> None:
-        """ Begins the image processing/embedding extraction task
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Begins the image processing/embedding extraction task """
         worker = self._process_images_worker()
         worker.returned.connect(self._on_finish_process)
         worker.start()
 
         self._process_button.setText('Processing images...')
-        self._set_task_running(True)
+        self._set_processing_task_running(True)
 
         # PhenoMe stays silent while it builds the dataloader and scans the checkpoint, so show a busy
         # indicator until the first batch is reported.
@@ -608,8 +506,6 @@ class PhenoMeWidget(QWidget):
             current: Units completed so far. Batches for embedding extraction, images for properties.
             total: Expected total number of units. PhenoMe documents 0 as "unknown".
             desc: Short stage label, e.g. "Processing batches".
-        Returns:
-            None
         """
         if total > 0:
             if self._progress_bar.maximum() != total:
@@ -621,17 +517,11 @@ class PhenoMeWidget(QWidget):
             self._progress_bar.setFormat(desc)
 
     def _on_finish_process(self) -> None:
-        """ Called when processing is done. Re-enables the button and changes text.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Called when processing is done. Re-enables the button and changes text. """
         # Releasing the lock also re-enables the properties button, whose step runs on the images
         # processed here and only becomes available now.
         self._process_button.setText('Extract Embeddings')
-        self._set_task_running(False)
+        self._set_processing_task_running(False)
 
         # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
         # here instead of relying on a final callback.
@@ -641,23 +531,11 @@ class PhenoMeWidget(QWidget):
 
     @thread_worker
     def _process_images_worker(self) -> None:
-        """ Create worker to process images on a parallel thread.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Create worker to process images on a parallel thread. """
         self._phenome.process_images(progress_callback=self.progress_updated.emit)
 
     def _on_properties_changed(self) -> None:
-        """ Update the properties preset parameter when the selection changes.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Update the properties preset parameter when the selection changes. """
         preset = self._props_selection_combo.currentText()
         self._phenome.set_param('properties', 'preset', preset)
 
@@ -667,35 +545,24 @@ class PhenoMeWidget(QWidget):
         PhenoMe computes the properties over the images held by the pipeline, and raises when there are
         none, so the state is read from the interface. Called when building the tab and whenever a task
         starts or finishes.
-
-        Args:
-            None
-        Returns:
-            None
         """
         has_processed_images = self._phenome.has_processed_images
 
-        self._props_button.setEnabled(has_processed_images and not self._task_running)
+        self._props_button.setEnabled(has_processed_images and not self._processing_task_running)
 
-        if self._task_running:
+        if self._processing_task_running:
             self._props_button.setToolTip('Please wait for the running task to finish.')
         else:
             self._props_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
 
     def _on_properties_clicked(self) -> None:
-        """ Begins the properties calculation task
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Begins the properties calculation task """
         worker = self._compute_properties_worker()
         worker.returned.connect(self._on_finish_properties)
         worker.start()
 
         self._props_button.setText('Calculating properties...')
-        self._set_task_running(True)
+        self._set_processing_task_running(True)
 
         # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a busy
         # indicator until the first image is reported.
@@ -703,15 +570,9 @@ class PhenoMeWidget(QWidget):
         self._progress_bar.setFormat('Preparing...')
 
     def _on_finish_properties(self) -> None:
-        """ Called when the properties calculation is done. Re-enables the button and changes text.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Called when the properties calculation is done. Re-enables the button and changes text. """
         self._props_button.setText('Calculate Properties')
-        self._set_task_running(False)
+        self._set_processing_task_running(False)
 
         # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
         # here instead of relying on a final callback.
@@ -721,22 +582,10 @@ class PhenoMeWidget(QWidget):
 
     @thread_worker
     def _compute_properties_worker(self) -> None:
-        """ Create worker to compute the properties on a parallel thread.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Create worker to compute the properties on a parallel thread. """
         self._phenome.compute_properties(progress_callback=self.progress_updated.emit)
 
     def _build_analysis_tab(self) -> None:
-        """ Build the analysis tab and its widgets.
-
-        Args:
-            None
-        Returns:
-            None
-        """
+        """ Build the analysis tab and its widgets. """
         layout = QVBoxLayout()
         self._tab_analysis.setLayout(layout)
