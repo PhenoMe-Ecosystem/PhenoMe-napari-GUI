@@ -7,11 +7,6 @@ from napari import Viewer, run
 
 def main() -> None:
     """ Open a napari viewer with the PhenoMe widget already docked, and run the event loop.
-
-    Args:
-        None
-    Returns:
-        None
     """
     viewer = Viewer()
     viewer.window.add_plugin_dock_widget('phenome-gui', 'PhenoMe')
