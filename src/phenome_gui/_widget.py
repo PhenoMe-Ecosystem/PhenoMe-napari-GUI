@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from .ui.clustering_params import ClusterParamsWindow
 from .utils.image_viewer import ImageViewer
 from .utils.models import MODEL_OPTIONS
 from .utils.phenome_interface import PhenoMeInterface
@@ -247,10 +248,12 @@ class PhenoMeWidget(QWidget):
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self._refresh_process_button()
+            self._refresh_group_by_combo()
             raise ValueError("Could not load data. Please check the provided paths and files.")
         else:
             self._metadata_table.value = metadata_df
             self._refresh_process_button()
+            self._refresh_group_by_combo()
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """
@@ -360,6 +363,7 @@ class PhenoMeWidget(QWidget):
 
         layout.addWidget(embeddings_group,1)
         layout.addWidget(properties_group,1)
+        layout.addStretch(1)
         layout.addWidget(self._progress_bar)
         self._tab_process.setLayout(layout)
 
@@ -394,7 +398,8 @@ class PhenoMeWidget(QWidget):
     def _set_processing_task_running(self, running: bool) -> None:
         """ Mark a processing task as running or finished, and lock the buttons accordingly.
 
-        Both processing buttons go through here, so starting either one disables the other until it is done.
+        Both processing buttons go through here, so starting either one disables the other until it is
+        done. The clustering button is refreshed too, as it runs on the embeddings the tasks produce.
 
         Args:
             running (bool): True when a task has just been started, False once it has finished.
@@ -402,6 +407,7 @@ class PhenoMeWidget(QWidget):
         self._processing_task_running = running
         self._refresh_process_button()
         self._refresh_props_button()
+        self._refresh_clustering_button()
 
     def _refresh_process_button(self) -> None:
         """ Enable the embedding extraction button only when both data and a model are loaded, and no task is running.
@@ -586,6 +592,147 @@ class PhenoMeWidget(QWidget):
         self._phenome.compute_properties(progress_callback=self.progress_updated.emit)
 
     def _build_analysis_tab(self) -> None:
-        """ Build the analysis tab and its widgets. """
+        """ Build the analysis tab and its widgets.
+
+        Includes a group to configure and run the clustering, and one to view the prototype and outlier
+        images of a chosen metadata group.
+        """
         layout = QVBoxLayout()
+
+        # Group for the clustering step
+        clustering_group = QGroupBox("Clustering")
+        clustering_layout = QHBoxLayout()
+        clustering_group.setLayout(clustering_layout)
+
+        # Clustering parameters button, opening a form rebuilt on every use
+        self._clustering_params_dialog = None
+        self._cluster_options_button = QPushButton("Options...")
+        self._cluster_options_button.clicked.connect(self._on_cluster_options_clicked)
+        clustering_layout.addWidget(self._cluster_options_button)
+
+        # Clustering button, enabled only once the images have been processed
+        self._run_clustering_button = QPushButton("Compute Clustering")
+        self._run_clustering_button.clicked.connect(self._on_run_clustering_clicked)
+        clustering_layout.addWidget(self._run_clustering_button)
+        self._refresh_clustering_button()
+
+        # Group for the image inspection steps
+        images_group = QGroupBox("View Images")
+        images_layout = QVBoxLayout()
+        images_group.setLayout(images_layout)
+
+        # Metadata column the images are grouped by, filled once the data is loaded
+        group_by_row = QHBoxLayout()
+        group_by_row.addWidget(QLabel("Group by:"))
+        self._group_by_combo = QComboBox()
+        group_by_row.addWidget(self._group_by_combo)
+        images_layout.addLayout(group_by_row)
+
+        # Number of images shown for each group
+        no_images_row = QHBoxLayout()
+        no_images_row.addWidget(QLabel("Images per Group:"))
+        self._no_images_spinbox = QSpinBox()
+        self._no_images_spinbox.setRange(1, 100)
+        self._no_images_spinbox.setValue(self._phenome.get_param('view_images', 'no_images'))
+        self._no_images_spinbox.valueChanged.connect(self._on_no_images_changed)
+        no_images_row.addWidget(self._no_images_spinbox)
+        images_layout.addLayout(no_images_row)
+
+        self._prototype_button = QPushButton("View Prototype Images")
+        self._prototype_button.clicked.connect(self._on_prototype_clicked)
+        images_layout.addWidget(self._prototype_button)
+
+        self._outlier_button = QPushButton("View Outlier Images")
+        self._outlier_button.clicked.connect(self._on_outlier_clicked)
+        images_layout.addWidget(self._outlier_button)
+
+        self._refresh_group_by_combo()
+
+        layout.addWidget(clustering_group, 0)
+        layout.addWidget(images_group, 0)
+        layout.addStretch(1)
         self._tab_analysis.setLayout(layout)
+
+    def _refresh_clustering_button(self) -> None:
+        """ Enable the clustering button only once the images have been processed, and no task is running.
+
+        PhenoMe clusters the embeddings held by the pipeline, and raises when there are none, so the state
+        is read from the interface the same way the properties button does. Called when building the tab
+        and whenever a processing task starts or finishes.
+        """
+        has_processed_images = self._phenome.has_processed_images
+
+        self._run_clustering_button.setEnabled(has_processed_images and not self._processing_task_running)
+
+        if self._processing_task_running:
+            self._run_clustering_button.setToolTip('Please wait for the running task to finish.')
+        else:
+            self._run_clustering_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
+
+    def _refresh_group_by_combo(self) -> None:
+        """ Fill the group by combo box with the metadata columns of the loaded data.
+
+        The columns are only known once the data has been loaded, so the combo box is filled here rather
+        than when the tab is built. Called when building the tab and after every loading step.
+        """
+        columns = self._phenome.get_metadata_columns()
+        previous = self._group_by_combo.currentText()
+
+        # Repopulating clears the selection, which would otherwise be reported as a user choice
+        self._group_by_combo.blockSignals(True)
+        self._group_by_combo.clear()
+        self._group_by_combo.addItems(columns)
+        if previous in columns:
+            self._group_by_combo.setCurrentText(previous)
+        self._group_by_combo.blockSignals(False)
+
+        self._group_by_combo.setEnabled(bool(columns))
+        self._group_by_combo.setToolTip('' if columns else 'Please load data first.')
+
+    def _on_no_images_changed(self) -> None:
+        """ Update the number of images parameter when the value changes. """
+        self._phenome.set_param('view_images', 'no_images', self._no_images_spinbox.value())
+
+    def _on_cluster_options_clicked(self) -> None:
+        """ Open the clustering parameter form.
+
+        The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
+        edit is never kept nor shown again. The parameters are only written back when the form is confirmed.
+        """
+        self._clustering_params_dialog = ClusterParamsWindow(self, self._phenome.params['clustering'])
+
+        if self._clustering_params_dialog.exec_():
+            for key, value in self._clustering_params_dialog.get_params().items():
+                self._phenome.set_param('clustering', key, value)
+
+    def _on_run_clustering_clicked(self) -> None:
+        """ Begin the clustering task."""
+        logger.info("Compute Clustering clicked, with parameters %s", self._phenome.params['clustering'])
+        worker = self._compute_clustering_worker()
+        worker.returned.connect(self._on_finish_clustering)
+        worker.start()
+
+    @thread_worker
+    def _compute_clustering_worker(self) -> None:
+        """ Create worker to compute the properties on a parallel thread. """
+        self._phenome.compute_clustering()
+
+    def _on_finish_clustering(self) -> None:
+        """ Once clustering is finished, add the cluster number to group_by options"""
+        self._refresh_group_by_combo()
+
+    def _on_prototype_clicked(self) -> None:
+        """ Display the prototype images of each group.
+
+        TODO: Run PhenoMe.find_prototypes() with cluster_col set to the selected column, and display the
+        returned images through the image viewer rather than through the matplotlib figures PhenoMe plots.
+        """
+        logger.info("View Prototype Images clicked, grouped by '%s'", self._group_by_combo.currentText())
+
+    def _on_outlier_clicked(self) -> None:
+        """ Display the outlier images of each group.
+
+        TODO: Run PhenoMe.detect_outliers() with group_by set to the selected column, and display the
+        returned images through the image viewer rather than through the matplotlib figures PhenoMe plots.
+        """
+        logger.info("View Outlier Images clicked, grouped by '%s'", self._group_by_combo.currentText())

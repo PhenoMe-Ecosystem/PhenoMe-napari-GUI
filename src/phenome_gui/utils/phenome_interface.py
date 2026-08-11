@@ -8,6 +8,7 @@ from phenome import PhenoMe
 from phenome.utils import ProgressCallback
 from torch import cuda
 
+from .analysis import PhenoMeAnalysis
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .models import MODEL_OPTIONS
@@ -36,6 +37,10 @@ DEFAULT_PARAMS = {
         'n_clusters':5,
         'dbscan_eps':0.5,
         'dbscan_min_samples':50
+    },
+    'view_images':{
+        'group_by':'',
+        'no_images':3
     }
 }
 
@@ -59,11 +64,13 @@ class PhenoMeInterface:
         self.params = deepcopy(DEFAULT_PARAMS)
         self.metadata_df = None
         self.properties_df = None
+        self.clustering_df = None
         self.model = None
         self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
         self.image_processing = ImageProcessing(self.pheno)
+        self.phenome_analysis = PhenoMeAnalysis(self.pheno)
     # ------------------------------------------------------------------
     # Parameters
     # ------------------------------------------------------------------
@@ -213,8 +220,46 @@ class PhenoMeInterface:
         return self.properties_df
 
     # ------------------------------------------------------------------
+    # Analysis
+    # ------------------------------------------------------------------
+
+    def compute_clustering(self) -> pd.DataFrame:
+        """ Cluster the images using PhenoMe.compute_clustering(). Stores the labels in self.clustering_df.
+
+        Uses the params dict to feed arguments. The keys of the 'clustering' section are named after the
+        PhenoMe arguments they stand for, so they are passed straight through. PhenoMe ignores the ones
+        that do not apply to the chosen method, and falls back on the pipeline seed for the random state.
+
+        Returns:
+            pd.DataFrame: One row per image, holding the image path and its cluster label.
+        """
+        self.clustering_df = self.phenome_analysis.compute_clustering(
+            n_clusters=self.get_param('clustering', 'n_clusters'),
+            clustering_method=self.get_param('clustering', 'clustering_method'),
+            dbscan_eps=self.get_param('clustering', 'dbscan_eps'),
+            dbscan_min_samples=self.get_param('clustering', 'dbscan_min_samples')
+        )
+        return self.clustering_df
+
+    # ------------------------------------------------------------------
     # Metadata access
     # ------------------------------------------------------------------
+
+    def get_metadata_columns(self) -> list[str]:
+        """ Return the metadata columns that can be used to group the images.
+
+        Leaves out the file_path and mask_path columns PhenoMe.find_files() adds itself, as they hold one
+        distinct value per row and are of no use as grouping keys. Every remaining column comes from the
+        metadata source chosen in the loading tab.
+
+        Returns:
+            list[str]: The groupable column names, empty when no data has been loaded yet.
+        """
+        if self.metadata_df is None or self.metadata_df.empty:
+            return []
+
+        reserved = {'file_path', 'mask_path'}
+        return [column for column in self.metadata_df.columns if column not in reserved]
 
     def get_row_display_data(self, row: int) -> tuple[list[str], list[str] | None, list[dict]]:
         """ Return the content of a metadata row, in the form expected by the image viewer.
