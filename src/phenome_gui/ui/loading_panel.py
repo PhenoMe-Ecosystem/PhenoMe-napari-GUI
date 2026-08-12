@@ -194,7 +194,9 @@ class LoadingPanel(QWidget):
         else:
             self._phenome.set_path('images', self._path_image_dir_dialog.value)
             self._phenome.set_path('masks', self._path_mask_dir_dialog.value)
-            self._phenome.set_path('template', self._path_template.value)
+            # Not set through set_path: the template is a pattern rather than a path, and wrapping it in
+            # a Path makes PhenoMe call Path.replace() on it, which is the move method.
+            self._phenome.set_param('paths', 'template', self._path_template.value)
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """

@@ -166,7 +166,9 @@ class AnalysisPanel(QWidget):
 
     def _on_run_clustering_clicked(self) -> None:
         """ Begin the clustering task."""
-        logger.info("Compute Clustering clicked, with parameters %s", self._phenome.params['clustering'])
+        # Stringified rather than passed as a dict: logging reads a lone mapping argument as the values
+        # to interpolate by name, which some handlers then choke on.
+        logger.info("Compute Clustering clicked, with parameters %s", str(self._phenome.params['clustering']))
         worker = self._compute_clustering_worker()
         worker.returned.connect(self._on_finish_clustering)
         worker.start()
@@ -200,7 +202,7 @@ class AnalysisPanel(QWidget):
         for key, value in self._prototypes_params_dialog.get_params().items():
             self._phenome.set_param('prototypes', key, value)
 
-        logger.info("View Prototype Images confirmed, with parameters %s", self._phenome.params['prototypes'])
+        logger.info("View Prototype Images confirmed, with parameters %s", str(self._phenome.params['prototypes']))
         worker = self._prototypes_worker()
         worker.returned.connect(self._on_finish_prototypes)
         worker.start()
@@ -232,7 +234,7 @@ class AnalysisPanel(QWidget):
         for key, value in self._outliers_params_dialog.get_params().items():
             self._phenome.set_param('outliers', key, value)
 
-        logger.info("View Outlier Images confirmed, with parameters %s", self._phenome.params['outliers'])
+        logger.info("View Outlier Images confirmed, with parameters %s", str(self._phenome.params['outliers']))
         worker = self._outliers_worker()
         worker.returned.connect(self._on_finish_outliers)
         worker.start()
