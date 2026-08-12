@@ -386,8 +386,9 @@ class PhenoMeInterface:
 
         return self.metadata_df
 
+    @property
     def has_properties(self) -> bool:
-        """ Checks if properties are available
+        """ Whether the properties have been computed, which the property-based analysis sources need.
 
         Returns:
             bool: True if properties have been calculated
