@@ -26,6 +26,10 @@ from qtpy.QtWidgets import (
 )
 
 from .ui.clustering_params import ClusterParamsWindow
+from .ui.prototypes_outliers_params import (
+    OutliersParamsWindow,
+    PrototypesParamsWindow,
+)
 from .utils.image_viewer import ImageViewer
 from .utils.models import MODEL_OPTIONS
 from .utils.phenome_interface import PhenoMeInterface
@@ -248,12 +252,10 @@ class PhenoMeWidget(QWidget):
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self._refresh_process_button()
-            self._refresh_group_by_combo()
             raise ValueError("Could not load data. Please check the provided paths and files.")
         else:
             self._metadata_table.value = metadata_df
             self._refresh_process_button()
-            self._refresh_group_by_combo()
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """
@@ -322,7 +324,7 @@ class PhenoMeWidget(QWidget):
 
         # Advanced parameters button, opening a form built on first use
         self._advanced_parameters_dialog = None
-        self._advanced_parameters_button = QPushButton("Avanced parameters...")
+        self._advanced_parameters_button = QPushButton("Advanced options...")
         self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
         embeddings_layout.addWidget(self._advanced_parameters_button)
 
@@ -339,7 +341,7 @@ class PhenoMeWidget(QWidget):
 
         # Properties selection combo box
         props_row = QHBoxLayout()
-        props_row.addWidget(QLabel("Properties"))
+        props_row.addWidget(QLabel("Properties preset"))
         self._props_selection_combo = QComboBox()
         self._props_selection_combo.addItems(['Basic', 'Standard', 'Complete', 'Shape', 'Intensity'])
         self._props_selection_combo.setCurrentText(self._phenome.get_param('properties', 'preset'))
@@ -399,7 +401,7 @@ class PhenoMeWidget(QWidget):
         """ Mark a processing task as running or finished, and lock the buttons accordingly.
 
         Both processing buttons go through here, so starting either one disables the other until it is
-        done. The clustering button is refreshed too, as it runs on the embeddings the tasks produce.
+        done. The analysis buttons are refreshed too, as they run on the embeddings the tasks produce.
 
         Args:
             running (bool): True when a task has just been started, False once it has finished.
@@ -407,7 +409,7 @@ class PhenoMeWidget(QWidget):
         self._processing_task_running = running
         self._refresh_process_button()
         self._refresh_props_button()
-        self._refresh_clustering_button()
+        self._refresh_analysis_buttons()
 
     def _refresh_process_button(self) -> None:
         """ Enable the embedding extraction button only when both data and a model are loaded, and no task is running.
@@ -614,84 +616,64 @@ class PhenoMeWidget(QWidget):
         self._run_clustering_button = QPushButton("Compute Clustering")
         self._run_clustering_button.clicked.connect(self._on_run_clustering_clicked)
         clustering_layout.addWidget(self._run_clustering_button)
-        self._refresh_clustering_button()
 
         # Group for the image inspection steps
-        images_group = QGroupBox("View Images")
+        images_group = QGroupBox("Image Retrieval")
         images_layout = QVBoxLayout()
         images_group.setLayout(images_layout)
 
-        # Metadata column the images are grouped by, filled once the data is loaded
-        group_by_row = QHBoxLayout()
-        group_by_row.addWidget(QLabel("Group by:"))
-        self._group_by_combo = QComboBox()
-        group_by_row.addWidget(self._group_by_combo)
-        images_layout.addLayout(group_by_row)
-
-        # Number of images shown for each group
-        no_images_row = QHBoxLayout()
-        no_images_row.addWidget(QLabel("Images per Group:"))
-        self._no_images_spinbox = QSpinBox()
-        self._no_images_spinbox.setRange(1, 100)
-        self._no_images_spinbox.setValue(self._phenome.get_param('view_images', 'no_images'))
-        self._no_images_spinbox.valueChanged.connect(self._on_no_images_changed)
-        no_images_row.addWidget(self._no_images_spinbox)
-        images_layout.addLayout(no_images_row)
-
-        self._prototype_button = QPushButton("View Prototype Images")
+        # Prototype button, enabled only once the images have been processed. It opens the parameter
+        # form rather than searching straight away, the search being what confirming the form does.
+        self._prototypes_params_dialog = None
+        self._prototype_button = QPushButton("Prototype Images...")
         self._prototype_button.clicked.connect(self._on_prototype_clicked)
         images_layout.addWidget(self._prototype_button)
 
-        self._outlier_button = QPushButton("View Outlier Images")
+        # Outlier button, enabled only once the images have been processed. It opens the parameter form
+        # rather than detecting straight away, the detection being what confirming the form does.
+        self._outliers_params_dialog = None
+        self._outlier_button = QPushButton("Outlier Images...")
         self._outlier_button.clicked.connect(self._on_outlier_clicked)
         images_layout.addWidget(self._outlier_button)
 
-        self._refresh_group_by_combo()
+        # Data table to view the retrieved images, one image per row. Holds the frame of whichever step
+        # ran last, kept alongside it so the selection can be resolved back to a full row.
+        self._images_df = None
+        self._images_group_column = None
+        self._images_table = create_widget(
+            label='Images Table', widget_type='Table', options={'value': None}
+        )
+        self._images_table.native.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers) # Prevent editing
+        self._images_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._images_table.native.selectionModel().selectionChanged.connect(self._on_image_table_selection)
+
+        images_layout.addWidget(self._images_table.native, 1)
+
+        # Refreshed here rather than next to each button, as it needs all of them to exist
+        self._refresh_analysis_buttons()
 
         layout.addWidget(clustering_group, 0)
-        layout.addWidget(images_group, 0)
-        layout.addStretch(1)
+        layout.addWidget(images_group, 1)
         self._tab_analysis.setLayout(layout)
 
-    def _refresh_clustering_button(self) -> None:
-        """ Enable the clustering button only once the images have been processed, and no task is running.
+    def _refresh_analysis_buttons(self) -> None:
+        """ Enable the analysis buttons only once the images have been processed, and no task is running.
 
-        PhenoMe clusters the embeddings held by the pipeline, and raises when there are none, so the state
-        is read from the interface the same way the properties button does. Called when building the tab
+        The clustering, prototype and outlier steps all run on the embeddings held by the pipeline, and
+        raise when there are none, so the state is read from the interface the same way the properties
+        button does. They share one method as their condition is the same. Called when building the tab
         and whenever a processing task starts or finishes.
         """
         has_processed_images = self._phenome.has_processed_images
 
-        self._run_clustering_button.setEnabled(has_processed_images and not self._processing_task_running)
-
         if self._processing_task_running:
-            self._run_clustering_button.setToolTip('Please wait for the running task to finish.')
+            tooltip = 'Please wait for the running task to finish.'
         else:
-            self._run_clustering_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
+            tooltip = '' if has_processed_images else 'Please extract embeddings first.'
 
-    def _refresh_group_by_combo(self) -> None:
-        """ Fill the group by combo box with the metadata columns of the loaded data.
-
-        The columns are only known once the data has been loaded, so the combo box is filled here rather
-        than when the tab is built. Called when building the tab and after every loading step.
-        """
-        columns = self._phenome.get_metadata_columns()
-        previous = self._group_by_combo.currentText()
-
-        # Repopulating clears the selection, which would otherwise be reported as a user choice
-        self._group_by_combo.blockSignals(True)
-        self._group_by_combo.clear()
-        self._group_by_combo.addItems(columns)
-        if previous in columns:
-            self._group_by_combo.setCurrentText(previous)
-        self._group_by_combo.blockSignals(False)
-
-        self._group_by_combo.setEnabled(bool(columns))
-        self._group_by_combo.setToolTip('' if columns else 'Please load data first.')
-
-    def _on_no_images_changed(self) -> None:
-        """ Update the number of images parameter when the value changes. """
-        self._phenome.set_param('view_images', 'no_images', self._no_images_spinbox.value())
+        for button in (self._run_clustering_button, self._prototype_button, self._outlier_button):
+            button.setEnabled(has_processed_images and not self._processing_task_running)
+            button.setToolTip(tooltip)
 
     def _on_cluster_options_clicked(self) -> None:
         """ Open the clustering parameter form.
@@ -699,7 +681,9 @@ class PhenoMeWidget(QWidget):
         The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
         edit is never kept nor shown again. The parameters are only written back when the form is confirmed.
         """
-        self._clustering_params_dialog = ClusterParamsWindow(self, self._phenome.params['clustering'])
+        self._clustering_params_dialog = ClusterParamsWindow(
+            self, self._phenome.params['clustering'], self._phenome.has_properties()
+        )
 
         if self._clustering_params_dialog.exec_():
             for key, value in self._clustering_params_dialog.get_params().items():
@@ -718,21 +702,122 @@ class PhenoMeWidget(QWidget):
         self._phenome.compute_clustering()
 
     def _on_finish_clustering(self) -> None:
-        """ Once clustering is finished, add the cluster number to group_by options"""
-        self._refresh_group_by_combo()
+        """ Once clustering is finished, update the metadata table with the cluster numbers.
+
+        The cluster column also becomes a grouping option, which needs no work here: the parameter forms
+        read the metadata columns when they are built, and they are rebuilt on every use.
+        """
+        self._update_metadata_table(self._phenome.get_metadata_table())
 
     def _on_prototype_clicked(self) -> None:
-        """ Display the prototype images of each group.
+        """ Open the prototype parameter form, and begin the search once it is confirmed.
 
-        TODO: Run PhenoMe.find_prototypes() with cluster_col set to the selected column, and display the
-        returned images through the image viewer rather than through the matplotlib figures PhenoMe plots.
+        The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
+        edit is never kept nor shown again. Cancelling it runs no search and changes no parameter.
         """
-        logger.info("View Prototype Images clicked, grouped by '%s'", self._group_by_combo.currentText())
+        self._prototypes_params_dialog = PrototypesParamsWindow(
+            self, self._phenome.params['prototypes'], self._phenome.get_metadata_columns(), self._phenome.has_properties()
+        )
+
+        if not self._prototypes_params_dialog.exec_():
+            return
+
+        for key, value in self._prototypes_params_dialog.get_params().items():
+            self._phenome.set_param('prototypes', key, value)
+
+        logger.info("View Prototype Images confirmed, with parameters %s", self._phenome.params['prototypes'])
+        worker = self._prototypes_worker()
+        worker.returned.connect(self._on_finish_prototypes)
+        worker.start()
+
+    @thread_worker
+    def _prototypes_worker(self) -> None:
+        """ Create worker to find the prototype images on a parallel thread. """
+        self._phenome.get_prototype_images()
+
+    def _on_finish_prototypes(self) -> None:
+        """ Called when the prototype search is done. Shows the prototypes in the images table. """
+        prototypes_df = self._phenome.prototypes_df
+        logger.info("Found %d prototype images.", 0 if prototypes_df is None else len(prototypes_df))
+        self._update_images_table(prototypes_df, self._phenome.get_param('prototypes', 'group_by'))
 
     def _on_outlier_clicked(self) -> None:
-        """ Display the outlier images of each group.
+        """ Open the outlier parameter form, and begin the detection once it is confirmed.
 
-        TODO: Run PhenoMe.detect_outliers() with group_by set to the selected column, and display the
-        returned images through the image viewer rather than through the matplotlib figures PhenoMe plots.
+        The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
+        edit is never kept nor shown again. Cancelling it runs no detection and changes no parameter.
         """
-        logger.info("View Outlier Images clicked, grouped by '%s'", self._group_by_combo.currentText())
+        self._outliers_params_dialog = OutliersParamsWindow(
+            self, self._phenome.params['outliers'], self._phenome.get_metadata_columns(), self._phenome.has_properties()
+        )
+
+        if not self._outliers_params_dialog.exec_():
+            return
+
+        for key, value in self._outliers_params_dialog.get_params().items():
+            self._phenome.set_param('outliers', key, value)
+
+        logger.info("View Outlier Images confirmed, with parameters %s", self._phenome.params['outliers'])
+        worker = self._outliers_worker()
+        worker.returned.connect(self._on_finish_outliers)
+        worker.start()
+
+    @thread_worker
+    def _outliers_worker(self) -> None:
+        """ Create worker to detect the outlier images on a parallel thread. """
+        self._phenome.get_outlier_images()
+
+    def _on_finish_outliers(self) -> None:
+        """ Called when the outlier detection is done. Shows the outliers in the images table. """
+        outliers_df = self._phenome.outliers_df
+        logger.info("Found %d outlier images.", 0 if outliers_df is None else len(outliers_df))
+        self._update_images_table(outliers_df, self._phenome.get_param('outliers', 'group_by'))
+
+    def _update_images_table(self, images_df: pd.DataFrame | None, group_by: str) -> None:
+        """ Show the images retrieved by the prototype or outlier step, one image per row.
+
+        The frame is kept whole for the selection handler, while the table only shows the columns worth
+        reading: the image index and path are dropped from the view but stay available behind it. The
+        rows are not reordered, so a table row still addresses the same row of the kept frame.
+
+        Args:
+            images_df (pd.DataFrame): The retrieved images. None or empty clears the table, which is a
+                normal outcome for the outlier step when nothing is past the threshold.
+            group_by (str): The grouping key the step was given, used to find the group column.
+        """
+        self._images_df = images_df
+
+        if images_df is None or images_df.empty:
+            self._images_group_column = None
+            self._images_table.value = pd.DataFrame()
+            return
+
+        # The two PhenoMe calls disagree on the group column: both name it after the grouping key when it
+        # resolved, but find_prototypes falls back to a 'group' column holding 'All' while detect_outliers
+        # leaves it out entirely.
+        if group_by in images_df.columns:
+            self._images_group_column = group_by
+        elif 'group' in images_df.columns:
+            self._images_group_column = 'group'
+        else:
+            self._images_group_column = None
+
+        self._images_table.value = images_df.drop(columns=['image_index', 'image_path'], errors='ignore')
+
+    def _on_image_table_selection(self) -> None:
+        """ Display the corresponding image and mask when a row is selected from the images table.
+
+        The layer is named after the group the image belongs to, so the groups stay tellable apart in the
+        napari layer list. Falls back to the image name alone when the step ran without a grouping key.
+        """
+        row = self._images_table.native.currentRow()
+        if row < 0 or self._images_df is None or self._images_df.empty:
+            return
+
+        row_data = self._images_df.iloc[row]
+        name = str(row_data['image_name'])
+        if self._images_group_column:
+            name = f"{row_data[self._images_group_column]} - {name}"
+
+        image_paths, mask_paths, metadata = self._phenome.get_image_display_data(row_data['image_path'])
+        self._image_viewer.display_images(image_paths, mask_paths, metadata, names=[name])

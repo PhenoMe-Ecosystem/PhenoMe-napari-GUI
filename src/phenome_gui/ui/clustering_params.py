@@ -11,6 +11,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+# Shared with the other analysis forms, as the feature spaces are PhenoMe's rather than any one step's
+from .prototypes_outliers_params import SOURCE_CHOICES
+
 
 class ClusterParamsWindow(QDialog):
     """ Parameter form for the clustering step.
@@ -18,19 +21,21 @@ class ClusterParamsWindow(QDialog):
     Edits its own copy of the clustering parameters, so the caller only picks up the new values through
     get_params() once the form has been confirmed.
 
-    TODO: Add advanced parameters such as number of dimensions, dimensionality reduction algorithm and choice to use/include properties for clustering
+    TODO: Add advanced parameters such as number of dimensions and the dimensionality reduction algorithm
     """
 
     def __init__(
         self,
         parent: QWidget,
-        params: dict[str, Any]
-    ):
+        params: dict[str, Any],
+        properties_available: bool=False
+    ) -> None:
         """ Build the form and fill it with the given parameters.
 
         Args:
             parent (QWidget): The widget the dialog is parented to, so it closes with it.
             params (dict[str, Any]): The current clustering parameters. Copied, never modified in place.
+            properties_available (bool): Whether the properties have been computed, which the source choices need.
         """
         super().__init__(parent)
         self.setWindowTitle("Clustering Options")
@@ -46,6 +51,16 @@ class ClusterParamsWindow(QDialog):
                 'choices':['kmeans', 'dbscan', 'gmm'], 'value':self.params['clustering_method']}
         )
         method_row.addWidget(self._method_dropdown.native)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Source"))
+        self._source_dropdown = create_widget(
+            label='Source', widget_type='ComboBox', options={
+                'choices':SOURCE_CHOICES, 'value':self.params['source']}
+        )
+        source_row.addWidget(self._source_dropdown.native)
+        if not properties_available:
+            self._source_dropdown.native.setEnabled(False)
 
         # Parameters depending on the selected method
         self._parameters_group = QGroupBox(self._method_dropdown.value + " parameters")
@@ -74,6 +89,7 @@ class ClusterParamsWindow(QDialog):
         group_layout.addLayout(min_samples_row)
 
         layout.addLayout(method_row)
+        layout.addLayout(source_row)
         layout.addWidget(self._parameters_group)
 
         self._cancel_btn = create_widget(label='Cancel', widget_type='PushButton')
@@ -88,6 +104,7 @@ class ClusterParamsWindow(QDialog):
         self._ok_btn.changed.connect(self._accept)
         self._cancel_btn.changed.connect(self._cancel)
         self._method_dropdown.changed.connect(self._on_value_change)
+        self._source_dropdown.changed.connect(self._on_value_change)
         self._dbscan_eps_spin.changed.connect(self._on_value_change)
         self._n_clusters_spin.changed.connect(self._on_value_change)
         self._min_samples_spin.changed.connect(self._on_value_change)
@@ -111,6 +128,7 @@ class ClusterParamsWindow(QDialog):
         """ Write the widget values back into the local parameter copy when any of them changes. """
         widget_params = {
             'clustering_method':self._method_dropdown.value,
+            'source':self._source_dropdown.value,
             'n_clusters':self._n_clusters_spin.value,
             'dbscan_eps':self._dbscan_eps_spin.value,
             'dbscan_min_samples':self._min_samples_spin.value
