@@ -40,9 +40,9 @@ def test_the_csv_page_writes_its_three_paths(panel: LoadingPanel, tmp_path: Path
     panel._mask_dir_dialog.value = tmp_path / 'msks'
     panel._metadata_dir_dialog.value = tmp_path / 'meta.csv'
 
-    assert panel._phenome.get_path('images') == tmp_path / 'imgs'
-    assert panel._phenome.get_path('masks') == tmp_path / 'msks'
-    assert panel._phenome.get_path('metadata') == tmp_path / 'meta.csv'
+    assert panel._phenome.params.paths.images == tmp_path / 'imgs'
+    assert panel._phenome.params.paths.masks == tmp_path / 'msks'
+    assert panel._phenome.params.paths.metadata == tmp_path / 'meta.csv'
 
 
 def test_the_path_page_writes_the_template_instead(panel: LoadingPanel, tmp_path: Path) -> None:
@@ -51,9 +51,9 @@ def test_the_path_page_writes_the_template_instead(panel: LoadingPanel, tmp_path
     panel._path_image_dir_dialog.value = tmp_path / 'imgs'
     panel._path_template.value = '.../(drug)/(time)/(filename).*'
 
-    assert panel._phenome.get_path('images') == tmp_path / 'imgs'
-    assert panel._phenome.get_path('template') == '.../(drug)/(time)/(filename).*'
-    assert not isinstance(panel._phenome.get_path('template'), Path)
+    assert panel._phenome.params.paths.images == tmp_path / 'imgs'
+    assert panel._phenome.params.paths.template == '.../(drug)/(time)/(filename).*'
+    assert not isinstance(panel._phenome.params.paths.template, Path)
 
 
 def test_loading_from_the_paths_reads_the_metadata_off_them(panel: LoadingPanel, path_dataset) -> None:
@@ -91,7 +91,7 @@ def test_a_failed_load_clears_the_table_and_raises(panel: LoadingPanel, tmp_path
     panel._on_load_data_csv()
     assert panel._metadata_table.native.rowCount() == 6
 
-    panel._phenome.set_path('images', tmp_path / 'empty')
+    panel._phenome.params.paths.images = tmp_path / 'empty'
     (tmp_path / 'empty').mkdir()
 
     with qtbot.waitSignal(panel.data_loaded, timeout=1000), pytest.raises(ValueError, match='Could not load data'):

@@ -32,6 +32,7 @@ dependencies = [
     "qtpy",
     "scikit-image",
     "phenome",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]

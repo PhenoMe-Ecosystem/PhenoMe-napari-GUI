@@ -91,17 +91,17 @@ def test_the_clustering_form_applies_on_accept(panel: AnalysisPanel, dialog_resu
 
     panel._on_cluster_options_clicked()
 
-    assert panel._phenome.get_param('clustering', 'clustering_method') == 'gmm'
-    assert panel._phenome.get_param('clustering', 'n_clusters') == 8
+    assert panel._phenome.params.clustering.clustering_method == 'gmm'
+    assert panel._phenome.params.clustering.n_clusters == 8
 
 
 def test_the_clustering_form_discards_on_cancel(panel: AnalysisPanel, dialog_result) -> None:
-    before = dict(panel._phenome.params['clustering'])
+    before = panel._phenome.params.clustering.model_copy(deep=True)
     dialog_result(ClusterParamsWindow, accepted=False, _method_dropdown='gmm', _n_clusters_spin=8)
 
     panel._on_cluster_options_clicked()
 
-    assert panel._phenome.params['clustering'] == before
+    assert panel._phenome.params.clustering == before
 
 
 def test_finishing_the_clustering_is_announced(panel: AnalysisPanel, qtbot) -> None:
@@ -167,14 +167,14 @@ class TestRetrievalRuns:
         self, panel, dialog_result, sync_worker, spy, form, handler, worker, call, pheno_method
     ) -> None:
         section = 'prototypes' if pheno_method == 'find_prototypes' else 'outliers'
-        before = dict(panel._phenome.params[section])
+        before = getattr(panel._phenome.params, section).model_copy(deep=True)
         setattr(panel._phenome.pheno, pheno_method, spy(pd.DataFrame()))
         sync_worker(panel, worker, getattr(panel._phenome, call))
         dialog_result(form, accepted=False, _group_by_dropdown='drug_name')
 
         getattr(panel, handler)()
 
-        assert panel._phenome.params[section] == before
+        assert getattr(panel._phenome.params, section) == before
 
     def test_confirming_runs_the_step(
         self, panel, dialog_result, sync_worker, spy, form, handler, worker, call, pheno_method
@@ -188,7 +188,7 @@ class TestRetrievalRuns:
 
         assert pheno_spy.called
         section = 'prototypes' if pheno_method == 'find_prototypes' else 'outliers'
-        assert panel._phenome.get_param(section, 'group_by') == 'drug_name'
+        assert getattr(panel._phenome.params, section).group_by == 'drug_name'
 
 
 def test_a_confirmed_search_fills_the_table(panel: AnalysisPanel, dialog_result, sync_worker, spy) -> None:

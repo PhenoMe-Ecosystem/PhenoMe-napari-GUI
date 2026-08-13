@@ -1,6 +1,3 @@
-from copy import deepcopy
-from typing import Any
-
 from magicgui.widgets import create_widget
 from qtpy.QtWidgets import (
     QDialog,
@@ -10,11 +7,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-# Feature spaces PhenoMe can run the analysis on. 'combined' is its name for using both at once.
-SOURCE_CHOICES = ['embeddings', 'properties', 'combined']
-
-# Ways PhenoMe can decide how far from its group centroid an image has to be to count as an outlier.
-METHOD_CHOICES = ['z-score', 'iqr']
+from ..utils.params import (
+    METHOD_CHOICES,
+    SOURCE_CHOICES,
+    OutliersParams,
+    PrototypesParams,
+)
 
 
 class PrototypesParamsWindow(QDialog):
@@ -30,7 +28,7 @@ class PrototypesParamsWindow(QDialog):
     def __init__(
         self,
         parent: QWidget,
-        params: dict[str, Any],
+        params: PrototypesParams,
         columns: list[str],
         properties_available: bool=False,
     ) -> None:
@@ -45,18 +43,18 @@ class PrototypesParamsWindow(QDialog):
         self.setWindowTitle("Prototype Images Options")
         self.resize(400, 200)
 
-        self.params = deepcopy(params)
+        self.params = params.model_copy(deep=True)
 
         layout = QVBoxLayout(self)
 
-        # Metadata column the images are grouped by. The stored value is empty until a column has been
+        # Metadata column the images are grouped by. The stored value is None until a column has been
         # picked once, and create_widget rejects a value absent from its choices, so it is only passed
         # through when it is still one of the loaded columns.
         group_by_row = QHBoxLayout()
         group_by_row.addWidget(QLabel("Group By"))
         group_by_options = {'choices':columns}
-        if self.params['group_by'] in columns:
-            group_by_options['value'] = self.params['group_by']
+        if self.params.group_by in columns:
+            group_by_options['value'] = self.params.group_by
         self._group_by_dropdown = create_widget(
             label='Group By', widget_type='ComboBox', options=group_by_options
         )
@@ -67,7 +65,7 @@ class PrototypesParamsWindow(QDialog):
         n_prototypes_row = QHBoxLayout()
         n_prototypes_row.addWidget(QLabel("Images per Group"))
         self._n_prototypes_spin = create_widget(
-            widget_type='SpinBox', options={'value':self.params['n_prototypes'], 'min':1, 'max':100}
+            widget_type='SpinBox', options={'value':self.params.n_prototypes, 'min':1, 'max':100}
         )
         n_prototypes_row.addWidget(self._n_prototypes_spin.native)
 
@@ -75,7 +73,7 @@ class PrototypesParamsWindow(QDialog):
         source_row.addWidget(QLabel("Source"))
         self._source_dropdown = create_widget(
             label='Source', widget_type='ComboBox', options={
-                'choices':SOURCE_CHOICES, 'value':self.params['source']}
+                'choices':SOURCE_CHOICES, 'value':self.params.source}
         )
         source_row.addWidget(self._source_dropdown.native)
         if not properties_available:
@@ -104,14 +102,9 @@ class PrototypesParamsWindow(QDialog):
 
     def _on_value_change(self) -> None:
         """ Write the widget values back into the local parameter copy when any of them changes. """
-        widget_params = {
-            'group_by':self._group_by_dropdown.value or '',
-            'n_prototypes':self._n_prototypes_spin.value,
-            'source':self._source_dropdown.value
-        }
-
-        for k, v in widget_params.items():
-            self.params[k] = v
+        self.params.group_by = self._group_by_dropdown.value or None
+        self.params.n_prototypes = self._n_prototypes_spin.value
+        self.params.source = self._source_dropdown.value
 
     def _accept(self) -> None:
         """ Close the form with an accepted result, which is what tells the caller to apply the values. """
@@ -121,11 +114,11 @@ class PrototypesParamsWindow(QDialog):
         """ Close the form with a rejected result, leaving the caller's parameters untouched. """
         self.reject()
 
-    def get_params(self) -> dict[str, Any]:
+    def get_params(self) -> PrototypesParams:
         """ Return the edited parameters.
 
         Returns:
-            dict[str, Any]: The local copy of the prototype parameters, holding the values currently shown in the form.
+            PrototypesParams: The local copy of the prototype parameters, holding the values currently shown in the form.
         """
         return self.params
 
@@ -144,7 +137,7 @@ class OutliersParamsWindow(QDialog):
     def __init__(
         self,
         parent: QWidget,
-        params: dict[str, Any],
+        params: OutliersParams,
         columns: list[str],
         properties_available: bool=False,
     ) -> None:
@@ -160,18 +153,18 @@ class OutliersParamsWindow(QDialog):
         self.setWindowTitle("Outlier Images Options")
         self.resize(400, 250)
 
-        self.params = deepcopy(params)
+        self.params = params.model_copy(deep=True)
 
         layout = QVBoxLayout(self)
 
-        # Metadata column the images are grouped by. The stored value is empty until a column has been
+        # Metadata column the images are grouped by. The stored value is None until a column has been
         # picked once, and create_widget rejects a value absent from its choices, so it is only passed
         # through when it is still one of the loaded columns.
         group_by_row = QHBoxLayout()
         group_by_row.addWidget(QLabel("Group By"))
         group_by_options = {'choices':columns}
-        if self.params['group_by'] in columns:
-            group_by_options['value'] = self.params['group_by']
+        if self.params.group_by in columns:
+            group_by_options['value'] = self.params.group_by
         self._group_by_dropdown = create_widget(
             label='Group By', widget_type='ComboBox', options=group_by_options
         )
@@ -183,7 +176,7 @@ class OutliersParamsWindow(QDialog):
         method_row.addWidget(QLabel("Method"))
         self._method_dropdown = create_widget(
             label='Method', widget_type='ComboBox', options={
-                'choices':METHOD_CHOICES, 'value':self.params['method']}
+                'choices':METHOD_CHOICES, 'value':self.params.method}
         )
         method_row.addWidget(self._method_dropdown.native)
 
@@ -193,7 +186,7 @@ class OutliersParamsWindow(QDialog):
         threshold_row.addWidget(QLabel("Threshold"))
         self._threshold_spin = create_widget(
             widget_type='FloatSpinBox',
-            options={'value':self.params['threshold'], 'min':0.1, 'max':100, 'step':0.1}
+            options={'value':self.params.threshold, 'min':0.1, 'max':100, 'step':0.1}
         )
         threshold_row.addWidget(self._threshold_spin.native)
 
@@ -201,7 +194,7 @@ class OutliersParamsWindow(QDialog):
         source_row.addWidget(QLabel("Source"))
         self._source_dropdown = create_widget(
             label='Source', widget_type='ComboBox', options={
-                'choices':SOURCE_CHOICES, 'value':self.params['source']}
+                'choices':SOURCE_CHOICES, 'value':self.params.source}
         )
         source_row.addWidget(self._source_dropdown.native)
         if not properties_available:
@@ -232,15 +225,10 @@ class OutliersParamsWindow(QDialog):
 
     def _on_value_change(self) -> None:
         """ Write the widget values back into the local parameter copy when any of them changes. """
-        widget_params = {
-            'group_by':self._group_by_dropdown.value or '',
-            'method':self._method_dropdown.value,
-            'threshold':self._threshold_spin.value,
-            'source':self._source_dropdown.value
-        }
-
-        for k, v in widget_params.items():
-            self.params[k] = v
+        self.params.group_by = self._group_by_dropdown.value or None
+        self.params.method = self._method_dropdown.value
+        self.params.threshold = self._threshold_spin.value
+        self.params.source = self._source_dropdown.value
 
     def _accept(self) -> None:
         """ Close the form with an accepted result, which is what tells the caller to apply the values. """
@@ -250,10 +238,10 @@ class OutliersParamsWindow(QDialog):
         """ Close the form with a rejected result, leaving the caller's parameters untouched. """
         self.reject()
 
-    def get_params(self) -> dict[str, Any]:
+    def get_params(self) -> OutliersParams:
         """ Return the edited parameters.
 
         Returns:
-            dict[str, Any]: The local copy of the outlier parameters, holding the values currently shown in the form.
+            OutliersParams: The local copy of the outlier parameters, holding the values currently shown in the form.
         """
         return self.params

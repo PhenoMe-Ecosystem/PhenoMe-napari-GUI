@@ -1,0 +1,141 @@
+"""Typed configuration for the PhenoMe GUI.
+
+One model per pipeline step, composed into a single `Params` object owned by `PhenoMeInterface`.
+Validation happens on assignment, so an out-of-range or misspelled parameter fails at the point it is
+set rather than deep inside PhenoMe.
+
+The `Literal` types below are the single source of truth for the choices offered by the parameter
+forms: the `*_CHOICES` lists are derived from them, so a value the model rejects can never appear in a
+dropdown.
+"""
+
+from pathlib import Path
+from typing import Literal, get_args
+
+from pydantic import BaseModel, ConfigDict, Field
+
+ClusteringMethod = Literal['kmeans', 'dbscan', 'gmm']
+Source = Literal['embeddings', 'properties', 'combined']
+OutlierMethod = Literal['z-score', 'iqr']
+PropertiesPreset = Literal['Basic', 'Standard', 'Complete', 'Shape', 'Intensity']
+Device = Literal['cpu', 'cuda']
+EmbeddingMethod = Literal['t-SNE', 'PCA', 'UMAP']
+Dims = Literal['2D', '3D']
+
+CLUSTERING_METHOD_CHOICES = list(get_args(ClusteringMethod))
+SOURCE_CHOICES = list(get_args(Source))
+METHOD_CHOICES = list(get_args(OutlierMethod))
+PRESET_CHOICES = list(get_args(PropertiesPreset))
+EMBEDDING_METHOD_CHOICES = list(get_args(EmbeddingMethod))
+DIMS_CHOICES = list(get_args(Dims))
+
+
+class ParamsBase(BaseModel):
+    """ Shared model configuration.
+
+    `validate_assignment` re-validates on every write, and `extra='forbid'` rejects unknown fields at
+    construction. Together with pydantic's refusal to set an undefined attribute, a mistyped parameter
+    name raises instead of silently landing in a slot nobody reads.
+    """
+
+    model_config = ConfigDict(validate_assignment=True, extra='forbid')
+
+
+class PathParams(ParamsBase):
+    """ Filesystem inputs and outputs.
+
+    `template` is a filename pattern rather than a path, and is typed as such so it is never coerced
+    into a Path.
+    """
+
+    images: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_images')
+    masks: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_masks')
+    metadata: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/metadata.csv')
+    template: str = '.../(drug_name)/(time)/(filename).*'
+    checkpoint: Path = Path('./checkpoint.hdf5')
+
+
+class ProcessParams(ParamsBase):
+    """ Embedding extraction settings.
+
+    `model` holds the user-friendly name shown in the GUI; `PhenoMeInterface.load_model` maps it onto
+    the real checkpoint name through MODEL_OPTIONS.
+    """
+
+    model: str = 'Small (ViT-S/14)'
+    device: Device = 'cpu'
+    batch_size: int = Field(default=32, ge=1)
+
+
+class PropertiesParams(ParamsBase):
+    """ Property computation settings.
+
+    The preset is stored capitalised as the GUI displays it; PhenoMe knows its presets by their lower
+    case name, and the interface folds the case on the way down.
+    """
+
+    preset: PropertiesPreset = 'Basic'
+
+
+class ClusteringParams(ParamsBase):
+    """ Clustering settings.
+
+    The fields are named after the PhenoMe arguments they stand for and passed straight through.
+    PhenoMe ignores the ones that do not apply to the chosen method.
+    """
+
+    clustering_method: ClusteringMethod = 'kmeans'
+    source: Source = 'embeddings'
+    n_clusters: int = Field(default=5, ge=1)
+    dbscan_eps: float = Field(default=0.5, gt=0)
+    dbscan_min_samples: int = Field(default=50, ge=1)
+
+
+class PrototypesParams(ParamsBase):
+    """ Prototype image search settings.
+
+    `group_by` is None until a metadata column has been picked, which PhenoMe reads as a request to
+    treat every image as one group.
+    """
+
+    group_by: str | None = None
+    n_prototypes: int = Field(default=3, ge=1, le=100)
+    source: Source = 'embeddings'
+
+
+class OutliersParams(ParamsBase):
+    """ Outlier detection settings.
+
+    The threshold is read as a number of standard deviations for 'z-score' and as a multiple of the
+    interquartile range for 'iqr', so the same value means different things per method.
+    """
+
+    group_by: str | None = None
+    method: OutlierMethod = 'z-score'
+    threshold: float = Field(default=3.0, ge=0.1, le=100)
+    source: Source = 'embeddings'
+
+
+class ExplorerParams(ParamsBase):
+    """ Interactive embedding explorer settings.
+
+    `color_by` is None until a metadata column has been picked, the same way the analysis steps treat
+    their grouping key.
+    """
+
+    method: EmbeddingMethod = 't-SNE'
+    dims: Dims = '2D'
+    source: Source = 'embeddings'
+    color_by: str | None = None
+
+
+class Params(ParamsBase):
+    """ Every parameter the GUI holds, one section per pipeline step. """
+
+    paths: PathParams = Field(default_factory=PathParams)
+    process: ProcessParams = Field(default_factory=ProcessParams)
+    properties: PropertiesParams = Field(default_factory=PropertiesParams)
+    clustering: ClusteringParams = Field(default_factory=ClusteringParams)
+    prototypes: PrototypesParams = Field(default_factory=PrototypesParams)
+    outliers: OutliersParams = Field(default_factory=OutliersParams)
+    explorer: ExplorerParams = Field(default_factory=ExplorerParams)

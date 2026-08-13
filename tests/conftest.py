@@ -89,9 +89,9 @@ def phenome(dataset: dict[str, Path]) -> PhenoMeInterface:
     Function scoped, as the tests edit its parameters and its metadata.
     """
     interface = PhenoMeInterface(seed=42)
-    interface.set_path('images', dataset['images'])
-    interface.set_path('masks', dataset['masks'])
-    interface.set_path('metadata', dataset['metadata'])
+    interface.params.paths.images = dataset['images']
+    interface.params.paths.masks = dataset['masks']
+    interface.params.paths.metadata = dataset['metadata']
     return interface
 
 
@@ -166,9 +166,9 @@ def widget(viewer: RecordingViewer, dataset: dict[str, Path], qtbot) -> PhenoMeW
     widget = PhenoMeWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget._phenome.set_path('images', dataset['images'])
-    widget._phenome.set_path('masks', dataset['masks'])
-    widget._phenome.set_path('metadata', dataset['metadata'])
+    widget._phenome.params.paths.images = dataset['images']
+    widget._phenome.params.paths.masks = dataset['masks']
+    widget._phenome.params.paths.metadata = dataset['metadata']
     return widget
 
 

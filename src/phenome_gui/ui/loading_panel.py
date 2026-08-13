@@ -78,26 +78,26 @@ class LoadingPanel(QWidget):
 
         # .csv metadata widgets
         self._image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.get_path('images'))}
+            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.images)}
         )
         self._mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.get_path('masks'))}
+            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.masks)}
         )
         self._metadata_dir_dialog = create_widget(
-            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':str(self._phenome.get_path('metadata'))}
+            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':str(self._phenome.params.paths.metadata)}
         )
 
         # path-based metadata widgets
         self._path_image_dir_dialog = create_widget(
             label='Images Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.get_path('images')}
+            options={'mode': 'd', 'value':self._phenome.params.paths.images}
         )
         self._path_mask_dir_dialog = create_widget(
             label='Masks Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.get_path('masks')}
+            options={'mode': 'd', 'value':self._phenome.params.paths.masks}
         )
         self._path_template = create_widget(
-            label='Template', annotation=str, widget_type='LineEdit', options={'value':self._phenome.get_path('template')}
+            label='Template', annotation=str, widget_type='LineEdit', options={'value':self._phenome.params.paths.template}
         )
         self._path_template_label = QLabel('Template')
 
@@ -175,11 +175,11 @@ class LoadingPanel(QWidget):
     def _on_structure_changed(self) -> None:
         """ Update the displayed page of the loading stack when the metadata structure selection changes. """
         # Change text of corresponding widgets
-        self._image_dir_dialog.value = str(self._phenome.get_path('images'))
-        self._mask_dir_dialog.value = str(self._phenome.get_path('masks'))
-        self._path_image_dir_dialog.value = str(self._phenome.get_path('images'))
-        self._path_mask_dir_dialog.value = str(self._phenome.get_path('masks'))
-        self._metadata_dir_dialog.value = str(self._phenome.get_path('metadata'))
+        self._image_dir_dialog.value = str(self._phenome.params.paths.images)
+        self._mask_dir_dialog.value = str(self._phenome.params.paths.masks)
+        self._path_image_dir_dialog.value = str(self._phenome.params.paths.images)
+        self._path_mask_dir_dialog.value = str(self._phenome.params.paths.masks)
+        self._metadata_dir_dialog.value = str(self._phenome.params.paths.metadata)
 
         # Change page
         page = 0 if self._csv_radio.isChecked() else 1
@@ -188,15 +188,13 @@ class LoadingPanel(QWidget):
     def _on_directory_changed(self) -> None:
         """ Update the parameters when a directory is changed. """
         if self._csv_radio.isChecked():
-            self._phenome.set_path('images', self._image_dir_dialog.value)
-            self._phenome.set_path('masks', self._mask_dir_dialog.value)
-            self._phenome.set_path('metadata', self._metadata_dir_dialog.value)
+            self._phenome.params.paths.images = self._image_dir_dialog.value
+            self._phenome.params.paths.masks = self._mask_dir_dialog.value
+            self._phenome.params.paths.metadata = self._metadata_dir_dialog.value
         else:
-            self._phenome.set_path('images', self._path_image_dir_dialog.value)
-            self._phenome.set_path('masks', self._path_mask_dir_dialog.value)
-            # Not set through set_path: the template is a pattern rather than a path, and wrapping it in
-            # a Path makes PhenoMe call Path.replace() on it, which is the move method.
-            self._phenome.set_param('paths', 'template', self._path_template.value)
+            self._phenome.params.paths.images = self._path_image_dir_dialog.value
+            self._phenome.params.paths.masks = self._path_mask_dir_dialog.value
+            self._phenome.params.paths.template = self._path_template.value
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """

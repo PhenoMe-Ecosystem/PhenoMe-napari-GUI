@@ -1,6 +1,3 @@
-from copy import deepcopy
-from typing import Any
-
 from magicgui.widgets import create_widget
 from qtpy.QtWidgets import (
     QDialog,
@@ -11,8 +8,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-# Shared with the other analysis forms, as the feature spaces are PhenoMe's rather than any one step's
-from .prototypes_outliers_params import SOURCE_CHOICES
+from ..utils.params import (
+    CLUSTERING_METHOD_CHOICES,
+    SOURCE_CHOICES,
+    ClusteringParams,
+)
 
 
 class ClusterParamsWindow(QDialog):
@@ -27,28 +27,28 @@ class ClusterParamsWindow(QDialog):
     def __init__(
         self,
         parent: QWidget,
-        params: dict[str, Any],
+        params: ClusteringParams,
         properties_available: bool=False
     ) -> None:
         """ Build the form and fill it with the given parameters.
 
         Args:
             parent (QWidget): The widget the dialog is parented to, so it closes with it.
-            params (dict[str, Any]): The current clustering parameters. Copied, never modified in place.
+            params (ClusteringParams): The current clustering parameters. Copied, never modified in place.
             properties_available (bool): Whether the properties have been computed, which the source choices need.
         """
         super().__init__(parent)
         self.setWindowTitle("Clustering Options")
         self.resize(400, 300)
 
-        self.params = deepcopy(params)
+        self.params = params.model_copy(deep=True)
 
         layout = QVBoxLayout(self)
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel("Clustering Method"))
         self._method_dropdown = create_widget(
             label='Clustering Method', widget_type='ComboBox', options={
-                'choices':['kmeans', 'dbscan', 'gmm'], 'value':self.params['clustering_method']}
+                'choices':CLUSTERING_METHOD_CHOICES, 'value':self.params.clustering_method}
         )
         method_row.addWidget(self._method_dropdown.native)
 
@@ -56,7 +56,7 @@ class ClusterParamsWindow(QDialog):
         source_row.addWidget(QLabel("Source"))
         self._source_dropdown = create_widget(
             label='Source', widget_type='ComboBox', options={
-                'choices':SOURCE_CHOICES, 'value':self.params['source']}
+                'choices':SOURCE_CHOICES, 'value':self.params.source}
         )
         source_row.addWidget(self._source_dropdown.native)
         if not properties_available:
@@ -69,21 +69,21 @@ class ClusterParamsWindow(QDialog):
 
         n_clusters_row = QHBoxLayout()
         n_clusters_label = QLabel("Number of clusters")
-        self._n_clusters_spin = create_widget(widget_type='SpinBox', options={'value':self.params['n_clusters']})
+        self._n_clusters_spin = create_widget(widget_type='SpinBox', options={'value':self.params.n_clusters})
         n_clusters_row.addWidget(n_clusters_label)
         n_clusters_row.addWidget(self._n_clusters_spin.native)
         group_layout.addLayout(n_clusters_row)
 
         dbscan_eps_row = QHBoxLayout()
         dbscan_eps_label = QLabel("DBSCAN EPS")
-        self._dbscan_eps_spin = create_widget(widget_type='FloatSpinBox', options={'value':self.params['dbscan_eps']})
+        self._dbscan_eps_spin = create_widget(widget_type='FloatSpinBox', options={'value':self.params.dbscan_eps})
         dbscan_eps_row.addWidget(dbscan_eps_label)
         dbscan_eps_row.addWidget(self._dbscan_eps_spin.native)
         group_layout.addLayout(dbscan_eps_row)
 
         min_samples_row = QHBoxLayout()
         min_samples_label = QLabel("Minimum samples")
-        self._min_samples_spin = create_widget(widget_type='SpinBox', options={'value':self.params['dbscan_min_samples']})
+        self._min_samples_spin = create_widget(widget_type='SpinBox', options={'value':self.params.dbscan_min_samples})
         min_samples_row.addWidget(min_samples_label)
         min_samples_row.addWidget(self._min_samples_spin.native)
         group_layout.addLayout(min_samples_row)
@@ -126,18 +126,14 @@ class ClusterParamsWindow(QDialog):
 
     def _on_value_change(self) -> None:
         """ Write the widget values back into the local parameter copy when any of them changes. """
-        widget_params = {
-            'clustering_method':self._method_dropdown.value,
-            'source':self._source_dropdown.value,
-            'n_clusters':self._n_clusters_spin.value,
-            'dbscan_eps':self._dbscan_eps_spin.value,
-            'dbscan_min_samples':self._min_samples_spin.value
-        }
+        self.params.clustering_method = self._method_dropdown.value
+        self.params.source = self._source_dropdown.value
+        self.params.n_clusters = self._n_clusters_spin.value
+        self.params.dbscan_eps = self._dbscan_eps_spin.value
+        self.params.dbscan_min_samples = self._min_samples_spin.value
 
         self._parameters_group.setTitle(self._method_dropdown.value + " parameters")
 
-        for k, v in widget_params.items():
-            self.params[k] = v
         self._check_method()
 
     def _accept(self) -> None:
@@ -148,10 +144,10 @@ class ClusterParamsWindow(QDialog):
         """ Close the form with a rejected result, leaving the caller's parameters untouched. """
         self.reject()
 
-    def get_params(self) -> dict[str, Any]:
+    def get_params(self) -> ClusteringParams:
         """ Return the edited parameters.
 
         Returns:
-            dict[str, Any]: The local copy of the clustering parameters, holding the values currently shown in the form.
+            ClusteringParams: The local copy of the clustering parameters, holding the values currently shown in the form.
         """
         return self.params

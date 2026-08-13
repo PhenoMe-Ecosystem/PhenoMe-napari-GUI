@@ -4,11 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
-from phenome_gui.utils.phenome_interface import (
-    DEFAULT_PARAMS,
-    PhenoMeInterface,
-)
+from phenome_gui.utils.params import Params
+from phenome_gui.utils.phenome_interface import PhenoMeInterface
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -16,29 +15,44 @@ from phenome_gui.utils.phenome_interface import (
 
 
 def test_parameters_start_from_the_defaults(phenome: PhenoMeInterface) -> None:
+    """The paths are left out: the fixture points them at the test dataset."""
+    defaults = Params()
     for section in ('process', 'properties', 'clustering', 'prototypes', 'outliers'):
-        assert phenome.params[section] == DEFAULT_PARAMS[section]
+        assert getattr(phenome.params, section) == getattr(defaults, section)
 
 
 def test_parameters_are_copied_not_shared(phenome: PhenoMeInterface) -> None:
-    phenome.set_param('clustering', 'n_clusters', 99)
-    assert DEFAULT_PARAMS['clustering']['n_clusters'] == 5
-    assert PhenoMeInterface(seed=42).get_param('clustering', 'n_clusters') == 5
+    """Each interface gets its own models, so one run's edits cannot leak into the next one's."""
+    phenome.params.clustering.n_clusters = 99
+
+    assert Params().clustering.n_clusters == 5
+    assert PhenoMeInterface(seed=42).params.clustering.n_clusters == 5
 
 
-def test_get_param_round_trips(phenome: PhenoMeInterface) -> None:
-    phenome.set_param('prototypes', 'n_prototypes', 7)
-    assert phenome.get_param('prototypes', 'n_prototypes') == 7
+def test_a_parameter_round_trips(phenome: PhenoMeInterface) -> None:
+    phenome.params.prototypes.n_prototypes = 7
+    assert phenome.params.prototypes.n_prototypes == 7
 
 
-def test_get_param_returns_empty_for_an_unknown_key(phenome: PhenoMeInterface) -> None:
-    assert phenome.get_param('clustering', 'nonexistent') == ''
-    assert phenome.get_param('nonexistent', 'whatever') == ''
+def test_an_unknown_parameter_raises(phenome: PhenoMeInterface) -> None:
+    """A mistyped name has to fail loudly rather than land in a slot nobody reads."""
+    with pytest.raises(ValueError):
+        phenome.params.clustering.nonexistent = 5
 
 
-def test_set_path_coerces_to_a_path(phenome: PhenoMeInterface) -> None:
-    phenome.set_path('checkpoint', '/tmp/somewhere.hdf5')
-    assert phenome.get_path('checkpoint') == Path('/tmp/somewhere.hdf5')
+def test_an_out_of_range_parameter_raises(phenome: PhenoMeInterface) -> None:
+    with pytest.raises(ValidationError):
+        phenome.params.clustering.n_clusters = 0
+
+
+def test_an_unknown_choice_raises(phenome: PhenoMeInterface) -> None:
+    with pytest.raises(ValidationError):
+        phenome.params.clustering.clustering_method = 'not-a-method'
+
+
+def test_assigning_a_path_coerces_to_a_path(phenome: PhenoMeInterface) -> None:
+    phenome.params.paths.checkpoint = '/tmp/somewhere.hdf5'
+    assert phenome.params.paths.checkpoint == Path('/tmp/somewhere.hdf5')
 
 
 # ----------------------------------------------------------------------------
@@ -126,11 +140,11 @@ def test_has_properties_is_a_property(phenome: PhenoMeInterface) -> None:
 
 def test_compute_clustering_forwards_its_parameters(loaded: PhenoMeInterface, spy) -> None:
     loaded.pheno.compute_clustering = spy(pd.DataFrame({'image_path': [], 'cluster': []}))
-    loaded.set_param('clustering', 'clustering_method', 'dbscan')
-    loaded.set_param('clustering', 'source', 'combined')
-    loaded.set_param('clustering', 'n_clusters', 7)
-    loaded.set_param('clustering', 'dbscan_eps', 0.25)
-    loaded.set_param('clustering', 'dbscan_min_samples', 11)
+    loaded.params.clustering.clustering_method = 'dbscan'
+    loaded.params.clustering.source = 'combined'
+    loaded.params.clustering.n_clusters = 7
+    loaded.params.clustering.dbscan_eps = 0.25
+    loaded.params.clustering.dbscan_min_samples = 11
 
     loaded.compute_clustering()
 
@@ -219,9 +233,9 @@ def test_an_empty_clustering_result_leaves_the_metadata_alone(loaded: PhenoMeInt
 def test_prototypes_forward_group_by_as_cluster_col(loaded: PhenoMeInterface, spy) -> None:
     """The GUI names the grouping key group_by for both steps; PhenoMe calls it cluster_col here."""
     loaded.pheno.find_prototypes = spy(pd.DataFrame())
-    loaded.set_param('prototypes', 'group_by', 'drug_name')
-    loaded.set_param('prototypes', 'n_prototypes', 4)
-    loaded.set_param('prototypes', 'source', 'properties')
+    loaded.params.prototypes.group_by = 'drug_name'
+    loaded.params.prototypes.n_prototypes = 4
+    loaded.params.prototypes.source = 'properties'
 
     loaded.get_prototype_images()
 
@@ -235,10 +249,10 @@ def test_prototypes_forward_group_by_as_cluster_col(loaded: PhenoMeInterface, sp
 
 def test_outliers_forward_their_parameters(loaded: PhenoMeInterface, spy) -> None:
     loaded.pheno.detect_outliers = spy(pd.DataFrame())
-    loaded.set_param('outliers', 'group_by', 'time')
-    loaded.set_param('outliers', 'method', 'iqr')
-    loaded.set_param('outliers', 'threshold', 1.5)
-    loaded.set_param('outliers', 'source', 'combined')
+    loaded.params.outliers.group_by = 'time'
+    loaded.params.outliers.method = 'iqr'
+    loaded.params.outliers.threshold = 1.5
+    loaded.params.outliers.source = 'combined'
 
     loaded.get_outlier_images()
 

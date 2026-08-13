@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..utils.models import MODEL_OPTIONS
+from ..utils.params import PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 
 logger = logging.getLogger("main_logger")
@@ -71,7 +72,7 @@ class ProcessingPanel(QWidget):
         # Checkpoint path selection, used to save both embeddings AND properties
         self._checkpoint_path_dialog = create_widget(
             label='Checkpoint path', annotation=str, widget_type='FileEdit',
-            options={'mode': 'w', 'filter': 'HDF5 Files (*.hdf5)','value':self._phenome.get_path('checkpoint')}
+            options={'mode': 'w', 'filter': 'HDF5 Files (*.hdf5)','value':self._phenome.params.paths.checkpoint}
         )
         self._checkpoint_path_dialog.choose_btn.text = 'Checkpoint path...'
         self._checkpoint_path_dialog.changed.connect(self._on_checkpoint_path_changed)
@@ -101,7 +102,7 @@ class ProcessingPanel(QWidget):
         model_row.addWidget(QLabel("Model to load"))
         self._model_selection_combo = QComboBox()
         self._model_selection_combo.addItems(MODEL_OPTIONS.keys())
-        self._model_selection_combo.setCurrentText(self._phenome.get_param('process', 'model'))
+        self._model_selection_combo.setCurrentText(self._phenome.params.process.model)
         self._model_selection_combo.currentTextChanged.connect(self._on_model_selection_changed)
         model_row.addWidget(self._model_selection_combo)
         embeddings_layout.addLayout(model_row)
@@ -140,8 +141,8 @@ class ProcessingPanel(QWidget):
         props_row = QHBoxLayout()
         props_row.addWidget(QLabel("Properties preset"))
         self._props_selection_combo = QComboBox()
-        self._props_selection_combo.addItems(['Basic', 'Standard', 'Complete', 'Shape', 'Intensity'])
-        self._props_selection_combo.setCurrentText(self._phenome.get_param('properties', 'preset'))
+        self._props_selection_combo.addItems(PRESET_CHOICES)
+        self._props_selection_combo.setCurrentText(self._phenome.params.properties.preset)
         self._props_selection_combo.currentTextChanged.connect(self._on_properties_changed)
 
         props_row.addWidget(self._props_selection_combo)
@@ -169,12 +170,12 @@ class ProcessingPanel(QWidget):
     def _on_device_changed(self) -> None:
         """ Update the device parameter when the selection is changed. """
         device = 'cpu' if self._cpu_radio.isChecked() else 'cuda'
-        self._phenome.set_param('process', 'device', device)
+        self._phenome.params.process.device = device
 
     def _on_model_selection_changed(self) -> None:
         """ Update the model parameter when the selection changes. """
         model_name = self._model_selection_combo.currentText()
-        self._phenome.set_param('process', 'model', model_name)
+        self._phenome.params.process.model = model_name
 
     def _on_load_model_clicked(self) -> None:
         """ Load the model for embedding extraction when the button is clicked. """
@@ -189,7 +190,7 @@ class ProcessingPanel(QWidget):
     def _finish_load_model(self) -> None:
         """ Called when model is finished loading. Re-enables the button and changes text, and displays which model is loaded. """
         self._load_model_button.setText('Load Model')
-        self._current_model_label.setText(self._phenome.get_param('process', 'model'))
+        self._current_model_label.setText(self._phenome.params.process.model)
         self._load_model_button.setEnabled(True)
         self._model_selection_combo.setEnabled(True)
         self._refresh_process_button()
@@ -247,7 +248,7 @@ class ProcessingPanel(QWidget):
 
     def _on_checkpoint_path_changed(self) -> None:
         """ Change the checkpoint path parameter when the value is changed. """
-        self._phenome.set_path('checkpoint', self._checkpoint_path_dialog.value)
+        self._phenome.params.paths.checkpoint = self._checkpoint_path_dialog.value
 
     def _on_advanced_parameters_clicked(self) -> None:
         """ Opens a parameter form for advanced users.
@@ -262,10 +263,10 @@ class ProcessingPanel(QWidget):
         if self._advanced_parameters_dialog is None:
             self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
 
-        self._batch_size_spinbox.setValue(self._phenome.get_param('process', 'batch_size'))
+        self._batch_size_spinbox.setValue(self._phenome.params.process.batch_size)
 
         if self._advanced_parameters_dialog.exec_():
-            self._phenome.set_param('process', 'batch_size', self._batch_size_spinbox.value())
+            self._phenome.params.process.batch_size = self._batch_size_spinbox.value()
 
     def _build_advanced_parameters_dialog(self) -> QDialog:
         """ Build the advanced processing parameters window.
@@ -351,7 +352,7 @@ class ProcessingPanel(QWidget):
     def _on_properties_changed(self) -> None:
         """ Update the properties preset parameter when the selection changes. """
         preset = self._props_selection_combo.currentText()
-        self._phenome.set_param('properties', 'preset', preset)
+        self._phenome.params.properties.preset = preset
 
     def _refresh_props_button(self) -> None:
         """ Enable the properties calculation button only once the images have been processed, and no task is running.

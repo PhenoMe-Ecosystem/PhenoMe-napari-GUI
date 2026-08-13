@@ -109,7 +109,7 @@ def test_the_lock_is_announced(panel: ProcessingPanel, qtbot, running: bool) -> 
 
 def test_the_device_defaults_to_the_cpu(panel: ProcessingPanel) -> None:
     assert panel._cpu_radio.isChecked()
-    assert panel._phenome.get_param('process', 'device') == 'cpu'
+    assert panel._phenome.params.process.device == 'cpu'
 
 
 def test_choosing_cuda_writes_the_torch_name(panel: ProcessingPanel) -> None:
@@ -117,7 +117,7 @@ def test_choosing_cuda_writes_the_torch_name(panel: ProcessingPanel) -> None:
     panel._cuda_radio.setEnabled(True)  # off without a GPU, so force it to drive the toggle
     panel._cuda_radio.setChecked(True)
 
-    assert panel._phenome.get_param('process', 'device') == 'cuda'
+    assert panel._phenome.params.process.device == 'cuda'
 
 
 def test_going_back_to_the_cpu(panel: ProcessingPanel) -> None:
@@ -125,7 +125,7 @@ def test_going_back_to_the_cpu(panel: ProcessingPanel) -> None:
     panel._cuda_radio.setChecked(True)
     panel._cpu_radio.setChecked(True)
 
-    assert panel._phenome.get_param('process', 'device') == 'cpu'
+    assert panel._phenome.params.process.device == 'cpu'
 
 
 def test_the_cuda_choice_follows_the_hardware(panel: ProcessingPanel) -> None:
@@ -135,19 +135,19 @@ def test_the_cuda_choice_follows_the_hardware(panel: ProcessingPanel) -> None:
 def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel) -> None:
     panel._model_selection_combo.setCurrentText('Large (ViT-L/14)')
 
-    assert panel._phenome.get_param('process', 'model') == 'Large (ViT-L/14)'
+    assert panel._phenome.params.process.model == 'Large (ViT-L/14)'
 
 
 def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
     panel._props_selection_combo.setCurrentText('Complete')
 
-    assert panel._phenome.get_param('properties', 'preset') == 'Complete'
+    assert panel._phenome.params.properties.preset == 'Complete'
 
 
 def test_the_checkpoint_path_writes_the_parameter(panel: ProcessingPanel, tmp_path) -> None:
     panel._checkpoint_path_dialog.value = tmp_path / 'run.hdf5'
 
-    assert panel._phenome.get_path('checkpoint') == tmp_path / 'run.hdf5'
+    assert panel._phenome.params.paths.checkpoint == tmp_path / 'run.hdf5'
 
 
 # ----------------------------------------------------------------------------
@@ -174,15 +174,15 @@ def drive_advanced_form(panel: ProcessingPanel, batch_size: int, accepted: bool)
 def test_the_advanced_form_applies_the_batch_size(panel: ProcessingPanel) -> None:
     drive_advanced_form(panel, 128, accepted=True)
 
-    assert panel._phenome.get_param('process', 'batch_size') == 128
+    assert panel._phenome.params.process.batch_size == 128
 
 
 def test_the_advanced_form_discards_a_cancelled_edit(panel: ProcessingPanel) -> None:
-    before = panel._phenome.get_param('process', 'batch_size')
+    before = panel._phenome.params.process.batch_size
 
     drive_advanced_form(panel, 256, accepted=False)
 
-    assert panel._phenome.get_param('process', 'batch_size') == before
+    assert panel._phenome.params.process.batch_size == before
 
 
 # ----------------------------------------------------------------------------

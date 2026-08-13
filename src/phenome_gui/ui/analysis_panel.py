@@ -157,18 +157,15 @@ class AnalysisPanel(QWidget):
         edit is never kept nor shown again. The parameters are only written back when the form is confirmed.
         """
         self._clustering_params_dialog = ClusterParamsWindow(
-            self, self._phenome.params['clustering'], self._phenome.has_properties
+            self, self._phenome.params.clustering, self._phenome.has_properties
         )
 
         if self._clustering_params_dialog.exec_():
-            for key, value in self._clustering_params_dialog.get_params().items():
-                self._phenome.set_param('clustering', key, value)
+            self._phenome.params.clustering = self._clustering_params_dialog.get_params()
 
     def _on_run_clustering_clicked(self) -> None:
         """ Begin the clustering task."""
-        # Stringified rather than passed as a dict: logging reads a lone mapping argument as the values
-        # to interpolate by name, which some handlers then choke on.
-        logger.info("Compute Clustering clicked, with parameters %s", str(self._phenome.params['clustering']))
+        logger.info("Compute Clustering clicked, with parameters %s", self._phenome.params.clustering)
         worker = self._compute_clustering_worker()
         worker.returned.connect(self._on_finish_clustering)
         worker.start()
@@ -193,16 +190,15 @@ class AnalysisPanel(QWidget):
         edit is never kept nor shown again. Cancelling it runs no search and changes no parameter.
         """
         self._prototypes_params_dialog = PrototypesParamsWindow(
-            self, self._phenome.params['prototypes'], self._phenome.get_metadata_columns(), self._phenome.has_properties
+            self, self._phenome.params.prototypes, self._phenome.get_metadata_columns(), self._phenome.has_properties
         )
 
         if not self._prototypes_params_dialog.exec_():
             return
 
-        for key, value in self._prototypes_params_dialog.get_params().items():
-            self._phenome.set_param('prototypes', key, value)
+        self._phenome.params.prototypes = self._prototypes_params_dialog.get_params()
 
-        logger.info("View Prototype Images confirmed, with parameters %s", str(self._phenome.params['prototypes']))
+        logger.info("View Prototype Images confirmed, with parameters %s", self._phenome.params.prototypes)
         worker = self._prototypes_worker()
         worker.returned.connect(self._on_finish_prototypes)
         worker.start()
@@ -216,7 +212,7 @@ class AnalysisPanel(QWidget):
         """ Called when the prototype search is done. Shows the prototypes in the images table. """
         prototypes_df = self._phenome.prototypes_df
         logger.info("Found %d prototype images.", 0 if prototypes_df is None else len(prototypes_df))
-        self._update_images_table(prototypes_df, self._phenome.get_param('prototypes', 'group_by'))
+        self._update_images_table(prototypes_df, self._phenome.params.prototypes.group_by)
 
     def _on_outlier_clicked(self) -> None:
         """ Open the outlier parameter form, and begin the detection once it is confirmed.
@@ -225,16 +221,15 @@ class AnalysisPanel(QWidget):
         edit is never kept nor shown again. Cancelling it runs no detection and changes no parameter.
         """
         self._outliers_params_dialog = OutliersParamsWindow(
-            self, self._phenome.params['outliers'], self._phenome.get_metadata_columns(), self._phenome.has_properties
+            self, self._phenome.params.outliers, self._phenome.get_metadata_columns(), self._phenome.has_properties
         )
 
         if not self._outliers_params_dialog.exec_():
             return
 
-        for key, value in self._outliers_params_dialog.get_params().items():
-            self._phenome.set_param('outliers', key, value)
+        self._phenome.params.outliers = self._outliers_params_dialog.get_params()
 
-        logger.info("View Outlier Images confirmed, with parameters %s", str(self._phenome.params['outliers']))
+        logger.info("View Outlier Images confirmed, with parameters %s", self._phenome.params.outliers)
         worker = self._outliers_worker()
         worker.returned.connect(self._on_finish_outliers)
         worker.start()
@@ -248,9 +243,9 @@ class AnalysisPanel(QWidget):
         """ Called when the outlier detection is done. Shows the outliers in the images table. """
         outliers_df = self._phenome.outliers_df
         logger.info("Found %d outlier images.", 0 if outliers_df is None else len(outliers_df))
-        self._update_images_table(outliers_df, self._phenome.get_param('outliers', 'group_by'))
+        self._update_images_table(outliers_df, self._phenome.params.outliers.group_by)
 
-    def _update_images_table(self, images_df: pd.DataFrame | None, group_by: str) -> None:
+    def _update_images_table(self, images_df: pd.DataFrame | None, group_by: str | None) -> None:
         """ Show the images retrieved by the prototype or outlier step, one image per row.
 
         The frame is kept whole for the selection handler, while the table only shows the columns worth
@@ -260,7 +255,8 @@ class AnalysisPanel(QWidget):
         Args:
             images_df (pd.DataFrame): The retrieved images. None or empty clears the table, which is a
                 normal outcome for the outlier step when nothing is past the threshold.
-            group_by (str): The grouping key the step was given, used to find the group column.
+            group_by (str | None): The grouping key the step was given, used to find the group
+                column. None when the step ran without one.
         """
         self._images_df = images_df
 
