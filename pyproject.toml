@@ -32,6 +32,7 @@ dependencies = [
     "qtpy",
     "scikit-image",
     "phenome",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
@@ -92,6 +93,9 @@ xfail_strict = true
 # filterwarnings = ["error"]  # recommended by PP309; deprecation warnings cause failures so leaving for the user to enable if desired
 log_cli_level = "INFO"
 testpaths = ["tests"]
+markers = [
+    "integration: builds a real napari viewer, so it needs a display",
+]
 
 [tool.ruff]
 line-length = 79

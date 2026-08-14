@@ -1,43 +1,17 @@
-from copy import deepcopy
 from logging import getLogger
-from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from phenome import PhenoMe
 from phenome.utils import ProgressCallback
 from torch import cuda
 
+from .analysis import PhenoMeAnalysis
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .models import MODEL_OPTIONS
+from .params import Params
 
 logger = getLogger(__name__)
-
-# This dictionary will be used to initialize the parameters for every function.
-DEFAULT_PARAMS = {
-    'paths':{
-        'images':Path("~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_images"),
-        'masks':Path("~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_masks"),
-        'metadata':Path("~/datasets/toy_dataset/Ecoli_toy_example/metadata.csv"),
-        'template':".../(drug_name)/(time)/(filename).*",
-        'checkpoint':Path("./checkpoint.hdf5")
-    },
-    'process':{
-        'model':'Small (ViT-S/14)',
-        'device':'cpu',
-        'batch_size':32
-    },
-    'properties':{
-        'preset':'Basic'
-    },
-    'clustering':{
-        'clustering_method':'kmeans',
-        'n_clusters':5,
-        'dbscan_eps':0.5,
-        'dbscan_min_samples':50
-    }
-}
 
 
 class PhenoMeInterface:
@@ -56,65 +30,18 @@ class PhenoMeInterface:
             seed (int): Random seed passed to the PhenoMe pipeline, for reproducibility.
         """
         self.pheno = PhenoMe(seed=seed)
-        self.params = deepcopy(DEFAULT_PARAMS)
+        self.params = Params()
         self.metadata_df = None
         self.properties_df = None
+        self.clustering_df = None
+        self.prototypes_df = None
+        self.outliers_df = None
         self.model = None
         self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
         self.image_processing = ImageProcessing(self.pheno)
-    # ------------------------------------------------------------------
-    # Parameters
-    # ------------------------------------------------------------------
-
-    def get_param(self, section: str, key: str) -> Any:
-        """ Return the value of a parameter.
-
-        Args:
-            section (str): Name of the parameter section, e.g. 'paths' or 'clustering'.
-            key (str): Name of the parameter inside that section.
-        Returns:
-            The current value of the parameter.
-        """
-        try:
-            return self.params[section][key]
-        except KeyError:
-            logger.error("Parameter '%s' not found in section '%s'", key, section)
-            return ""
-
-    def set_param(self, section: str, key: str, value: Any) -> None:
-        """ Update a parameter in place.
-
-        Args:
-            section (str): Name of the parameter section, e.g. 'paths' or 'clustering'.
-            key (str): Name of the parameter inside that section.
-            value: New value of the parameter.
-        """
-        self.params[section][key] = value
-
-    def get_path(self, key: str) -> str | Path:
-        """ Return a path parameter.
-
-        Args:
-            key (str): Name of the path parameter, e.g. 'images' or 'metadata'.
-        Returns:
-            The current value of the path parameter.
-        """
-        try:
-            return self.get_param('paths', key)
-        except KeyError:
-            logger.error("Path parameter '%s' not found", key)
-            return ""
-
-    def set_path(self, key: str, value: str | Path) -> None:
-        """ Update a path parameter, coercing it to a string.
-
-        Args:
-            key (str): Name of the path parameter, e.g. 'images' or 'metadata'.
-            value: New path, coerced to a string before being stored.
-        """
-        self.set_param('paths', key, Path(value))
+        self.phenome_analysis = PhenoMeAnalysis(self.pheno)
 
     # ------------------------------------------------------------------
     # Data loading
@@ -126,9 +53,9 @@ class PhenoMeInterface:
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
-        images_folder = str(self.get_path('images'))
-        masks_folder = str(self.get_path('masks'))
-        metadata_csv = str(self.get_path('metadata'))
+        images_folder = str(self.params.paths.images)
+        masks_folder = str(self.params.paths.masks)
+        metadata_csv = str(self.params.paths.metadata)
         self.metadata_df = self.data_loading.load_data_csv(images_folder, metadata_csv, masks_folder)
         return self.metadata_df
 
@@ -138,9 +65,9 @@ class PhenoMeInterface:
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
-        images_folder = str(self.get_path('images'))
-        masks_folder = str(self.get_path('masks'))
-        template = self.get_path('template')
+        images_folder = str(self.params.paths.images)
+        masks_folder = str(self.params.paths.masks)
+        template = self.params.paths.template
         self.metadata_df = self.data_loading.load_data_path(images_folder, template, masks_folder)
         return self.metadata_df
 
@@ -150,18 +77,18 @@ class PhenoMeInterface:
 
     def load_model(self) -> None:
         """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline. """
-        model_name = self.get_param('process', 'model')
+        model_name = self.params.process.model
 
         real_model_name = MODEL_OPTIONS.get(model_name)
         if real_model_name:
-            self.model = self.image_processing.load_model(real_model_name, device=self.get_param('process', 'device'))
+            self.model = self.image_processing.load_model(real_model_name, device=self.params.process.device)
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
     def process_images(self, progress_callback: ProgressCallback | None=None) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
-        Uses the params dict to feed arguments.
+        Uses the params to feed arguments.
 
         TODO: Include the remaining advanced parameters from the form.
 
@@ -169,11 +96,11 @@ class PhenoMeInterface:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
             calling thread, so a caller running this in a worker thread must not touch widgets in it.
         """
-        checkpoint_path = self.get_path('checkpoint')
+        checkpoint_path = self.params.paths.checkpoint
 
         self.image_processing.process_images(
             self.model, checkpoint_path, progress_callback=progress_callback,
-            batch_size=self.get_param('process', 'batch_size')
+            batch_size=self.params.process.batch_size
         )
 
     @property
@@ -191,7 +118,7 @@ class PhenoMeInterface:
     def compute_properties(self, progress_callback: ProgressCallback | None=None) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Stores them in self.properties_df.
 
-        Uses the params dict to feed arguments.
+        Uses the params to feed arguments.
 
         TODO: Computing a different preset over an existing checkpoint may need force_update=True, otherwise
         PhenoMe warns about the property keys missing from the checkpoint.
@@ -202,10 +129,10 @@ class PhenoMeInterface:
         Returns:
             pd.DataFrame: One row per image, holding the image path and the computed properties.
         """
-        checkpoint_path = self.get_path('checkpoint')
+        checkpoint_path = self.params.paths.checkpoint
 
         # PhenoMe only knows its presets by their lower case name, while the GUI displays them capitalized
-        preset = self.get_param('properties', 'preset').lower()
+        preset = self.params.properties.preset.lower()
 
         self.properties_df = self.image_processing.compute_properties(
             preset, checkpoint_path, progress_callback=progress_callback
@@ -213,8 +140,114 @@ class PhenoMeInterface:
         return self.properties_df
 
     # ------------------------------------------------------------------
+    # Analysis
+    # ------------------------------------------------------------------
+
+    def compute_clustering(self) -> pd.DataFrame:
+        """ Cluster the images using PhenoMe.compute_clustering(). Stores the labels in self.clustering_df.
+
+        Uses the params to feed arguments. The fields of the 'clustering' section are named after the
+        PhenoMe arguments they stand for, so they are passed straight through. PhenoMe ignores the ones
+        that do not apply to the chosen method, and falls back on the pipeline seed for the random state.
+
+        The labels are also added to the metadata dataframe as a 'cluster' column, which puts them in the
+        metadata table and makes them available as a grouping key like any other metadata column.
+
+        Returns:
+            pd.DataFrame: One row per image, holding the image path and its cluster label.
+        """
+        clustering = self.params.clustering
+
+        self.clustering_df = self.phenome_analysis.compute_clustering(
+            n_clusters=clustering.n_clusters,
+            clustering_method=clustering.clustering_method,
+            source=clustering.source,
+            dbscan_eps=clustering.dbscan_eps,
+            dbscan_min_samples=clustering.dbscan_min_samples
+        )
+        self._append_clusters_to_metadata()
+        return self.clustering_df
+
+    def _append_clusters_to_metadata(self) -> None:
+        """ Add the cluster labels of the last clustering run to the metadata dataframe.
+
+        Matched on the image path rather than on the row order, as PhenoMe skips the images it fails to
+        load and the labels would otherwise be shifted onto the wrong rows. Images PhenoMe never saw are
+        left empty. Re-running the clustering overwrites the column, and loading data again drops it, as
+        the dataframe is then rebuilt from scratch.
+        """
+        if self.metadata_df is None or self.metadata_df.empty:
+            return
+        if self.clustering_df is None or self.clustering_df.empty:
+            return
+
+        labels = dict(zip(self.clustering_df['image_path'], self.clustering_df['cluster'], strict=True))
+
+        # PhenoMe leaves the label empty for the DBSCAN noise points, which would turn the whole column
+        # to floats and show the labels as '0.0'. The nullable integer type keeps them whole.
+        self.metadata_df['cluster'] = self.metadata_df['file_path'].map(labels).astype('Int64')
+
+    def get_prototype_images(self) -> pd.DataFrame:
+        """ Find the prototype images of each group using PhenoMe.find_prototypes(). Stores them in self.prototypes_df.
+
+        Uses the params to feed arguments. The images are grouped by the metadata column selected in the
+        parameter form, which is None until data has been loaded and a column picked. PhenoMe reads no
+        grouping key as a request to treat every image as one group.
+
+        The GUI calls the grouping key 'group_by' for both this step and the outlier one, while PhenoMe
+        names it 'cluster_col' here and 'group_by' there, so the name is translated on the way down.
+
+        Returns:
+            pd.DataFrame: One row per prototype, holding the grouping key, the image path and its rank in the group.
+        """
+        prototypes = self.params.prototypes
+
+        self.prototypes_df = self.phenome_analysis.get_prototype_images(
+            cluster_col=prototypes.group_by,
+            n_prototypes=prototypes.n_prototypes,
+            source=prototypes.source
+        )
+        return self.prototypes_df
+
+    def get_outlier_images(self) -> pd.DataFrame:
+        """ Detect the outlier images of each group using PhenoMe.detect_outliers(). Stores them in self.outliers_df.
+
+        Groups the images by its own metadata column, the same way the prototype step does. PhenoMe
+        returns every image past the distance threshold, so there is no count to set here: how many
+        outliers come back is decided by the method and the threshold together.
+
+        Returns:
+            pd.DataFrame: One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
+        """
+        outliers = self.params.outliers
+
+        self.outliers_df = self.phenome_analysis.get_outlier_images(
+            group_by=outliers.group_by,
+            method=outliers.method,
+            threshold=outliers.threshold,
+            source=outliers.source
+        )
+        return self.outliers_df
+
+    # ------------------------------------------------------------------
     # Metadata access
     # ------------------------------------------------------------------
+
+    def get_metadata_columns(self) -> list[str]:
+        """ Return the metadata columns that can be used to group the images.
+
+        Leaves out the file_path and mask_path columns PhenoMe.find_files() adds itself, as they hold one
+        distinct value per row and are of no use as grouping keys. Every remaining column comes from the
+        metadata source chosen in the loading tab.
+
+        Returns:
+            list[str]: The groupable column names, empty when no data has been loaded yet.
+        """
+        if self.metadata_df is None or self.metadata_df.empty:
+            return []
+
+        reserved = {'file_path', 'mask_path'}
+        return [column for column in self.metadata_df.columns if column not in reserved]
 
     def get_row_display_data(self, row: int) -> tuple[list[str], list[str] | None, list[dict]]:
         """ Return the content of a metadata row, in the form expected by the image viewer.
@@ -233,3 +266,49 @@ class PhenoMeInterface:
             mask_paths = None
 
         return image_paths, mask_paths, [row_data.to_dict()]
+
+    def get_image_display_data(self, image_path: str) -> tuple[list[str], list[str] | None, list[dict]]:
+        """ Return the content of a metadata row found by image path, in the form expected by the image viewer.
+
+        The analysis steps return the path of the images they retrieved but no mask, so the mask and the
+        rest of the metadata are looked up here. Matched on the path rather than on the row position, as
+        the returned images are indexed against the PhenoMe results rather than against the metadata.
+
+        Args:
+            image_path (str): Path of the image, as returned by the prototype or outlier step.
+        Returns:
+            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+        """
+        if self.metadata_df is None or self.metadata_df.empty:
+            return [image_path], None, [{}]
+
+        matches = self.metadata_df[self.metadata_df['file_path'] == image_path]
+        if matches.empty:
+            # PhenoMe returns whatever its results hold, which can outlive a reload of the metadata
+            logger.warning("Image '%s' not found in the loaded metadata", image_path)
+            return [image_path], None, [{}]
+
+        row_data = matches.iloc[0]
+        mask_paths = [row_data['mask_path']] if 'mask_path' in row_data else None
+
+        return [image_path], mask_paths, [row_data.to_dict()]
+
+    def get_metadata_table(self) -> "pd.Dataframe":
+        """ Get the metadata dataframe in its current state.
+
+        Returns:
+            pd.Dataframe: The metadata dataframe
+        """
+
+        return self.metadata_df
+
+    @property
+    def has_properties(self) -> bool:
+        """ Whether the properties have been computed, which the property-based analysis sources need.
+
+        Returns:
+            bool: True if properties have been calculated
+        """
+        properties_available = self.properties_df is not None
+        logger.info('Properties are available: %s', properties_available)
+        return properties_available
