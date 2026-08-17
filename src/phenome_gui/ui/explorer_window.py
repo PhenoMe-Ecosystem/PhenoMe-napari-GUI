@@ -24,6 +24,7 @@ from ..utils.params import (
     SOURCE_CHOICES,
 )
 from ..utils.phenome_interface import PhenoMeInterface
+from .filter_exclude_window import ExcludeWindow, FilterWindow
 from .plotting import ExplorerPlot
 
 logger = logging.getLogger("main_logger")
@@ -63,6 +64,9 @@ class InteractiveExplorerWindow(QDialog):
 
         self._phenome = phenome
         self._image_viewer = image_viewer
+
+        self._filter_dialog = None
+        self._exclude_dialog = None
 
         self._build_ui()
 
@@ -117,6 +121,17 @@ class InteractiveExplorerWindow(QDialog):
         self._source_combo.currentTextChanged.connect(self._on_source_changed)
         source_row.addWidget(self._source_combo)
         embedding_layout.addLayout(source_row)
+
+        # Buttons for filters and exclusions, each opening a form rebuilt on every use
+        filter_row = QHBoxLayout()
+        self._filter_button = QPushButton("Filter...")
+        self._exclude_button = QPushButton("Exclude...")
+        self._filter_button.clicked.connect(self._on_filter_clicked)
+        self._exclude_button.clicked.connect(self._on_exclude_clicked)
+        filter_row.addWidget(self._filter_button)
+        filter_row.addWidget(self._exclude_button)
+        embedding_layout.addLayout(filter_row)
+        embedding_layout.addLayout(filter_row)
 
         # Projection button, which is what recomputes the plot rather than any of the combo boxes
         self._compute_button = QPushButton("Compute")
@@ -214,6 +229,49 @@ class InteractiveExplorerWindow(QDialog):
         Changing it does not redraw the plot, the projection being computed by the Compute button.
         """
         self._phenome.params.explorer.source = self._source_combo.currentText()
+
+    def _on_filter_clicked(self) -> None:
+        """ Opens a window to set metadata filters for the projections.
+        """
+
+    def _on_filter_clicked(self) -> None:
+        """ Open the form choosing which images the projection is computed from.
+
+        The form is rebuilt on every use, as the values it lists are read when it is constructed, so
+        it always offers what the metadata currently holds. What was picked is kept however the form
+        is closed: it has no Cancel button to mean the other thing.
+
+        Picking nothing puts the parameter back to None rather than to an empty filter, which is the
+        same to PhenoMe but reads as what it is. The filter is applied when the projection is next
+        computed, the plot on screen having been computed from whatever was set before.
+        """
+        self._filter_dialog = FilterWindow(
+            self,
+            self._phenome.get_metadata_columns(),
+            self._phenome.metadata_df,
+            self._phenome.params.explorer.filter
+        )
+        self._filter_dialog.exec_()
+        self._phenome.params.explorer.filter = self._filter_dialog.get_criteria() or None
+
+        logger.info("Filtering the projection on %s.", self._phenome.params.explorer.filter or 'nothing')
+
+    def _on_exclude_clicked(self) -> None:
+        """ Open the form choosing which images the projection leaves out.
+
+        The twin of the filter form in every way but the answer it takes: the same values are picked,
+        and the projection then drops the images holding them rather than keeping them.
+        """
+        self._exclude_dialog = ExcludeWindow(
+            self,
+            self._phenome.get_metadata_columns(),
+            self._phenome.metadata_df,
+            self._phenome.params.explorer.exclude
+        )
+        self._exclude_dialog.exec_()
+        self._phenome.params.explorer.exclude = self._exclude_dialog.get_criteria() or None
+
+        logger.info("Excluding %s from the projection.", self._phenome.params.explorer.exclude or 'nothing')
 
     def _on_compute_clicked(self) -> None:
         """ Begin the projection task.

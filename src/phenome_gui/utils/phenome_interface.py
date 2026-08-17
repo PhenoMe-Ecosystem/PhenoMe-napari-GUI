@@ -254,7 +254,9 @@ class PhenoMeInterface:
 
         Uses the params to feed arguments. Both the algorithm and the number of dimensions are named
         for the GUI rather than for PhenoMe - the papers' spelling for the one, a kind of canvas for
-        the other - so both are translated on the way down.
+        the other - so both are translated on the way down. The filter and the exclusion go down as
+        they are, PhenoMe naming the first in the plural and reading an unset one and an empty one
+        the same way.
 
         Returns:
             pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None
@@ -265,7 +267,9 @@ class PhenoMeInterface:
         self.projection_df = self.phenome_analysis.run_dimensionality_reduction(
             method=DR_METHODS[explorer.method],
             n_components=DIMS_COMPONENTS[explorer.dims],
-            source=explorer.source
+            source=explorer.source,
+            filters=explorer.filter,
+            exclude=explorer.exclude
         )
         return self.projection_df
 

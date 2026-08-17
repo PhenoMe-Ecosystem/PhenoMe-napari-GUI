@@ -10,7 +10,7 @@ dropdown.
 """
 
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -121,12 +121,23 @@ class ExplorerParams(ParamsBase):
 
     `color_by` is None until a metadata column has been picked, the same way the analysis steps treat
     their grouping key.
+
+    `filter` names the metadata values an image must have for the projection to be computed from it,
+    one list per field, and is None until a filter has been picked - which PhenoMe reads the same way
+    as an empty one, every image being kept. Its values are typed as the metadata holds them rather
+    than as text: PhenoMe matches them by equality, where the cluster labels it writes are numbers.
+
+    `exclude` is the same mapping read the other way round, naming what drops an image, and applied
+    after the filter. The two combine their fields differently: an image is kept for answering every
+    filtered field, and dropped for answering any excluded one.
     """
 
     method: EmbeddingMethod = 't-SNE'
     dims: Dims = '2D'
     source: Source = 'embeddings'
     color_by: str | None = None
+    filter: dict[str, list[Any]] | None = None
+    exclude: dict[str, list[Any]] | None = None
 
 
 class Params(ParamsBase):

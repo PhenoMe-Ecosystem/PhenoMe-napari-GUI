@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from qtpy.QtCore import Qt
 
 from phenome_gui._widget import PhenoMeWidget
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
+from phenome_gui.ui.filter_exclude_window import ExcludeWindow, FilterWindow
 from phenome_gui.utils.params import (
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
@@ -300,7 +302,27 @@ def test_computing_projects_with_the_chosen_method_and_dims(
 
     loaded_explorer._compute_button.click()
 
-    assert stand_in.last == {'method': 'umap', 'n_components': 3, 'source': 'embeddings'}
+    assert stand_in.last == {
+        'method': 'umap',
+        'n_components': 3,
+        'source': 'embeddings',
+        'filters': None,
+        'exclude': None,
+    }
+
+
+def test_computing_keeps_the_projection_to_the_chosen_images(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """Set in the forms, applied by the next run: the plot on screen was computed before them."""
+    stand_in = computing()
+    explorer_params(loaded_explorer).filter = {'drug_name': ['ctrl']}
+    explorer_params(loaded_explorer).exclude = {'time': [24]}
+
+    loaded_explorer._compute_button.click()
+
+    assert stand_in.last['filters'] == {'drug_name': ['ctrl']}
+    assert stand_in.last['exclude'] == {'time': [24]}
 
 
 def test_computing_keeps_the_coordinates(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
@@ -419,6 +441,133 @@ def test_colouring_by_a_property_draws_a_ramp(loaded_explorer: InteractiveExplor
     assert drawn(loaded_explorer) == {None: 3}
     assert loaded_explorer._canvas._colorbar is not None
     assert loaded_explorer._canvas._legend.items == []
+
+
+# ----------------------------------------------------------------------------
+# Choosing what the projection is computed from
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def criteria_form(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook driving one of the two picking forms without showing it.
+
+    Patches its exec_ so it chooses a field, picks the given values on it and then closes, which is
+    what a user would leave behind.
+
+    Returns:
+        Callable[..., list]: Called as criteria_form(FilterWindow, 'drug_name', 'ctrl'), returning
+            the forms opened so far.
+    """
+    opened = []
+
+    def _drive(window_class: type, field: str | None = None, *picks: str) -> list:
+        def _exec(dialog) -> int:
+            opened.append(dialog)
+            if field:
+                dialog._field_combo.setCurrentText(field)
+            for text in picks:
+                for item in dialog._values_list.findItems(text, Qt.MatchFlag.MatchExactly):
+                    item.setSelected(True)
+            if picks:
+                dialog._add_button.click()
+            return 0
+
+        monkeypatch.setattr(window_class, 'exec_', _exec)
+        return opened
+
+    return _drive
+
+
+# The two buttons, each with the form it opens and the parameter it writes into
+CRITERIA_BUTTONS = [
+    pytest.param('_filter_button', FilterWindow, 'filter', id='filter'),
+    pytest.param('_exclude_button', ExcludeWindow, 'exclude', id='exclude'),
+]
+
+
+@pytest.mark.parametrize(('button', 'form', 'field'), CRITERIA_BUTTONS)
+class TestCriteriaForms:
+    """Both buttons open the same form under a different name and write a parameter of their own."""
+
+    def test_the_button_opens_the_form(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        opened = criteria_form(form)
+
+        getattr(loaded_explorer, button).click()
+
+        assert len(opened) == 1
+        assert isinstance(opened[0], form)
+
+    def test_the_form_offers_the_metadata_fields_and_their_values(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        """Metadata only: a value list is no way to pick on a measured property."""
+        opened = criteria_form(form, 'drug_name')
+
+        getattr(loaded_explorer, button).click()
+
+        fields = [opened[0]._field_combo.itemText(i) for i in range(opened[0]._field_combo.count())]
+        assert fields == loaded_explorer._phenome.get_metadata_columns()
+        assert 'ctrl' in [opened[0]._values_list.item(i).text() for i in range(opened[0]._values_list.count())]
+
+    def test_what_the_form_picked_lands_in_the_parameters(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        """The form has no Cancel, so closing it is not a way of taking the picks back."""
+        criteria_form(form, 'drug_name', 'ctrl')
+
+        getattr(loaded_explorer, button).click()
+
+        assert getattr(explorer_params(loaded_explorer), field) == {'drug_name': ['ctrl']}
+
+    def test_picking_nothing_leaves_the_parameter_unset(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        """None and an empty criterion are the same to PhenoMe, and None reads as what it is."""
+        criteria_form(form, 'drug_name')
+
+        getattr(loaded_explorer, button).click()
+
+        assert getattr(explorer_params(loaded_explorer), field) is None
+
+    def test_the_form_opens_again_on_what_was_picked_before(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        criteria_form(form, 'drug_name', 'ctrl')
+        getattr(loaded_explorer, button).click()
+
+        opened = criteria_form(form, 'drug_name')
+        getattr(loaded_explorer, button).click()
+
+        picked = opened[-1]._picked_list
+        assert [picked.item(i).text() for i in range(picked.count())] == ['ctrl']
+
+    def test_the_form_is_rebuilt_on_every_use(
+        self, loaded_explorer: InteractiveExplorerWindow, criteria_form, button, form, field
+    ) -> None:
+        """Its values are read when it is built, so a reload has to reach it."""
+        opened = criteria_form(form)
+
+        getattr(loaded_explorer, button).click()
+        getattr(loaded_explorer, button).click()
+
+        assert opened[0] is not opened[1]
+
+
+def test_the_two_forms_write_their_own_parameter(
+    loaded_explorer: InteractiveExplorerWindow, criteria_form
+) -> None:
+    """Filtering and excluding are set apart and applied together, not one instead of the other."""
+    criteria_form(FilterWindow, 'drug_name', 'ctrl')
+    loaded_explorer._filter_button.click()
+
+    criteria_form(ExcludeWindow, 'time', '24')
+    loaded_explorer._exclude_button.click()
+
+    assert explorer_params(loaded_explorer).filter == {'drug_name': ['ctrl']}
+    assert explorer_params(loaded_explorer).exclude == {'time': [24]}
 
 
 # ----------------------------------------------------------------------------

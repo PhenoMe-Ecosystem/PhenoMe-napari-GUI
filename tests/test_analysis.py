@@ -78,10 +78,32 @@ def test_run_dimensionality_reduction_passes_the_pipeline_and_the_arguments(
     """PhenoMe's reduction is a free function, so the pipeline is an argument rather than the receiver."""
     stand_in = reduction(pd.DataFrame({'Component 1': [0.0], 'Component 2': [1.0]}))
 
-    analysis.run_dimensionality_reduction(method='umap', n_components=3, source='properties')
+    analysis.run_dimensionality_reduction(
+        method='umap',
+        n_components=3,
+        source='properties',
+        filters={'drug_name': ['ctrl']},
+        exclude={'cluster': [0]},
+    )
 
     assert stand_in.pipelines[-1] is pipeline
-    assert stand_in.last == {'method': 'umap', 'n_components': 3, 'source': 'properties'}
+    assert stand_in.last == {
+        'method': 'umap',
+        'n_components': 3,
+        'source': 'properties',
+        'filters': {'drug_name': ['ctrl']},
+        'exclude': {'cluster': [0]},
+    }
+
+
+def test_projecting_everything_is_the_default(analysis: PhenoMeAnalysis, reduction) -> None:
+    """Unset criteria and empty ones are the same to PhenoMe: every image is projected."""
+    stand_in = reduction(pd.DataFrame({'Component 1': [0.0], 'Component 2': [1.0]}))
+
+    analysis.run_dimensionality_reduction(method='pca', n_components=2, source='embeddings')
+
+    assert stand_in.last['filters'] is None
+    assert stand_in.last['exclude'] is None
 
 
 def test_run_dimensionality_reduction_returns_the_coordinates_alone(

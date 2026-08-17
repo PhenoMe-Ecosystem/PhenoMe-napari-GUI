@@ -89,7 +89,14 @@ class PhenoMeAnalysis:
         )
 
 
-    def run_dimensionality_reduction(self, method: str, n_components: int, source: str) -> "pd.DataFrame | None":
+    def run_dimensionality_reduction(
+        self,
+        method: str,
+        n_components: int,
+        source: str,
+        filters: dict[str, list] | None = None,
+        exclude: dict[str, list] | None = None
+    ) -> "pd.DataFrame | None":
         """ Project the images down to a few dimensions using PhenoMe's run_dimensionality_reduction.
 
         PhenoMe falls back on the pipeline seed, so the same images projected twice land in the same
@@ -100,6 +107,12 @@ class PhenoMeAnalysis:
             method: Algorithm to project with, under the name PhenoMe knows it by: 'pca', 'tsne' or 'umap'.
             n_components: Number of dimensions to project down to.
             source: Feature space to project: 'embeddings', 'properties' or 'combined'.
+            filters: Metadata values an image must have to be projected, one list per field. None or
+                empty projects every image. The values are matched by equality, so they have to be
+                typed the way the metadata holds them.
+            exclude: Metadata values that leave an image out, in the same shape as the filters and
+                applied after them. PhenoMe drops an image answering any one of these fields, where
+                it keeps only the images answering every filtered one.
         Returns:
             pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None when
                 there was nothing to project.
@@ -108,7 +121,9 @@ class PhenoMeAnalysis:
             self.pheno,
             method=method,
             n_components=n_components,
-            source=source
+            source=source,
+            filters=filters,
+            exclude=exclude
         )
 
         if coordinates is None:

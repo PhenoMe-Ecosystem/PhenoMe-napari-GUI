@@ -42,6 +42,19 @@ def test_a_parameter_round_trips(phenome: PhenoMeInterface) -> None:
     assert phenome.params.prototypes.n_prototypes == 7
 
 
+def test_the_criteria_start_unset(phenome: PhenoMeInterface) -> None:
+    """Unset rather than empty, an empty criterion reading as one no image can answer."""
+    assert phenome.params.explorer.filter is None
+    assert phenome.params.explorer.exclude is None
+
+
+def test_the_filter_holds_its_values_as_they_are(phenome: PhenoMeInterface) -> None:
+    """PhenoMe matches them by equality, so a number picked on the cluster has to stay a number."""
+    phenome.params.explorer.filter = {'drug_name': ['ctrl'], 'cluster': [0, 1]}
+
+    assert phenome.params.explorer.filter == {'drug_name': ['ctrl'], 'cluster': [0, 1]}
+
+
 def test_an_unknown_parameter_raises(phenome: PhenoMeInterface) -> None:
     """A mistyped name has to fail loudly rather than land in a slot nobody reads."""
     with pytest.raises(ValueError):
@@ -382,7 +395,35 @@ def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, redu
     loaded.compute_projection()
 
     assert stand_in.pipelines[-1] is loaded.pheno
-    assert stand_in.last == {'method': 'tsne', 'n_components': 3, 'source': 'properties'}
+    assert stand_in.last == {
+        'method': 'tsne',
+        'n_components': 3,
+        'source': 'properties',
+        'filters': None,
+        'exclude': None,
+    }
+
+
+def test_the_projection_is_kept_to_the_filtered_images(loaded: PhenoMeInterface, reduction) -> None:
+    """PhenoMe names it in the plural, and takes the values as the metadata holds them."""
+    stand_in = reduction(coordinates())
+    loaded.params.explorer.filter = {'drug_name': ['ctrl'], 'cluster': [0, 1]}
+
+    loaded.compute_projection()
+
+    assert stand_in.last['filters'] == {'drug_name': ['ctrl'], 'cluster': [0, 1]}
+
+
+def test_the_projection_leaves_the_excluded_images_out(loaded: PhenoMeInterface, reduction) -> None:
+    """The exclusion goes down under its own name, PhenoMe applying it after the filter."""
+    stand_in = reduction(coordinates())
+    loaded.params.explorer.filter = {'drug_name': ['ctrl', 'drugA']}
+    loaded.params.explorer.exclude = {'time': [24]}
+
+    loaded.compute_projection()
+
+    assert stand_in.last['filters'] == {'drug_name': ['ctrl', 'drugA']}
+    assert stand_in.last['exclude'] == {'time': [24]}
 
 
 @pytest.mark.parametrize(
