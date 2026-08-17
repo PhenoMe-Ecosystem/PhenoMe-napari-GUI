@@ -24,7 +24,7 @@ from ..utils.params import (
     SOURCE_CHOICES,
 )
 from ..utils.phenome_interface import PhenoMeInterface
-from .filter_exclude_window import ExcludeWindow, FilterWindow
+from .criteria_window import ExcludeWindow, FilterWindow
 from .plotting import ExplorerPlot
 
 logger = logging.getLogger("main_logger")
@@ -130,7 +130,6 @@ class InteractiveExplorerWindow(QDialog):
         self._exclude_button.clicked.connect(self._on_exclude_clicked)
         filter_row.addWidget(self._filter_button)
         filter_row.addWidget(self._exclude_button)
-        embedding_layout.addLayout(filter_row)
         embedding_layout.addLayout(filter_row)
 
         # Projection button, which is what recomputes the plot rather than any of the combo boxes
@@ -254,7 +253,10 @@ class InteractiveExplorerWindow(QDialog):
         self._filter_dialog.exec_()
         self._phenome.params.explorer.filter = self._filter_dialog.get_criteria() or None
 
-        logger.info("Filtering the projection on %s.", self._phenome.params.explorer.filter or 'nothing')
+        # Stringified rather than passed as a mapping: logging reads a lone mapping argument as the
+        # values to interpolate by name, and raises out of the handler rather than logging anything
+        picked = self._phenome.params.explorer.filter
+        logger.info("Filtering the projection on %s.", str(picked) if picked else 'nothing')
 
     def _on_exclude_clicked(self) -> None:
         """ Open the form choosing which images the projection leaves out.
@@ -271,7 +273,8 @@ class InteractiveExplorerWindow(QDialog):
         self._exclude_dialog.exec_()
         self._phenome.params.explorer.exclude = self._exclude_dialog.get_criteria() or None
 
-        logger.info("Excluding %s from the projection.", self._phenome.params.explorer.exclude or 'nothing')
+        picked = self._phenome.params.explorer.exclude
+        logger.info("Excluding %s from the projection.", str(picked) if picked else 'nothing')
 
     def _on_compute_clicked(self) -> None:
         """ Begin the projection task.

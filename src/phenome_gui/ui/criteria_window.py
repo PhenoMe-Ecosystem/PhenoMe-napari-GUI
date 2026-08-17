@@ -100,6 +100,14 @@ class _CriteriaWindow(QDialog):
         )
         layout.addLayout(lists_row, 1)
 
+        # Kept out of both columns, and off to one side: the two buttons above act on the selection
+        # of the list they sit under, where this one lets go of every field at once.
+        self._clear_button = QPushButton("Clear")
+        clear_row = QHBoxLayout()
+        clear_row.addStretch(1)
+        clear_row.addWidget(self._clear_button)
+        layout.addLayout(clear_row)
+
         # Several values are usually wanted at once, a criterion rarely coming down to a single one
         for values in (self._values_list, self._picked_list):
             values.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -107,6 +115,7 @@ class _CriteriaWindow(QDialog):
         self._field_combo.currentTextChanged.connect(self._on_field_changed)
         self._add_button.clicked.connect(self._on_add_clicked)
         self._remove_button.clicked.connect(self._on_remove_clicked)
+        self._clear_button.clicked.connect(self._on_clear_clicked)
 
         # Filled here rather than next to each list, as it needs both of them to exist
         self._refresh_lists()
@@ -149,7 +158,7 @@ class _CriteriaWindow(QDialog):
             return sorted(distinct, key=str)
 
     def _refresh_lists(self) -> None:
-        """ Fill both lists for the chosen field.
+        """ Fill both lists for the chosen field, and square the Clear button with what is picked.
 
         A value sits in one list or the other, never in both: what has been picked is taken out of
         the values it was picked from, so the left list always reads as what is left to pick.
@@ -168,6 +177,10 @@ class _CriteriaWindow(QDialog):
         self._picked_list.clear()
         for value in picked:
             self._add_value(self._picked_list, value)
+
+        # Closed when there is nothing anywhere to let go of, which is also the only word the form
+        # gives on whether the fields it is not showing hold anything
+        self._clear_button.setEnabled(bool(self.get_criteria()))
 
     def _add_value(self, values: QListWidget, value) -> None:
         """ List one value, keeping it alongside the text it is shown as.
@@ -191,6 +204,20 @@ class _CriteriaWindow(QDialog):
     def _on_remove_clicked(self) -> None:
         """ Let go of the values selected on the right, moving them back into the left list. """
         self._move_selection(self._picked_list, pick=False)
+
+    def _on_clear_clicked(self) -> None:
+        """ Let go of every value picked, on every field.
+
+        The picks of the fields not currently shown go with it, which is the whole point of the
+        button: they are the ones there is otherwise no way to see, let alone take back, without
+        walking the whole combo box.
+        """
+        # Stringified rather than passed as a mapping: logging reads a lone mapping argument as the
+        # values to interpolate by name, and raises out of the handler rather than logging anything
+        logger.info("Cleared %s.", str(self._criteria) if self._criteria else 'nothing')
+
+        self._criteria.clear()
+        self._refresh_lists()
 
     def _move_selection(self, source: QListWidget, pick: bool) -> None:
         """ Move the values selected in a list into the other one.

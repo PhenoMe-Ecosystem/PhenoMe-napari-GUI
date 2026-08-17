@@ -10,7 +10,7 @@ import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel, QWidget
 
-from phenome_gui.ui.filter_exclude_window import ExcludeWindow, FilterWindow
+from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 
 COLUMNS = ['drug_name', 'time', 'cluster']
 

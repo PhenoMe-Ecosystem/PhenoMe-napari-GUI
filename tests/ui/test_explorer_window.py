@@ -13,8 +13,8 @@ import pytest
 from qtpy.QtCore import Qt
 
 from phenome_gui._widget import PhenoMeWidget
+from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
-from phenome_gui.ui.filter_exclude_window import ExcludeWindow, FilterWindow
 from phenome_gui.utils.params import (
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
@@ -554,6 +554,19 @@ class TestCriteriaForms:
         getattr(loaded_explorer, button).click()
 
         assert opened[0] is not opened[1]
+
+
+@pytest.mark.parametrize(('button', 'form', 'field'), CRITERIA_BUTTONS)
+def test_criteria_on_two_fields_are_reported_without_raising(
+    loaded_explorer: InteractiveExplorerWindow, criteria_form, button: str, form: type, field: str
+) -> None:
+    """A mapping handed to the logger on its own is read as values to interpolate, and raises."""
+    setattr(explorer_params(loaded_explorer), field, {'drug_name': ['ctrl'], 'time': [24]})
+    criteria_form(form)
+
+    getattr(loaded_explorer, button).click()
+
+    assert getattr(explorer_params(loaded_explorer), field) == {'drug_name': ['ctrl'], 'time': [24]}
 
 
 def test_the_two_forms_write_their_own_parameter(
