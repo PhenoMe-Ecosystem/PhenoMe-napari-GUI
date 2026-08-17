@@ -3,6 +3,10 @@ from logging import getLogger
 import pandas as pd
 from phenome import PhenoMe
 
+# A free function taking the pipeline as its first argument rather than a PhenoMe method, unlike every
+# other step wrapped here.
+from phenome.core import run_dimensionality_reduction
+
 logger = getLogger(__name__)
 
 class PhenoMeAnalysis:
@@ -83,4 +87,34 @@ class PhenoMeAnalysis:
             source=source,
             plot=False
         )
+
+
+    def run_dimensionality_reduction(self, method: str, n_components: int, source: str) -> "pd.DataFrame | None":
+        """ Project the images down to a few dimensions using PhenoMe's run_dimensionality_reduction.
+
+        PhenoMe falls back on the pipeline seed, so the same images projected twice land in the same
+        place. It also hands back the fitted reducer and which feature space it read, neither of which
+        the plot needs: only the coordinates are returned, the data type being logged instead.
+
+        Args:
+            method: Algorithm to project with, under the name PhenoMe knows it by: 'pca', 'tsne' or 'umap'.
+            n_components: Number of dimensions to project down to.
+            source: Feature space to project: 'embeddings', 'properties' or 'combined'.
+        Returns:
+            pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None when
+                there was nothing to project.
+        """
+        coordinates, data_type, _ = run_dimensionality_reduction(
+            self.pheno,
+            method=method,
+            n_components=n_components,
+            source=source
+        )
+
+        if coordinates is None:
+            logger.warning("Dimensionality reduction returned nothing to plot.")
+        else:
+            logger.info("Projected %d images of the %s.", len(coordinates), data_type.lower())
+
+        return coordinates
 

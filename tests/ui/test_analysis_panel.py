@@ -27,8 +27,13 @@ def fresh(widget) -> AnalysisPanel:
 
 
 def buttons(panel: AnalysisPanel) -> tuple:
-    """ The three buttons that all wait on the embeddings. """
-    return (panel._run_clustering_button, panel._prototype_button, panel._outlier_button)
+    """ The four buttons that all wait on the embeddings. """
+    return (
+        panel._run_clustering_button,
+        panel._prototype_button,
+        panel._outlier_button,
+        panel._explorer_button,
+    )
 
 
 def shown_columns(table) -> list[str]:
@@ -201,6 +206,17 @@ def test_a_confirmed_search_fills_the_table(panel: AnalysisPanel, dialog_result,
 
     assert panel._images_table.native.rowCount() == 3
     assert panel._images_group_column == 'drug_name'
+
+
+# ----------------------------------------------------------------------------
+# The explorer, which the panel only asks for
+# ----------------------------------------------------------------------------
+
+
+def test_the_explorer_button_asks_rather_than_opens(panel: AnalysisPanel, qtbot) -> None:
+    """The window is shown alongside the widget, so the panel announces the request and nothing more."""
+    with qtbot.waitSignal(panel.explorer_requested, timeout=1000):
+        panel._explorer_button.click()
 
 
 # ----------------------------------------------------------------------------

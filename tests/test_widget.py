@@ -7,6 +7,7 @@ import pytest
 
 from phenome_gui._widget import PhenoMeWidget
 from phenome_gui.ui.analysis_panel import AnalysisPanel
+from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
 from phenome_gui.ui.loading_panel import LoadingPanel
 from phenome_gui.ui.processing_panel import ProcessingPanel
 
@@ -93,6 +94,7 @@ def test_a_running_task_locks_the_analysis_panel(widget: PhenoMeWidget, processe
         widget.analysis_panel._run_clustering_button,
         widget.analysis_panel._prototype_button,
         widget.analysis_panel._outlier_button,
+        widget.analysis_panel._explorer_button,
     ):
         assert not button.isEnabled(), button.text()
 
@@ -121,6 +123,51 @@ def test_finishing_the_clustering_refreshes_the_metadata_table(widget: PhenoMeWi
     widget.analysis_panel._on_finish_clustering()
 
     assert 'cluster' in list(widget.loading_panel._metadata_table.value['columns'])
+
+
+# ----------------------------------------------------------------------------
+# The explorer window, owned here rather than by the panel that asks for it
+# ----------------------------------------------------------------------------
+
+
+def test_the_explorer_button_opens_the_window(widget: PhenoMeWidget, processed) -> None:
+    processed(widget._phenome, 6)
+    widget.analysis_panel.set_task_running(False)  # re-runs the refresh now the pipeline has embeddings
+    assert widget._explorer_window is None
+
+    widget.analysis_panel._explorer_button.click()
+
+    assert isinstance(widget._explorer_window, InteractiveExplorerWindow)
+    assert widget._explorer_window.isVisible()
+
+
+def test_the_explorer_is_built_once_and_kept(widget: PhenoMeWidget) -> None:
+    """Rebuilding it on every click would pile up windows, and dropping it would have it collected."""
+    widget._on_explorer_clicked()
+    first = widget._explorer_window
+
+    widget._on_explorer_clicked()
+
+    assert widget._explorer_window is first
+
+
+def test_reopening_the_explorer_refreshes_its_choices(widget: PhenoMeWidget) -> None:
+    """The kept window would otherwise still offer what the pipeline could answer for when it was built."""
+    widget._on_explorer_clicked()
+    assert widget._explorer_window._color_by_combo.count() == 0
+
+    widget.loading_panel._on_load_data_csv()
+    widget._on_explorer_clicked()
+
+    combo = widget._explorer_window._color_by_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == widget._phenome.get_metadata_columns()
+
+
+def test_the_explorer_shares_the_one_interface_and_viewer(widget: PhenoMeWidget) -> None:
+    widget._on_explorer_clicked()
+
+    assert widget._explorer_window._phenome is widget._phenome
+    assert widget._explorer_window._image_viewer is widget._image_viewer
 
 
 # ----------------------------------------------------------------------------

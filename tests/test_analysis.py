@@ -72,6 +72,39 @@ def test_get_outlier_images_passes_everything_through(analysis: PhenoMeAnalysis,
     }
 
 
+def test_run_dimensionality_reduction_passes_the_pipeline_and_the_arguments(
+    analysis: PhenoMeAnalysis, pipeline: FakePipeline, reduction
+) -> None:
+    """PhenoMe's reduction is a free function, so the pipeline is an argument rather than the receiver."""
+    stand_in = reduction(pd.DataFrame({'Component 1': [0.0], 'Component 2': [1.0]}))
+
+    analysis.run_dimensionality_reduction(method='umap', n_components=3, source='properties')
+
+    assert stand_in.pipelines[-1] is pipeline
+    assert stand_in.last == {'method': 'umap', 'n_components': 3, 'source': 'properties'}
+
+
+def test_run_dimensionality_reduction_returns_the_coordinates_alone(
+    analysis: PhenoMeAnalysis, reduction
+) -> None:
+    """The fitted reducer and the data type come back too, neither of which the plot needs."""
+    frame = pd.DataFrame({'Component 1': [0.0, 1.0], 'Component 2': [1.0, 2.0]})
+    reduction(frame)
+
+    returned = analysis.run_dimensionality_reduction(method='pca', n_components=2, source='embeddings')
+
+    assert returned is frame
+
+
+def test_nothing_to_project_comes_back_as_none(analysis: PhenoMeAnalysis, reduction) -> None:
+    """PhenoMe answers with three Nones when the pipeline leaves it nothing to reduce."""
+    reduction(None)
+
+    returned = analysis.run_dimensionality_reduction(method='pca', n_components=2, source='embeddings')
+
+    assert returned is None
+
+
 @pytest.mark.parametrize(
     ('call', 'kwargs', 'pheno_method'),
     [

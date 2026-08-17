@@ -6,8 +6,16 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from phenome_gui.utils.params import Params
-from phenome_gui.utils.phenome_interface import PhenoMeInterface
+from phenome_gui.utils.params import (
+    DIMS_CHOICES,
+    EMBEDDING_METHOD_CHOICES,
+    Params,
+)
+from phenome_gui.utils.phenome_interface import (
+    DIMS_COMPONENTS,
+    DR_METHODS,
+    PhenoMeInterface,
+)
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -67,6 +75,58 @@ def test_load_data_csv_finds_every_image(loaded: PhenoMeInterface) -> None:
 
 def test_metadata_columns_are_empty_before_loading(phenome: PhenoMeInterface) -> None:
     assert phenome.get_metadata_columns() == []
+
+
+def test_color_by_columns_hold_the_metadata_then_the_properties(loaded: PhenoMeInterface, processed) -> None:
+    """A property is as worth colouring by as a metadata column, which is how PhenoMe fills the same list."""
+    results = processed(loaded, 6)
+    results.properties = [{'area': 12.0, 'solidity': 0.9}] * 6
+
+    assert loaded.get_color_by_columns() == [*loaded.get_metadata_columns(), 'area', 'solidity']
+
+
+def test_color_by_columns_are_the_metadata_until_the_properties_are_computed(loaded: PhenoMeInterface) -> None:
+    assert loaded.get_color_by_columns() == loaded.get_metadata_columns()
+
+
+def test_color_by_columns_are_empty_before_loading(phenome: PhenoMeInterface) -> None:
+    assert phenome.get_color_by_columns() == []
+
+
+def test_color_by_columns_pick_up_the_cluster_labels(loaded: PhenoMeInterface) -> None:
+    """The clustering writes them into the metadata, so they need no case of their own."""
+    loaded.metadata_df['cluster'] = [0, 1] * 3
+
+    assert 'cluster' in loaded.get_color_by_columns()
+
+
+def test_a_column_holding_one_value_is_not_offered(loaded: PhenoMeInterface) -> None:
+    """It would paint every point the same colour, saying nothing."""
+    loaded.metadata_df['batch'] = 'first'
+
+    assert 'batch' not in loaded.get_color_by_columns()
+    assert 'drug_name' in loaded.get_color_by_columns()
+
+
+def test_a_column_naming_each_image_is_not_offered(loaded: PhenoMeInterface) -> None:
+    """One colour per image says as little as one colour for all of them, and draws far more series."""
+    rows = 20
+    loaded.metadata_df = pd.DataFrame(
+        {
+            'file_path': [f'/images/img_{row}.tif' for row in range(rows)],
+            'filename': [f'img_{row}' for row in range(rows)],
+            'drug_name': ['ctrl', 'drugA'] * (rows // 2),
+        }
+    )
+
+    assert loaded.get_color_by_columns() == ['drug_name']
+
+
+def test_an_identifier_survives_a_dataset_too_small_to_judge_it(loaded: PhenoMeInterface) -> None:
+    """Under a handful of images there is no telling an identifier from a grouping key by uniqueness."""
+    assert len(loaded.metadata_df) <= 10
+
+    assert 'filename' in loaded.get_color_by_columns()
 
 
 def test_metadata_columns_leave_out_the_path_columns(loaded: PhenoMeInterface) -> None:
@@ -301,3 +361,110 @@ def test_results_are_stored_and_returned(
 
     assert returned is getattr(loaded, attribute)
     assert returned is frame
+
+
+# ----------------------------------------------------------------------------
+# The explorer projection, whose names are the GUI's rather than PhenoMe's
+# ----------------------------------------------------------------------------
+
+
+def coordinates(n_components: int = 2) -> pd.DataFrame:
+    """ A frame shaped like the one the reduction returns. """
+    return pd.DataFrame({f'Component {i + 1}': [0.0, 1.0] for i in range(n_components)})
+
+
+def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, reduction) -> None:
+    stand_in = reduction(coordinates(3))
+    loaded.params.explorer.method = 't-SNE'
+    loaded.params.explorer.dims = '3D'
+    loaded.params.explorer.source = 'properties'
+
+    loaded.compute_projection()
+
+    assert stand_in.pipelines[-1] is loaded.pheno
+    assert stand_in.last == {'method': 'tsne', 'n_components': 3, 'source': 'properties'}
+
+
+@pytest.mark.parametrize(
+    ('method', 'phenome_name'),
+    [('t-SNE', 'tsne'), ('PCA', 'pca'), ('UMAP', 'umap')],
+)
+def test_every_method_goes_down_under_its_phenome_name(
+    loaded: PhenoMeInterface, reduction, method: str, phenome_name: str
+) -> None:
+    """The GUI spells them as the papers do, where PhenoMe knows them by a plain lower case key."""
+    stand_in = reduction(coordinates())
+    loaded.params.explorer.method = method
+
+    loaded.compute_projection()
+
+    assert stand_in.last['method'] == phenome_name
+
+
+@pytest.mark.parametrize(('dims', 'n_components'), [('2D', 2), ('3D', 3)])
+def test_the_canvas_is_read_as_a_number_of_components(
+    loaded: PhenoMeInterface, reduction, dims: str, n_components: int
+) -> None:
+    stand_in = reduction(coordinates(n_components))
+    loaded.params.explorer.dims = dims
+
+    loaded.compute_projection()
+
+    assert stand_in.last['n_components'] == n_components
+
+
+def test_the_translations_cover_every_choice() -> None:
+    """A choice added to the parameter model without a translation would raise on the first compute."""
+    assert set(DR_METHODS) == set(EMBEDDING_METHOD_CHOICES)
+    assert set(DIMS_COMPONENTS) == set(DIMS_CHOICES)
+
+
+def test_the_projection_is_stored_and_returned(loaded: PhenoMeInterface, reduction) -> None:
+    frame = coordinates()
+    reduction(frame)
+
+    returned = loaded.compute_projection()
+
+    assert returned is loaded.projection_df
+    assert returned is frame
+
+
+def test_a_projected_point_is_resolved_through_its_index(loaded: PhenoMeInterface, reduction, processed) -> None:
+    """The projection names each image but does not carry its path, only where PhenoMe holds it."""
+    paths = list(loaded.metadata_df['file_path'])
+    processed(loaded, 6).img_path = paths
+
+    frame = coordinates()
+    frame['Index'] = [4, 0]
+    reduction(frame)
+    loaded.compute_projection()
+
+    image_paths, mask_paths, metadata = loaded.get_projection_image_data(0)
+
+    # The row is not the image: row 0 of the projection is the fifth image PhenoMe holds
+    assert image_paths == [paths[4]]
+    assert mask_paths is not None
+    assert metadata[0]['drug_name'] == loaded.metadata_df.iloc[4]['drug_name']
+
+
+def test_a_projected_point_of_a_multi_channel_image(loaded: PhenoMeInterface, reduction, processed) -> None:
+    """PhenoMe holds a list of paths for the images it reads a channel at a time."""
+    paths = list(loaded.metadata_df['file_path'])
+    processed(loaded, 6).img_path = [[path, path] for path in paths]
+
+    frame = coordinates()
+    frame['Index'] = [2, 0]
+    reduction(frame)
+    loaded.compute_projection()
+
+    image_paths, _, _ = loaded.get_projection_image_data(0)
+
+    assert image_paths == [paths[2]]
+
+
+def test_nothing_to_project_leaves_no_projection(loaded: PhenoMeInterface, reduction) -> None:
+    """An empty answer is a normal outcome, the pipeline holding no embeddings until they are extracted."""
+    reduction(None)
+
+    assert loaded.compute_projection() is None
+    assert loaded.projection_df is None

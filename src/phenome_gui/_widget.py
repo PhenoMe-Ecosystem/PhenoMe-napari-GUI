@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
 )
 
 from .ui.analysis_panel import AnalysisPanel
+from .ui.explorer_window import InteractiveExplorerWindow
 from .ui.loading_panel import LoadingPanel
 from .ui.processing_panel import ProcessingPanel
 from .utils.image_viewer import ImageViewer
@@ -49,6 +50,10 @@ class PhenoMeWidget(QWidget):
         # Panel 3: Analysis and plotting
         self.analysis_panel = AnalysisPanel(self._phenome, self._image_viewer)
 
+        # The explorer window, built on the first click and kept from then on. Held here rather than by
+        # the analysis panel, as it is shown alongside the widget rather than inside a tab.
+        self._explorer_window = None
+
         self._connect_panels()
 
         # Build the panel structure of the widget
@@ -66,8 +71,27 @@ class PhenoMeWidget(QWidget):
         Every step feeds the next: loading gives the processing step its images, processing gives the
         analysis step its embeddings, and the clustering writes labels the metadata table then shows. The
         panels announce what they have done rather than reaching for each other, so the whole cycle is
-        declared here and nowhere else.
+        declared here and nowhere else. The explorer request is wired the same way, the analysis panel
+        asking for the window rather than holding it.
         """
         self.loading_panel.data_loaded.connect(self.processing_panel.refresh_buttons)
         self.processing_panel.task_running_changed.connect(self.analysis_panel.set_task_running)
         self.analysis_panel.clustering_finished.connect(self.loading_panel.refresh_table)
+        self.analysis_panel.explorer_requested.connect(self._on_explorer_clicked)
+
+    def _on_explorer_clicked(self) -> None:
+        """ Open the interactive explorer, or raise it when it is already open.
+
+        Unlike the parameter forms the window is built once and kept, as it is shown alongside the
+        widget rather than modally over it: rebuilding it on every click would pile up duplicates, and
+        dropping the reference would have it collected while still on screen. Being kept is also why its
+        choices are refreshed here, the forms getting theirs from being constructed anew.
+        """
+        if self._explorer_window is None:
+            self._explorer_window = InteractiveExplorerWindow(self._phenome, self._image_viewer, self)
+        else:
+            self._explorer_window.refresh_choices()
+
+        self._explorer_window.show()
+        self._explorer_window.raise_()
+        self._explorer_window.activateWindow()
