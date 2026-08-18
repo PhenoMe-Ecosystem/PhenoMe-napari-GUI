@@ -34,7 +34,13 @@ from ..utils.params import (
 )
 from ..utils.phenome_interface import PhenoMeInterface
 from .criteria_window import ExcludeWindow, FilterWindow
-from .plotting import ExplorerPlot, is_continuous, resolve_column
+from .plotting import (
+    INDEX_COLUMN,
+    ExplorerPlot,
+    is_continuous,
+    resolve_column,
+)
+from .selection_window import SelectionWindow
 
 logger = logging.getLogger("main_logger")
 
@@ -76,6 +82,10 @@ class InteractiveExplorerWindow(QDialog):
 
         self._filter_dialog = None
         self._exclude_dialog = None
+        self._view_selection_dialog = None
+
+        # The images a drawn box picked out, as PhenoMe indexes its results
+        self._selected_indices = []
 
         self._build_ui()
 
@@ -92,6 +102,7 @@ class InteractiveExplorerWindow(QDialog):
         # which point was clicked and no more, the images being the window's to fetch and show.
         self._canvas = ExplorerPlot()
         self._canvas.point_clicked.connect(self._on_point_clicked)
+        self._canvas.points_selected.connect(self._on_points_selected)
 
         # Column the control groups are stacked in, beside the canvas
         controls_layout = QVBoxLayout()
@@ -194,9 +205,38 @@ class InteractiveExplorerWindow(QDialog):
 
         self._highlight_group.setLayout(highlight_layout)
 
-        # Group for what to do with the points picked on the plot, filled later
+        # Group for selecting points and exporting their indices or metadata.
+        # 3 selection options: box, lasso or selecting the highlighted points
         selection_group = QGroupBox("Selection")
         selection_layout = QVBoxLayout()
+
+        # Selection options
+        selection_row = QHBoxLayout()
+        self._box_select_button = QPushButton("Box")
+        self._lasso_select_button = QPushButton("Lasso")
+        self._highlight_select_button = QPushButton("Highlight")
+        self._clear_select_button = QPushButton("Clear")
+
+        # Checkable, so the plot waiting for a box is something the window shows rather than
+        # something only the cursor gives away. It unchecks itself once the box has been drawn.
+        self._box_select_button.setCheckable(True)
+        self._box_select_button.clicked.connect(self._on_box_select_clicked)
+        self._clear_select_button.clicked.connect(self._on_clear_selection_clicked)
+        selection_row.addWidget(self._box_select_button)
+        selection_row.addWidget(self._lasso_select_button)
+        selection_row.addWidget(self._highlight_select_button)
+        selection_row.addWidget(self._clear_select_button)
+        selection_layout.addLayout(selection_row)
+
+        # View selection
+        select_view_row = QHBoxLayout()
+        self._num_select_label = QLabel("0 points selected.")
+        self._view_select_button = QPushButton("View selection...")
+        self._view_select_button.clicked.connect(self._on_view_selection_clicked)
+        select_view_row.addWidget(self._num_select_label)
+        select_view_row.addWidget(self._view_select_button)
+        selection_layout.addLayout(select_view_row)
+
         selection_group.setLayout(selection_layout)
 
         controls_layout.addWidget(embedding_group)
@@ -480,6 +520,11 @@ class InteractiveExplorerWindow(QDialog):
 
         self._canvas.plot_projection(projection_df, self._phenome.params.explorer.color_by)
 
+        # A selection was made on the points that were drawn before, which these are not
+        self._selected_indices = []
+        self._num_select_label.setText("0 points selected.")
+        self._show_selection()
+
         # The highlight controls read their values off the projection, so a new one has to reach
         # them. Refreshing the field is also what marks the new drawing, the highlight going with
         # the drawing it was applied to.
@@ -514,6 +559,22 @@ class InteractiveExplorerWindow(QDialog):
         logger.info("Showing '%s', from row %d of the projection.", name, row)
         self._image_viewer.display_images(image_paths, mask_paths, metadata, names=[name])
 
+    def _on_image_selected(self, index: int) -> None:
+        """ Show the image a picked row of the selection table stands for.
+
+        The same walk through the images as clicking the points themselves, from the list of what a
+        box picked out rather than from the plot, and showing them the same way: one at a time, the
+        viewer being cleared as each is shown.
+
+        Args:
+            index (int): Place of the image in the PhenoMe results, as the table's row carries it.
+        """
+        image_paths, mask_paths, metadata = self._phenome.get_image_data_at(index)
+        name = Path(image_paths[0]).name
+
+        logger.info("Showing '%s', picked from the selection.", name)
+        self._image_viewer.display_images(image_paths, mask_paths, metadata, names=[name])
+
     def _on_color_by_changed(self) -> None:
         """ Update the colouring parameter, and recolour the drawn points to match.
 
@@ -532,3 +593,70 @@ class InteractiveExplorerWindow(QDialog):
             # Recolouring draws the points again, which knows nothing of what was marked on the
             # drawing before it
             self._apply_highlight()
+
+    def _on_box_select_clicked(self) -> None:
+        """ Wait for a box to be drawn over the plot, or stop waiting when the button is let go of. """
+        if self._box_select_button.isChecked():
+            self._canvas.begin_box_selection()
+        else:
+            self._canvas.cancel_box_selection()
+
+    def _on_points_selected(self, indices: list[int]) -> None:
+        """ Take note of the points a drawn box picked out, and show what they are.
+
+        The canvas says which images were picked and washes them over; the count and the table are
+        the window's to keep, the canvas holding no metadata to fill a table with.
+
+        Args:
+            indices (list[int]): The index PhenoMe holds each selected image at.
+        """
+        self._selected_indices = indices
+        self._box_select_button.setChecked(False)
+
+        self._num_select_label.setText(f"{len(indices)} points selected.")
+        self._show_selection()
+
+    def _on_clear_selection_clicked(self) -> None:
+        """ Let go of the selected points, on the plot and in the table alike. """
+        self._selected_indices = []
+        self._canvas.clear_selection()
+
+        self._num_select_label.setText("0 points selected.")
+        self._show_selection()
+
+    def _selected_points(self) -> "pd.DataFrame | None":
+        """ The rows of the projection the selected images were drawn from.
+
+        Returns:
+            pd.DataFrame: One row per selected image, or None when nothing is selected or there is no
+                projection to read them from.
+        """
+        projection_df = self._phenome.projection_df
+        if projection_df is None or not self._selected_indices:
+            return None
+
+        if INDEX_COLUMN not in projection_df.columns:
+            return projection_df.iloc[self._selected_indices]
+
+        return projection_df[projection_df[INDEX_COLUMN].isin(self._selected_indices)]
+
+    def _show_selection(self) -> None:
+        """ Fill the selection table, when there is a window open holding one. """
+        if self._view_selection_dialog is not None:
+            self._view_selection_dialog.show_selection(self._selected_points())
+
+    def _on_view_selection_clicked(self) -> None:
+        """ Open the window listing the selected points, or raise it when it is already open.
+
+        Filled before it is shown, so opening it after a selection lists that selection rather than
+        whatever it was left holding.
+        """
+        if self._view_selection_dialog is None:
+            self._view_selection_dialog = SelectionWindow(self)
+            self._view_selection_dialog.image_selected.connect(self._on_image_selected)
+
+        self._show_selection()
+
+        self._view_selection_dialog.show()
+        self._view_selection_dialog.raise_()
+        self._view_selection_dialog.activateWindow()

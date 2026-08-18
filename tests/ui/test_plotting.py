@@ -6,8 +6,9 @@ so the frames here are written by hand rather than computed.
 
 import numpy as np
 import pandas as pd
+import pyqtgraph as pg
 import pytest
-from qtpy.QtCore import QPointF, Qt
+from qtpy.QtCore import QPointF, QRectF, Qt
 from qtpy.QtWidgets import QToolTip
 
 from phenome_gui.ui.plotting import (
@@ -15,6 +16,8 @@ from phenome_gui.ui.plotting import (
     HIGHLIGHT_COLOUR,
     HOVER_RADIUS,
     MISSING_COLOUR,
+    SELECTION_ALPHA,
+    SELECTION_COLOUR,
     SERIES_COLOURS,
     ExplorerPlot,
 )
@@ -77,6 +80,17 @@ def colorbar_label(plot: ExplorerPlot) -> str:
     """ The name written alongside the colorbar, whichever of its two axes carries it. """
     labels = [plot._colorbar.getAxis(axis).labelText for axis in ('left', 'right')]
     return next((label for label in labels if label), '')
+
+
+def indexed_projection(indices: list[int]) -> pd.DataFrame:
+    """ A projection whose rows say where PhenoMe holds each of their images.
+
+    Args:
+        indices: The place in the PhenoMe results each row stands for, one per point.
+    """
+    frame = projection(['ctrl', 'ctrl', 'drugA'][: len(indices)])
+    frame['Index'] = indices
+    return frame
 
 
 def measured(values: list, column: str = 'area') -> pd.DataFrame:
@@ -453,6 +467,213 @@ def test_the_marking_holds_without_a_colouring(plot: ExplorerPlot) -> None:
     plot.highlight_points('drug_name', 'drugA')
 
     assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, 255]
+
+
+# ----------------------------------------------------------------------------
+# Picking points out with a box
+# ----------------------------------------------------------------------------
+
+# The points the projection helper lays down, as (Component 1, Component 2)
+LAID_OUT = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+
+
+def box(left: float, top: float, right: float, bottom: float) -> QRectF:
+    """ A box over the plot, in the coordinates the points are held in. """
+    return QRectF(QPointF(left, top), QPointF(right, bottom))
+
+
+def selection(plot: ExplorerPlot):
+    """ The item washing the selected points over, or None when nothing is selected. """
+    return plot._selection
+
+
+def test_a_box_picks_out_the_points_it_covers(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    picked = plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    assert picked == [20, 30]
+
+
+def test_the_edges_of_a_box_are_inside_it(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    picked = plot.select_in_box(box(0.0, 1.0, 1.0, 2.0))
+
+    assert picked == [10, 20]
+
+
+def test_a_box_drawn_the_other_way_round_covers_the_same_points(plot: ExplorerPlot) -> None:
+    """A box is dragged from any of its corners, and reads the same whichever one it started at."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    assert plot.select_in_box(box(2.5, 3.5, 0.5, 1.5)) == [20, 30]
+
+
+def test_a_box_over_nothing_picks_out_nothing(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    assert plot.select_in_box(box(8.0, 8.0, 9.0, 9.0)) == []
+    assert selection(plot) is None
+
+
+def test_a_box_on_an_empty_canvas_picks_out_nothing(plot: ExplorerPlot) -> None:
+    assert plot.select_in_box(box(0.0, 0.0, 5.0, 5.0)) == []
+
+
+def test_the_rows_stand_in_for_an_index_the_projection_has_not_got(plot: ExplorerPlot) -> None:
+    """The synthetic frames of a test carry no Index, where PhenoMe's projections always do."""
+    frame = projection(['ctrl', 'ctrl', 'drugA']).drop(columns='Index')
+
+    plot.plot_projection(frame, 'drug_name')
+
+    assert plot.select_in_box(box(0.5, 1.5, 2.5, 3.5)) == [1, 2]
+
+
+def test_the_picked_points_are_washed_over(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    (spot_x, _) = selection(plot).getData()
+    assert list(spot_x) == [1.0, 2.0]
+    assert selection(plot).opts['brush'].color().name() == SELECTION_COLOUR
+    assert selection(plot).opts['brush'].color().alpha() == SELECTION_ALPHA
+
+
+def test_the_wash_is_drawn_over_the_cloud(plot: ExplorerPlot) -> None:
+    """A picked point in a crowded patch would otherwise be washed underneath its neighbours."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    assert plot._plot.listDataItems()[-1] is selection(plot)
+
+
+def test_clearing_takes_the_wash_off(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    plot.clear_selection()
+
+    assert selection(plot) is None
+    assert plot.selected_indices() == []
+
+
+def test_a_selection_survives_a_recolouring(plot: ExplorerPlot) -> None:
+    """The points are the same points, whatever they are now coloured by."""
+    frame = indexed_projection([10, 20, 30])
+    plot.plot_projection(frame, 'drug_name')
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    plot.plot_projection(frame, 'time')
+
+    assert plot.selected_indices() == [20, 30]
+    assert selection(plot) is not None
+
+
+def test_a_selection_goes_with_the_points_it_was_drawn_over(plot: ExplorerPlot) -> None:
+    """Another projection is other points, which a box drawn over these has nothing to say about."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    plot.plot_projection(indexed_projection([40, 50, 60]), 'drug_name')
+
+    assert plot.selected_indices() == []
+    assert selection(plot) is None
+
+
+def test_a_selection_survives_the_points_being_marked(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.select_in_box(box(0.5, 1.5, 2.5, 3.5))
+
+    plot.highlight_points('drug_name', 'ctrl')
+
+    assert plot.selected_indices() == [20, 30]
+    assert selection(plot) is not None
+
+
+class FakeDrag:
+    """ Stands in for a drag over the plot, which takes a real scene event to build. """
+
+    def __init__(self, start: QPointF, end: QPointF, finish: bool = True, button=Qt.MouseButton.LeftButton):
+        # pyqtgraph's own point type, which its panning does arithmetic on where a QPointF raises
+        self._start = pg.Point(start)
+        self._end = pg.Point(end)
+        self._finish = finish
+        self._button = button
+        self.accepted = False
+
+    def button(self):
+        """ The button held down through the drag. """
+        return self._button
+
+    def isFinish(self) -> bool:  # noqa: N802 - the name pyqtgraph calls it by
+        """ Whether the button has been let go of. """
+        return self._finish
+
+    def buttonDownPos(self, button=None):  # noqa: N802 - the name pyqtgraph calls it by
+        """ Where the drag started. """
+        return self._start
+
+    def pos(self):
+        """ Where the pointer is now. """
+        return self._end
+
+    def lastPos(self):  # noqa: N802 - the name pyqtgraph calls it by
+        """ Where the pointer was on the move before. """
+        return self._start
+
+    def accept(self) -> None:
+        """ Take the drag as answered. """
+        self.accepted = True
+
+
+def test_a_box_is_asked_for_once(plot: ExplorerPlot, qtbot) -> None:
+    """The mode is over as soon as the box is let go of, rather than staying on until told."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.begin_box_selection()
+    assert plot._viewbox.selecting
+
+    with qtbot.waitSignal(plot._viewbox.region_selected, timeout=1000):
+        plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(50.0, 50.0)))
+
+    assert not plot._viewbox.selecting
+
+
+def test_a_drag_that_is_not_over_leaves_the_mode_on(plot: ExplorerPlot) -> None:
+    """The box is still being drawn, and the points under it are not settled until it is let go of."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.begin_box_selection()
+
+    plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(20.0, 20.0), finish=False))
+
+    assert plot._viewbox.selecting
+
+
+def test_a_drag_pans_the_plot_when_no_box_was_asked_for(plot: ExplorerPlot, qtbot) -> None:
+    """Panning and zooming are what the plot does the rest of the time, and are left alone."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    with qtbot.assertNotEmitted(plot._viewbox.region_selected):
+        plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(50.0, 50.0)))
+
+
+def test_the_picked_images_are_announced(plot: ExplorerPlot, qtbot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    with qtbot.waitSignal(plot.points_selected, timeout=1000) as announced:
+        plot._on_region_selected(box(0.5, 1.5, 2.5, 3.5))
+
+    assert announced.args == [[20, 30]]
+
+
+def test_waiting_for_a_box_can_be_called_off(plot: ExplorerPlot) -> None:
+    plot.begin_box_selection()
+
+    plot.cancel_box_selection()
+
+    assert not plot._viewbox.selecting
 
 
 # ----------------------------------------------------------------------------

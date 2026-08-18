@@ -392,7 +392,20 @@ class PhenoMeInterface:
         Returns:
             tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
-        index = int(self.projection_df.iloc[row][PROJECTION_INDEX_COLUMN])
+        return self.get_image_data_at(int(self.projection_df.iloc[row][PROJECTION_INDEX_COLUMN]))
+
+    def get_image_data_at(self, index: int) -> tuple[list[str], list[str] | None, list[dict]]:
+        """ Return the content of one image, found by where PhenoMe holds it, for the image viewer.
+
+        The place is what a projection carries and what a selection is made of, neither of them
+        holding the path: PhenoMe writes the name of an image and its index and no more, so the path
+        is looked up here and the mask and the metadata from the path.
+
+        Args:
+            index (int): Place of the image in the PhenoMe results.
+        Returns:
+            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+        """
         image_path = self.pheno.results.img_path[index]
 
         # PhenoMe holds a list of paths rather than one for the images it reads a channel at a time

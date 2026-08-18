@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
-from qtpy.QtCore import QPointF, Qt, Signal
+from qtpy.QtCore import QPointF, QRectF, Qt, Signal
 from qtpy.QtWidgets import QToolTip, QWidget
 
 logger = logging.getLogger("main_logger")
@@ -80,6 +80,12 @@ DIMMED_ALPHA = 33
 # projection to the next and changing again with every zoom.
 HOVER_RADIUS = 12
 
+# Wash laid over a selected point, rather than a colour replacing its own: what the point was
+# coloured by is still worth reading once it has been picked out.
+SELECTION_COLOUR = "#003780"
+SELECTION_ALPHA = 110
+SELECTION_SIZE = MARKER_SIZE + 2
+
 
 def is_continuous(values: pd.Series, name: str) -> bool:
     """ Whether a column is a measurement to draw along a ramp rather than labels to group by.
@@ -131,6 +137,27 @@ def resolve_column(projection_df: pd.DataFrame, name: str | None) -> str | None:
     return None
 
 
+def metadata_columns(projection_df: pd.DataFrame) -> list[str]:
+    """ The columns of a projection that describe an image rather than place or measure it.
+
+    PhenoMe capitalises the metadata keys it copies into a projection and leaves the property keys as
+    the plugins named them, which is what tells the two apart here. Public alongside is_continuous
+    and resolve_column: the tooltip and the table of a selection both read an image the same way, and
+    neither has room for the dozens of properties a projection can carry.
+
+    Args:
+        projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
+    Returns:
+        list[str]: The metadata columns, in the order the projection carries them.
+    """
+    placed = {IMAGE_COLUMN, INDEX_COLUMN}
+
+    return [
+        column for column in projection_df.columns
+        if column not in placed and not column.startswith(COMPONENT_PREFIX) and column[:1].isupper()
+    ]
+
+
 def _format_value(value) -> str:
     """ Write a column's value the way a tooltip should read it.
 
@@ -146,6 +173,51 @@ def _format_value(value) -> str:
         return f'{value:.4g}'
 
     return str(value)
+
+
+class _SelectionViewBox(pg.ViewBox):
+    """ The plot's view box, which can be asked once for a rectangle drawn over it.
+
+    pyqtgraph already draws a rubber band and works out what it covers - that is how its rectangle
+    zoom works - so being asked for a box is that same drag with the zoom left off at the end.
+    """
+
+    # Emitted with the rectangle drawn, in the plot's own coordinates
+    region_selected = Signal(object)
+
+    def __init__(self, *args, **kwargs) -> None:
+        """ Build the view box, drawing rather than selecting until it is asked to. """
+        super().__init__(*args, **kwargs)
+        self.selecting = False
+
+    def mouseDragEvent(self, event, axis=None) -> None:  # noqa: N802 - the name pyqtgraph calls it by
+        """ Draw the box being dragged, and hand it over once it is let go of.
+
+        Args:
+            event: The drag, as the scene reports it.
+            axis: The axis the drag was made on, for a drag on one of them rather than on the plot.
+        """
+        # Dragging along an axis is that axis being scaled, whatever the plot is being asked for
+        if not self.selecting or axis is not None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseDragEvent(event, axis=axis)
+            return
+
+        event.accept()
+
+        if not event.isFinish():
+            self.updateScaleBox(event.buttonDownPos(), event.pos())
+            return
+
+        self.rbScaleBox.hide()
+
+        # Mapped the way the rectangle zoom maps it, which is what turns the band drawn on screen
+        # into the coordinates the points are held in
+        drawn = QRectF(pg.Point(event.buttonDownPos(event.button())), pg.Point(event.pos()))
+        drawn = self.childGroup.mapRectFromParent(drawn)
+
+        # One box per asking: the mode is over as soon as the box is let go of
+        self.selecting = False
+        self.region_selected.emit(drawn)
 
 
 class ExplorerPlot(pg.GraphicsLayoutWidget):
@@ -166,6 +238,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
     # stands for is for whoever handed the frame over to say, the canvas holding no PhenoMe state.
     point_clicked = Signal(int)
 
+    # Emitted with the image indices a drawn box covers, once the box has been let go of
+    points_selected = Signal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         """ Build the canvas, empty until a projection is drawn on it.
 
@@ -175,7 +250,12 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         super().__init__(parent)
         self.setBackground(SURFACE)
 
-        self._plot = self.addPlot(row=0, col=0)
+        # The plot's own view box, which pans and zooms as pyqtgraph's does until it is asked for a
+        # box, and hands the drawn rectangle over rather than zooming to it
+        self._viewbox = _SelectionViewBox()
+        self._viewbox.region_selected.connect(self._on_region_selected)
+
+        self._plot = self.addPlot(row=0, col=0, viewBox=self._viewbox)
         self._legend = self._plot.addLegend(offset=(-10, 10))
 
         # Built beside the plot when a measured column is drawn, and taken off again when it is not
@@ -195,6 +275,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         # Which of the drawn rows the highlight leaves out, or None when nothing is highlighted
         self._dimmed = None
+
+        # Which of them a box has picked out, and the wash drawn over those while it holds
+        self._selected = None
+        self._selection = None
 
         for axis in ('bottom', 'left'):
             self._plot.getAxis(axis).setPen(AXIS_COLOUR)
@@ -217,6 +301,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         TODO: 3D projections!
         """
+        previous, selected = self._points, self._selected
         self._clear()
 
         if projection_df is None or projection_df.empty:
@@ -232,9 +317,13 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         x_column, y_column = components
 
+        # A selection belongs to the points it was drawn over, so it is kept when the same frame is
+        # drawn again - a recolouring is the same images under another colour - and let go of when
+        # another one takes its place.
         # Kept whole rather than as coordinates alone, the tooltip reading the rest of the row and
         # the dimming drawing it again
         self._points = projection_df
+        self._selected = selected if previous is projection_df else None
         self._x_column, self._y_column = x_column, y_column
         self._color_column = resolve_column(projection_df, color_by)
 
@@ -259,14 +348,113 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
                 UNGROUPED_COLOUR,
                 self._dimmed_brushes(UNGROUPED_COLOUR)
             )
-            return
-
-        if is_continuous(self._points[column], column):
+        elif is_continuous(self._points[column], column):
             self._draw_ramp(self._points, self._x_column, self._y_column, column)
         else:
             self._draw_groups(self._points, self._x_column, self._y_column, column)
 
-    def highlight_points(self, field: str | None = None, criterion=None) -> None:
+        # Last, so the wash lands over the points rather than under the crowd around them
+        self._draw_selection()
+
+    def _draw_selection(self) -> None:
+        """ Wash the selected points over, leaving the rest of the drawing as it is. """
+        if self._selected is None or not self._selected.any():
+            return
+
+        wash = pg.mkBrush(SELECTION_COLOUR)
+        colour = wash.color()
+        colour.setAlpha(SELECTION_ALPHA)
+        wash.setColor(colour)
+
+        self._selection = pg.ScatterPlotItem(
+            x=self._points.loc[self._selected, self._x_column].to_numpy(),
+            y=self._points.loc[self._selected, self._y_column].to_numpy(),
+            brush=wash,
+            pen=None,
+            size=SELECTION_SIZE
+        )
+        self._plot.addItem(self._selection)
+
+    def begin_box_selection(self) -> None:
+        """ Wait for a box to be drawn over the plot, and pick the points it covers out.
+
+        The mode lasts one box: the view box goes back to panning and zooming as soon as the box is
+        let go of, so the plot is not left in a state the pointer gives no sign of.
+        """
+        self._viewbox.selecting = True
+        self._viewbox.setCursor(Qt.CursorShape.CrossCursor)
+
+    def cancel_box_selection(self) -> None:
+        """ Stop waiting for a box, leaving whatever is already selected as it is. """
+        self._viewbox.selecting = False
+        self._viewbox.unsetCursor()
+
+    def _on_region_selected(self, rect: QRectF) -> None:
+        """ Pick out the points a drawn box covers, and announce which images they are.
+
+        Args:
+            rect (QRectF): The box that was drawn, in the plot's own coordinates.
+        """
+        self._viewbox.unsetCursor()
+
+        indices = self.select_in_box(rect)
+        logger.info("Selected %d points.", len(indices))
+
+        self.points_selected.emit(indices)
+
+    def select_in_box(self, rect: QRectF) -> list[int]:
+        """ Pick out the points falling inside a box, washing them over on the plot.
+
+        Args:
+            rect (QRectF): The box the points are picked from, in the plot's own coordinates.
+        Returns:
+            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
+                rows of the projection stand in on a frame carrying no such column.
+        """
+        if self._points is None or self._points.empty:
+            return []
+
+        normalised = rect.normalized()
+        x_values = self._points[self._x_column]
+        y_values = self._points[self._y_column]
+
+        self._selected = (
+            x_values.between(normalised.left(), normalised.right())
+            & y_values.between(normalised.top(), normalised.bottom())
+        )
+
+        self._clear_canvas()
+        self._draw()
+
+        return self.selected_indices()
+
+    def selected_indices(self) -> list[int]:
+        """ The images the current selection stands for.
+
+        Returns:
+            list[int]: The index PhenoMe holds each selected image at, or the rows of the projection
+                when it carries no index of its own. Empty when nothing is selected.
+        """
+        if self._points is None or self._selected is None:
+            return []
+
+        picked = self._points[self._selected]
+        if INDEX_COLUMN in picked.columns:
+            return [int(index) for index in picked[INDEX_COLUMN]]
+
+        return [int(row) for row in np.flatnonzero(self._selected.to_numpy())]
+
+    def clear_selection(self) -> None:
+        """ Let go of the selected points, taking the wash off the plot. """
+        if self._points is None:
+            self._selected = None
+            return
+
+        self._selected = None
+        self._clear_canvas()
+        self._draw()
+
+    def highlight_points(self, field: str | None = None, criterion: str | tuple[float] | None=None) -> None:
         """ Mark out the points answering a criterion, fading back every other one.
 
         The points left out are drawn faded rather than taken off the canvas, so what was picked is
@@ -286,7 +474,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._clear_canvas()
         self._draw()
 
-    def _dimmed_rows(self, field: str | None, criterion) -> "pd.Series | None":
+    def _dimmed_rows(self, field: str | None, criterion: str | tuple[float]) -> "pd.Series | None":
         """ Work out which of the drawn rows a criterion leaves out.
 
         Args:
@@ -406,9 +594,11 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             self.removeItem(self._colorbar)
             self._colorbar = None
 
-        # The ring went with the plot's other items, leaving only the reference to it to let go of
+        # The ring and the selection wash went with the plot's other items, leaving only the
+        # references to them to let go of
         self._hovered = None
         self._highlight = None
+        self._selection = None
 
     def _clear(self) -> None:
         """ Take everything off the canvas, the frame it was drawn from included. """
@@ -421,6 +611,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._y_column = None
         self._color_column = None
         self._dimmed = None
+        self._selected = None
 
     def _nearest_point(self, position: QPointF) -> int | None:
         """ Find the drawn point nearest a position, so long as one is near enough to have been meant.
@@ -563,21 +754,12 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         return '\n'.join(lines)
 
     def _metadata_columns(self) -> list[str]:
-        """ The columns of the drawn projection that describe an image rather than place or measure it.
-
-        PhenoMe capitalises the metadata keys it copies into a projection and leaves the property
-        keys as the plugins named them, which is what tells the two apart here. A property is worth a
-        line only when it is what the points are coloured by, and that line is already written.
+        """ The metadata columns of the drawn projection.
 
         Returns:
             list[str]: The metadata columns, in the order the projection carries them.
         """
-        placed = {self._x_column, self._y_column, IMAGE_COLUMN, INDEX_COLUMN}
-
-        return [
-            column for column in self._points.columns
-            if column not in placed and not column.startswith(COMPONENT_PREFIX) and column[:1].isupper()
-        ]
+        return metadata_columns(self._points)
 
     def _brush(self, colour, dimmed: bool = False) -> "pg.QtGui.QBrush":
         """ The brush a point is drawn with, faded when the highlight leaves it out.

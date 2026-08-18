@@ -871,6 +871,152 @@ def test_computing_again_marks_the_new_points(
 
 
 # ----------------------------------------------------------------------------
+# Picking points out with a box
+# ----------------------------------------------------------------------------
+
+
+def indexed(indices: list[int]) -> pd.DataFrame:
+    """ A projection whose rows say where PhenoMe holds each of their images. """
+    frame = coordinates()
+    frame['Index'] = indices
+    return frame
+
+
+def table_rows(window: InteractiveExplorerWindow) -> int:
+    """ How many points the selection window is currently listing. """
+    return window._view_selection_dialog._points_table.model().rowCount()
+
+
+def test_the_box_button_asks_the_canvas_for_one(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._box_select_button.click()
+
+    assert loaded_explorer._canvas._viewbox.selecting
+
+
+def test_pressing_the_box_button_again_calls_it_off(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._box_select_button.click()
+
+    loaded_explorer._box_select_button.click()
+
+    assert not loaded_explorer._canvas._viewbox.selecting
+
+
+def test_a_drawn_box_counts_the_points_it_covers(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+
+    assert loaded_explorer._num_select_label.text() == '2 points selected.'
+    assert loaded_explorer._selected_indices == [20, 30]
+
+
+def test_a_drawn_box_lets_the_button_go(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    """The mode is over once the box is drawn, and the button is what says so."""
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._box_select_button.click()
+
+    loaded_explorer._canvas.points_selected.emit([20])
+
+    assert not loaded_explorer._box_select_button.isChecked()
+
+
+def test_the_selection_fills_the_table(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+
+    loaded_explorer._on_view_selection_clicked()
+
+    assert table_rows(loaded_explorer) == 2
+
+
+def test_a_selection_made_with_the_window_open_reaches_it(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._on_view_selection_clicked()
+
+    loaded_explorer._canvas.points_selected.emit([10])
+
+    assert table_rows(loaded_explorer) == 1
+
+
+def test_clearing_lets_go_of_the_selection(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+    loaded_explorer._on_view_selection_clicked()
+
+    loaded_explorer._clear_select_button.click()
+
+    assert loaded_explorer._selected_indices == []
+    assert loaded_explorer._num_select_label.text() == '0 points selected.'
+    assert table_rows(loaded_explorer) == 0
+    assert loaded_explorer._canvas.selected_indices() == []
+
+
+def test_picking_a_row_of_the_selection_shows_its_image(
+    loaded_explorer: InteractiveExplorerWindow, clickable, viewer
+) -> None:
+    """The table walks through the picked images the way the metadata table walks through them all."""
+    paths = clickable([4, 0, 2])
+    loaded_explorer._canvas.points_selected.emit([4, 0])
+    loaded_explorer._on_view_selection_clicked()
+    table = loaded_explorer._view_selection_dialog._points_table
+
+    table.setCurrentIndex(table.model().index(0, 0))
+
+    assert viewer.names == [Path(paths[4]).name, f'{Path(paths[4]).name} - Mask']
+    assert viewer.added[0]['metadata']['drug_name'] == loaded_explorer._phenome.metadata_df.iloc[4]['drug_name']
+
+
+def test_picking_another_row_replaces_the_layers(
+    loaded_explorer: InteractiveExplorerWindow, clickable, viewer
+) -> None:
+    paths = clickable([4, 0, 2])
+    loaded_explorer._canvas.points_selected.emit([4, 0])
+    loaded_explorer._on_view_selection_clicked()
+    table = loaded_explorer._view_selection_dialog._points_table
+
+    table.setCurrentIndex(table.model().index(0, 0))
+    table.setCurrentIndex(table.model().index(1, 0))
+
+    assert viewer.layers == []
+    assert viewer.names[-2:] == [Path(paths[0]).name, f'{Path(paths[0]).name} - Mask']
+
+
+def test_computing_again_lets_go_of_the_selection(
+    loaded_explorer: InteractiveExplorerWindow, computing, reduction
+) -> None:
+    """It was drawn over the points that were there before, which these are not."""
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+    loaded_explorer._on_view_selection_clicked()
+
+    reduction(indexed([40, 50, 60]))
+    loaded_explorer._compute_button.click()
+
+    assert loaded_explorer._selected_indices == []
+    assert loaded_explorer._num_select_label.text() == '0 points selected.'
+    assert table_rows(loaded_explorer) == 0
+
+
+# ----------------------------------------------------------------------------
 # Clicking a point through to the viewer
 # ----------------------------------------------------------------------------
 

@@ -488,6 +488,27 @@ def test_a_projected_point_is_resolved_through_its_index(loaded: PhenoMeInterfac
     assert metadata[0]['drug_name'] == loaded.metadata_df.iloc[4]['drug_name']
 
 
+def test_an_image_is_found_by_where_phenome_holds_it(loaded: PhenoMeInterface, processed) -> None:
+    """What a selection is made of: the place, with neither the path nor a row of the projection."""
+    paths = list(loaded.metadata_df['file_path'])
+    processed(loaded, 6).img_path = paths
+
+    image_paths, mask_paths, metadata = loaded.get_image_data_at(3)
+
+    assert image_paths == [paths[3]]
+    assert mask_paths is not None
+    assert metadata[0]['drug_name'] == loaded.metadata_df.iloc[3]['drug_name']
+
+
+def test_an_image_of_several_channels_is_found_by_its_first(loaded: PhenoMeInterface, processed) -> None:
+    paths = list(loaded.metadata_df['file_path'])
+    processed(loaded, 6).img_path = [[path, path] for path in paths]
+
+    image_paths, _, _ = loaded.get_image_data_at(1)
+
+    assert image_paths == [paths[1]]
+
+
 def test_a_projected_point_of_a_multi_channel_image(loaded: PhenoMeInterface, reduction, processed) -> None:
     """PhenoMe holds a list of paths for the images it reads a channel at a time."""
     paths = list(loaded.metadata_df['file_path'])
