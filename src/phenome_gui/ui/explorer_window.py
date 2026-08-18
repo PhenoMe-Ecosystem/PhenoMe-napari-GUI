@@ -1,17 +1,26 @@
 import logging
 from pathlib import Path
 
+import pandas as pd
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
+
+# Double precision rather than the plain QRangeSlider, which steps in whole numbers: the properties
+# worth highlighting on include the ones living between 0 and 1, which it would collapse to two
+# positions. The labelled variant writes the chosen bounds out, a bare slider showing no numbers.
+from superqt import QLabeledDoubleRangeSlider
 
 from ..utils.image_viewer import ImageViewer
 
@@ -25,7 +34,7 @@ from ..utils.params import (
 )
 from ..utils.phenome_interface import PhenoMeInterface
 from .criteria_window import ExcludeWindow, FilterWindow
-from .plotting import ExplorerPlot
+from .plotting import ExplorerPlot, is_continuous, resolve_column
 
 logger = logging.getLogger("main_logger")
 
@@ -41,8 +50,8 @@ class InteractiveExplorerWindow(QDialog):
     back once confirmed, there being nothing to confirm: the window stays open, and its settings are
     read whenever the projection is computed.
 
-    TODO: The projection is computed but not drawn yet; drawing it, colouring it, and the highlight
-    and selection groups are all still to be written.
+    TODO: The highlight group picks a field and a value but does not mark anything with them yet, and
+    the selection group is still to be written.
     """
 
     def __init__(
@@ -94,7 +103,7 @@ class InteractiveExplorerWindow(QDialog):
 
         # Dimensionality reduction algorithm combo box
         method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("Method"))
+        method_row.addWidget(QLabel("Method:"))
         self._method_combo = QComboBox()
         self._method_combo.addItems(EMBEDDING_METHOD_CHOICES)
         self._method_combo.setCurrentText(self._phenome.params.explorer.method)
@@ -104,7 +113,7 @@ class InteractiveExplorerWindow(QDialog):
 
         # Number of dimensions combo box
         dims_row = QHBoxLayout()
-        dims_row.addWidget(QLabel("Dims"))
+        dims_row.addWidget(QLabel("Dims:"))
         self._dims_combo = QComboBox()
         self._dims_combo.addItems(DIMS_CHOICES)
         self._dims_combo.setCurrentText(self._phenome.params.explorer.dims)
@@ -114,7 +123,7 @@ class InteractiveExplorerWindow(QDialog):
 
         # Feature space combo box, opened by refresh_choices() once the properties have been computed
         source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("Source"))
+        source_row.addWidget(QLabel("Source:"))
         self._source_combo = QComboBox()
         self._source_combo.addItems(SOURCE_CHOICES)
         self._source_combo.setCurrentText(self._phenome.params.explorer.source)
@@ -151,10 +160,39 @@ class InteractiveExplorerWindow(QDialog):
         color_by_row.addWidget(self._color_by_combo)
         appearance_layout.addLayout(color_by_row)
 
-        # Group for marking chosen points out on the plot, filled later
-        highlight_group = QGroupBox("Highlight")
+        # Group for marking points on the plot based on metadata/property filters
+        self._highlight_group = QGroupBox("Highlight")
         highlight_layout = QVBoxLayout()
-        highlight_group.setLayout(highlight_layout)
+
+        # Field the points are marked on, offering what the colouring offers. Left empty here, as
+        # its values are the projection's; refresh_highlight() is what fills it in.
+        highlight_field_row = QHBoxLayout()
+        highlight_field_row.addWidget(QLabel("Field: "))
+        self._highlight_field_combo = QComboBox()
+        self._highlight_field_combo.currentTextChanged.connect(self._on_highlight_field_changed)
+        highlight_field_row.addWidget(self._highlight_field_combo, 1)
+        highlight_layout.addLayout(highlight_field_row)
+
+        # One control per kind of field, both built once and switched between: a field of labels is
+        # picked from a list of them, where a measurement is picked from the range it spans. Kept in
+        # a stack so neither loses what was set on it while the other is on screen.
+        self._highlight_stack = QStackedWidget()
+        self._highlight_values_combo = QComboBox()
+        self._highlight_range_slider = QLabeledDoubleRangeSlider(Qt.Orientation.Horizontal)
+        self._highlight_stack.addWidget(self._highlight_values_combo)
+        self._highlight_stack.addWidget(self._highlight_range_slider)
+        highlight_layout.addWidget(self._highlight_stack)
+
+        # Marks the points answering the field and value above, and leaves the plot as it is when
+        # unchecked. The value and the range are watched too, so a pick made with it already on
+        # takes effect where it was made rather than on the next toggle.
+        self._highlight_checkbox = QCheckBox("Highlight")
+        self._highlight_checkbox.toggled.connect(self._apply_highlight)
+        self._highlight_values_combo.currentIndexChanged.connect(self._apply_highlight)
+        self._highlight_range_slider.valueChanged.connect(self._apply_highlight)
+        highlight_layout.addWidget(self._highlight_checkbox)
+
+        self._highlight_group.setLayout(highlight_layout)
 
         # Group for what to do with the points picked on the plot, filled later
         selection_group = QGroupBox("Selection")
@@ -163,7 +201,7 @@ class InteractiveExplorerWindow(QDialog):
 
         controls_layout.addWidget(embedding_group)
         controls_layout.addWidget(appearance_group)
-        controls_layout.addWidget(highlight_group)
+        controls_layout.addWidget(self._highlight_group)
         controls_layout.addWidget(selection_group)
         controls_layout.addStretch(1)
 
@@ -208,6 +246,143 @@ class InteractiveExplorerWindow(QDialog):
         self._source_combo.setEnabled(has_properties)
         self._source_combo.setToolTip('' if has_properties else 'Please calculate properties first.')
 
+        self.refresh_highlight()
+
+    def refresh_highlight(self) -> None:
+        """ Fill in the fields the points can be marked on, and the values of the chosen one.
+
+        Called when the choices are refreshed and again whenever a projection has been computed: the
+        fields are the ones the colouring offers, but their values are read off the projection, that
+        being the only frame carrying the metadata and the properties side by side and the only one
+        answering for the points actually on screen. The group waits on it for the same reason.
+        """
+        columns = self._phenome.get_color_by_columns()
+        stored_field = self._highlight_field_combo.currentText()
+
+        # Refilling emits currentTextChanged twice, once on the clear and once on the first column
+        # added, so the field is restored by hand rather than left wherever the refill landed.
+        self._highlight_field_combo.blockSignals(True)
+        self._highlight_field_combo.clear()
+        self._highlight_field_combo.addItems(columns)
+        if stored_field in columns:
+            self._highlight_field_combo.setCurrentText(stored_field)
+        self._highlight_field_combo.blockSignals(False)
+
+        has_projection = self._phenome.projection_df is not None
+        self._highlight_group.setEnabled(has_projection)
+        self._highlight_group.setToolTip('' if has_projection else 'Please compute a projection first.')
+
+        # The combo box may have landed on another field than the stored one, so its values are
+        # brought up to date whether or not the refill moved it
+        self._on_highlight_field_changed()
+
+    def _on_highlight_field_changed(self) -> None:
+        """ Show the control the chosen field is picked with, and fill it from the projection.
+
+        A field of labels is picked from the list of them it holds, a field of measurements from the
+        range it spans, which is the same reading of a column the canvas colours by.
+        """
+        projection_df = self._phenome.projection_df
+        column = None if projection_df is None else resolve_column(
+            projection_df, self._highlight_field_combo.currentText()
+        )
+
+        if column is None or projection_df.empty:
+            self._highlight_values_combo.clear()
+            self._highlight_stack.setCurrentWidget(self._highlight_values_combo)
+        else:
+            values = projection_df[column].dropna()
+
+            if is_continuous(values, column):
+                self._show_highlight_range(values)
+            else:
+                self._show_highlight_values(values)
+
+        # The field decides what is marked as much as the value does, so the plot follows it
+        self._apply_highlight()
+
+    def _show_highlight_values(self, values: pd.Series) -> None:
+        """ List the values of a field of labels, each of them once.
+
+        Args:
+            values (pd.Series): The column's values, of which only the distinct ones are listed.
+        """
+        distinct = values.unique()
+        try:
+            ordered = sorted(distinct)
+        except TypeError:
+            ordered = sorted(distinct, key=str)
+
+        picked = self._highlight_values_combo.currentData()
+
+        # Each row shows its value as text but carries the value itself, the canvas matching a point
+        # by equality against a column that holds the cluster labels as numbers: a cluster picked as
+        # '1' would go down as text and mark no point at all.
+        #
+        # Refilling emits the change signal on the clear and again on the first value added, either
+        # of which would mark the plot with a value nobody picked, so the pick is put back by hand.
+        self._highlight_values_combo.blockSignals(True)
+        self._highlight_values_combo.clear()
+        for value in ordered:
+            self._highlight_values_combo.addItem(str(value), value)
+
+        restored = self._highlight_values_combo.findData(picked)
+        if restored >= 0:
+            self._highlight_values_combo.setCurrentIndex(restored)
+        self._highlight_values_combo.blockSignals(False)
+
+        self._highlight_stack.setCurrentWidget(self._highlight_values_combo)
+
+    def _show_highlight_range(self, values: pd.Series) -> None:
+        """ Span the slider across a field of measurements, handles wide open.
+
+        The handles start at the ends of the range so the control reads as picking every point until
+        it is moved, rather than as picking whichever slice it happened to open on.
+
+        Args:
+            values (pd.Series): The column's values, whose smallest and largest are the two ends.
+        """
+        low, high = float(values.min()), float(values.max())
+
+        # A column holding the one value throughout would leave the slider no room to move, its two
+        # ends being the same place
+        if low == high:
+            high = low + 1.0
+
+        # Set with its signals blocked, as the two calls would otherwise mark the plot twice over,
+        # once against the new range and once against handles not yet moved onto it
+        self._highlight_range_slider.blockSignals(True)
+        self._highlight_range_slider.setRange(low, high)
+        self._highlight_range_slider.setValue((low, high))
+        self._highlight_range_slider.blockSignals(False)
+
+        self._highlight_stack.setCurrentWidget(self._highlight_range_slider)
+
+    def _highlight_criterion(self):
+        """ What the highlight control currently holds, for the canvas to mark the points against.
+
+        Returns:
+            The value picked from the list of them, or the two ends of the picked range - whichever
+            control the chosen field put on screen.
+        """
+        if self._highlight_stack.currentWidget() is self._highlight_range_slider:
+            return tuple(self._highlight_range_slider.value())
+
+        return self._highlight_values_combo.currentData()
+
+    def _apply_highlight(self) -> None:
+        """ Mark the points answering the highlight, or take the marking off when it is switched off.
+
+        Called whenever anything it reads changes - the box, the field, the value or the range - and
+        again after the plot has been redrawn, a new drawing knowing nothing of what was marked on
+        the one before it.
+        """
+        if not self._highlight_checkbox.isChecked():
+            self._canvas.highlight_points()
+            return
+
+        self._canvas.highlight_points(self._highlight_field_combo.currentText(), self._highlight_criterion())
+
     def _on_method_changed(self) -> None:
         """ Update the projection method parameter when the selection changes.
 
@@ -228,10 +403,6 @@ class InteractiveExplorerWindow(QDialog):
         Changing it does not redraw the plot, the projection being computed by the Compute button.
         """
         self._phenome.params.explorer.source = self._source_combo.currentText()
-
-    def _on_filter_clicked(self) -> None:
-        """ Opens a window to set metadata filters for the projections.
-        """
 
     def _on_filter_clicked(self) -> None:
         """ Open the form choosing which images the projection is computed from.
@@ -309,6 +480,11 @@ class InteractiveExplorerWindow(QDialog):
 
         self._canvas.plot_projection(projection_df, self._phenome.params.explorer.color_by)
 
+        # The highlight controls read their values off the projection, so a new one has to reach
+        # them. Refreshing the field is also what marks the new drawing, the highlight going with
+        # the drawing it was applied to.
+        self.refresh_highlight()
+
     def _on_projection_failed(self, error: Exception) -> None:
         """ Reopen the button when the projection raised, so the run can be attempted again.
 
@@ -352,3 +528,7 @@ class InteractiveExplorerWindow(QDialog):
 
         if self._phenome.projection_df is not None:
             self._canvas.plot_projection(self._phenome.projection_df, self._phenome.params.explorer.color_by)
+
+            # Recolouring draws the points again, which knows nothing of what was marked on the
+            # drawing before it
+            self._apply_highlight()

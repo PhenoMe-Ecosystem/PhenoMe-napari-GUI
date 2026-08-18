@@ -71,14 +71,21 @@ HIGHLIGHT_COLOUR = '#ffffff'
 HIGHLIGHT_WIDTH = 2
 HIGHLIGHT_SIZE = MARKER_SIZE + 4
 
+# Opacity of a point the highlight leaves out, out of 255. Low enough to read as background, high
+# enough that the shape of the cloud it belongs to is still there to be read against.
+DIMMED_ALPHA = 33
+
 # How near the pointer has to come to a point, in pixels, for it to count as hovered. Measured in
 # pixels rather than in the projection's own units, those meaning something different from one
 # projection to the next and changing again with every zoom.
 HOVER_RADIUS = 12
 
 
-def _is_continuous(values: pd.Series, name: str) -> bool:
+def is_continuous(values: pd.Series, name: str) -> bool:
     """ Whether a column is a measurement to draw along a ramp rather than labels to group by.
+
+    Public, as the controls beside the canvas have to read a column the same way it does: a field
+    offering a range where the plot draws a ramp, and a list of values where it draws groups.
 
     Args:
         values (pd.Series): The column's values, whose type is what decides in the general case.
@@ -95,6 +102,33 @@ def _is_continuous(values: pd.Series, name: str) -> bool:
         return False
 
     return pd.api.types.is_numeric_dtype(values)
+
+
+def resolve_column(projection_df: pd.DataFrame, name: str | None) -> str | None:
+    """ Find the projection's column holding the given metadata key or property.
+
+    PhenoMe capitalises the metadata columns it copies into a projection, so the key the GUI offers
+    ('drug_name') is not the column it ends up in ('Drug_name'), and the two are matched without
+    their case. Public for the same reason as is_continuous: the controls beside the canvas have to
+    find a column the same way it does.
+
+    Args:
+        projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
+        name (str): Key to look for. None or empty resolves to nothing, no key having been picked.
+    Returns:
+        str: The matching column of the projection, or None when it carries no such column.
+    """
+    if not name:
+        return None
+
+    for column in projection_df.columns:
+        if column.lower() == name.lower():
+            return column
+
+    # A projection is computed from the images PhenoMe holds, which a column added to the metadata
+    # afterwards has not reached yet
+    logger.warning("Column '%s' is not in the projection.", name)
+    return None
 
 
 def _format_value(value) -> str:
@@ -159,6 +193,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._hovered = None
         self._highlight = None
 
+        # Which of the drawn rows the highlight leaves out, or None when nothing is highlighted
+        self._dimmed = None
+
         for axis in ('bottom', 'left'):
             self._plot.getAxis(axis).setPen(AXIS_COLOUR)
             self._plot.getAxis(axis).setTextPen(AXIS_COLOUR)
@@ -194,24 +231,86 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             return
 
         x_column, y_column = components
-        self._plot.setLabel('bottom', x_column)
-        self._plot.setLabel('left', y_column)
 
-        column = self._resolve_column(projection_df, color_by)
-
-        # Kept whole rather than as coordinates alone, the tooltip reading the rest of the row
+        # Kept whole rather than as coordinates alone, the tooltip reading the rest of the row and
+        # the dimming drawing it again
         self._points = projection_df
         self._x_column, self._y_column = x_column, y_column
-        self._color_column = column
+        self._color_column = resolve_column(projection_df, color_by)
+
+        self._draw()
+
+    def _draw(self) -> None:
+        """ Draw the frame currently held, coloured by the column currently held.
+
+        Kept apart from plot_projection() so the dimming can draw the same frame again through the
+        same two paths, rather than reaching into the items they left behind: what a point is
+        coloured by decides which of them drew it, and the legend and the colorbar go with them.
+        """
+        self._plot.setLabel('bottom', self._x_column)
+        self._plot.setLabel('left', self._y_column)
+
+        column = self._color_column
 
         if column is None:
-            self._add_series(projection_df[x_column], projection_df[y_column], UNGROUPED_COLOUR)
+            self._add_series(
+                self._points[self._x_column],
+                self._points[self._y_column],
+                UNGROUPED_COLOUR,
+                self._dimmed_brushes(UNGROUPED_COLOUR)
+            )
             return
 
-        if _is_continuous(projection_df[column], column):
-            self._draw_ramp(projection_df, x_column, y_column, column)
+        if is_continuous(self._points[column], column):
+            self._draw_ramp(self._points, self._x_column, self._y_column, column)
         else:
-            self._draw_groups(projection_df, x_column, y_column, column)
+            self._draw_groups(self._points, self._x_column, self._y_column, column)
+
+    def highlight_points(self, field: str | None = None, criterion=None) -> None:
+        """ Mark out the points answering a criterion, fading back every other one.
+
+        The points left out are drawn faded rather than taken off the canvas, so what was picked is
+        read against the cloud it was picked from rather than on an empty plot.
+
+        Args:
+            field (str): Metadata column or property the criterion is read on. None, or a column the
+                projection does not carry, leaves every point as it is.
+            criterion: Either two numbers, read as the ends of a range the value has to fall between,
+                or a single value the point has to hold. None leaves every point as it is.
+        """
+        if self._points is None:
+            return
+
+        self._dimmed = self._dimmed_rows(field, criterion)
+
+        self._clear_canvas()
+        self._draw()
+
+    def _dimmed_rows(self, field: str | None, criterion) -> "pd.Series | None":
+        """ Work out which of the drawn rows a criterion leaves out.
+
+        Args:
+            field (str): Column the criterion is read on.
+            criterion: The range or the value the points are held to.
+        Returns:
+            pd.Series: True for each row to fade back, or None when there is nothing to fade.
+        """
+        column = resolve_column(self._points, field)
+        if column is None or criterion is None:
+            return None
+
+        values = self._points[column]
+
+        # Two numbers are the ends of a range, anything else is a value to hold the points to. A row
+        # with no value answers neither, an image PhenoMe knows nothing about being one the criterion
+        # cannot speak for.
+        if isinstance(criterion, tuple | list) and len(criterion) == 2:
+            low, high = criterion
+            kept = values.between(low, high)
+        else:
+            kept = values == criterion
+
+        return ~kept.fillna(False).astype(bool)
 
     def _draw_groups(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw one series per value of a column of labels, named in the legend.
@@ -232,10 +331,12 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         for index, group in enumerate(groups):
             rows = labels == group
+            colour = SERIES_COLOURS[index % len(SERIES_COLOURS)]
             self._add_series(
                 projection_df.loc[rows, x_column],
                 projection_df.loc[rows, y_column],
-                SERIES_COLOURS[index % len(SERIES_COLOURS)],
+                colour,
+                self._dimmed_brushes(colour, rows),
                 name=str(group)
             )
 
@@ -260,9 +361,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         positions = (values - low) / span if span else pd.Series(0.0, index=values.index)
 
         colormap = pg.colormap.get(CONTINUOUS_COLORMAP)
+        dimmed = [False] * len(positions) if self._dimmed is None else list(self._dimmed)
         brushes = [
-            pg.mkBrush(MISSING_COLOUR) if pd.isna(position) else pg.mkBrush(colormap.map(position, mode='qcolor'))
-            for position in positions
+            self._brush(MISSING_COLOUR if pd.isna(position) else colormap.map(position, mode='qcolor'), dim)
+            for position, dim in zip(positions, dimmed, strict=True)
         ]
 
         self._plot.addItem(
@@ -287,12 +389,15 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         self.addItem(self._colorbar, row=0, col=1)
 
-    def _clear(self) -> None:
-        """ Take everything off the canvas.
+    def _clear_canvas(self) -> None:
+        """ Take everything drawn off the canvas, leaving the frame it was drawn from.
 
         The legend and the colorbar are cleared by hand: neither is one of the plot's data items, so
-        clearing the plot leaves them behind and the next projection would draw on top of them. They
+        clearing the plot leaves them behind and the next drawing would land on top of them. They
         also stand in for each other, so each has to undo what the other left.
+
+        Kept apart from _clear() for the redrawing: dimming the points draws the same frame again,
+        and would have nothing to draw if the frame went with the items.
         """
         self._legend.clear()
         self._plot.clear()
@@ -301,14 +406,21 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             self.removeItem(self._colorbar)
             self._colorbar = None
 
-        # Dropped along with the points, so a hover over a cleared canvas answers for nothing. The
-        # ring went with the plot's other items, leaving only the reference to it to let go of.
+        # The ring went with the plot's other items, leaving only the reference to it to let go of
+        self._hovered = None
+        self._highlight = None
+
+    def _clear(self) -> None:
+        """ Take everything off the canvas, the frame it was drawn from included. """
+        self._clear_canvas()
+
+        # Dropped along with the points, so a hover over a cleared canvas answers for nothing, and
+        # so a highlight does not outlive the projection it was picked against
         self._points = None
         self._x_column = None
         self._y_column = None
         self._color_column = None
-        self._hovered = None
-        self._highlight = None
+        self._dimmed = None
 
     def _nearest_point(self, position: QPointF) -> int | None:
         """ Find the drawn point nearest a position, so long as one is near enough to have been meant.
@@ -467,47 +579,65 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             if column not in placed and not column.startswith(COMPONENT_PREFIX) and column[:1].isupper()
         ]
 
-    def _resolve_column(self, projection_df: pd.DataFrame, color_by: str | None) -> str | None:
-        """ Find the projection's column holding the given metadata key.
-
-        PhenoMe capitalises the metadata columns it copies into the projection, so the key the GUI
-        offers ('drug_name') is not the column it ends up in ('Drug_name'), and the two are matched
-        without their case.
+    def _brush(self, colour, dimmed: bool = False) -> "pg.QtGui.QBrush":
+        """ The brush a point is drawn with, faded when the highlight leaves it out.
 
         Args:
-            projection_df (pd.DataFrame): The projected coordinates and the metadata alongside them.
-            color_by (str): Metadata column the points are to be coloured by. None to leave them ungrouped.
+            colour: The colour the point would be drawn in, as a name or as a QColor.
+            dimmed (bool): True to fade it back, False to leave it as it is.
         Returns:
-            str: The matching column of the projection, or None when there is no column to group by.
+            QBrush: The colour, at full opacity or at the dimmed one.
         """
-        if not color_by:
+        brush = pg.mkBrush(colour)
+        if dimmed:
+            faded = brush.color()
+            faded.setAlpha(DIMMED_ALPHA)
+            brush.setColor(faded)
+
+        return brush
+
+    def _dimmed_brushes(self, colour, rows=None) -> list | None:
+        """ One brush per point, faded where the highlight leaves the point out.
+
+        Args:
+            colour: The colour the points would be drawn in.
+            rows: Mask picking the rows being drawn out of the frame, for a set holding some of them.
+                None for a set holding all of them.
+        Returns:
+            list: A brush for each point, or None while nothing is highlighted and they can share one.
+        """
+        if self._dimmed is None:
             return None
 
-        for column in projection_df.columns:
-            if column.lower() == color_by.lower():
-                return column
+        dimmed = self._dimmed if rows is None else self._dimmed[rows]
+        return [self._brush(colour, dim) for dim in dimmed]
 
-        # The projection is computed from the images PhenoMe holds, which a column added to the
-        # metadata afterwards has not reached yet.
-        logger.warning("Column '%s' is not in the projection, so the points are left uncoloured.", color_by)
-        return None
-
-    def _add_series(self, x: pd.Series, y: pd.Series, colour: str, name: str | None = None) -> None:
+    def _add_series(
+        self, x: pd.Series, y: pd.Series, colour, brushes: list | None = None, name: str | None = None
+    ) -> None:
         """ Draw one group of points.
 
         Args:
             x (pd.Series): Coordinates along the first component.
             y (pd.Series): Coordinates along the second component.
-            colour (str): Colour the points are drawn in.
+            colour (str): Colour the group is drawn in, and the colour its legend entry is drawn in.
+            brushes (list): A brush per point, for a group the highlight has split. None to leave
+                every point on the group's own colour.
             name (str): Name of the group, which is what puts it in the legend. None to leave it out.
         """
-        self._plot.addItem(
-            pg.ScatterPlotItem(
-                x=x.to_numpy(),
-                y=y.to_numpy(),
-                brush=pg.mkBrush(colour),
-                pen=None,
-                size=MARKER_SIZE,
-                name=name
-            )
+        series = pg.ScatterPlotItem(
+            x=x.to_numpy(),
+            y=y.to_numpy(),
+            brush=self._brush(colour),
+            pen=None,
+            size=MARKER_SIZE,
+            name=name
         )
+
+        # Set after the fact rather than passed in: the legend draws its swatch from the brush the
+        # series was built with, and a list of them leaves it drawing something that is no colour at
+        # all. Setting them here leaves that one where the group's colour is.
+        if brushes is not None:
+            series.setBrush(brushes)
+
+        self._plot.addItem(series)

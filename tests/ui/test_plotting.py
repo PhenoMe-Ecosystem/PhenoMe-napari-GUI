@@ -11,6 +11,7 @@ from qtpy.QtCore import QPointF, Qt
 from qtpy.QtWidgets import QToolTip
 
 from phenome_gui.ui.plotting import (
+    DIMMED_ALPHA,
     HIGHLIGHT_COLOUR,
     HOVER_RADIUS,
     MISSING_COLOUR,
@@ -305,6 +306,153 @@ def test_the_axes_are_named_after_the_components(plot: ExplorerPlot) -> None:
 
     assert plot._plot.getAxis('bottom').labelText == 'Component 1'
     assert plot._plot.getAxis('left').labelText == 'Component 2'
+
+
+# ----------------------------------------------------------------------------
+# Marking out the points a criterion answers for
+# ----------------------------------------------------------------------------
+
+
+def by_row(plot: ExplorerPlot, read) -> list:
+    """ Read something off every drawn point, in the order the frame holds them.
+
+    The points are drawn a group at a time, so they are put back in frame order by their coordinates,
+    which the projection helper numbers from zero.
+
+    Args:
+        plot: The canvas to read.
+        read: What to read off each drawn point, given its brush colour.
+    """
+    values = {}
+    for item in plot._plot.listDataItems():
+        for spot in item.points():
+            values[round(spot.pos().x())] = read(spot.brush().color())
+
+    return [values[row] for row in sorted(values)]
+
+
+def alphas(plot: ExplorerPlot) -> list[int]:
+    """ The opacity of every drawn point, in frame order. """
+    return by_row(plot, lambda colour: colour.alpha())
+
+
+def hues(plot: ExplorerPlot) -> list[str]:
+    """ The colour of every drawn point, in frame order, the opacity aside. """
+    return by_row(plot, lambda colour: colour.name())
+
+
+def test_a_value_leaves_its_points_alone_and_fades_the_rest(plot: ExplorerPlot) -> None:
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+
+    plot.highlight_points('drug_name', 'drugA')
+
+    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, 255]
+
+
+def test_the_groups_and_their_colours_survive_the_marking(plot: ExplorerPlot) -> None:
+    """The plot still reads as what it was, with the picked points marked out on it."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+    before = hues(plot)
+
+    plot.highlight_points('drug_name', 'drugA')
+
+    assert series(plot) == {'ctrl': 2, 'drugA': 1}
+    assert sorted(legend_labels(plot)) == ['ctrl', 'drugA']
+    assert hues(plot) == before
+
+
+def test_the_legend_keeps_its_colours_while_the_points_are_marked(plot: ExplorerPlot) -> None:
+    """The legend draws its swatch from the colour the series was built with, not from its points."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+
+    plot.highlight_points('drug_name', 'drugA')
+
+    assert colours(plot) == SERIES_COLOURS[:2]
+
+
+def test_a_range_leaves_the_points_inside_it_alone(plot: ExplorerPlot) -> None:
+    plot.plot_projection(measured([10.0, 20.0, 30.0]), 'area')
+
+    plot.highlight_points('area', (15.0, 25.0))
+
+    assert alphas(plot) == [DIMMED_ALPHA, 255, DIMMED_ALPHA]
+    assert plot._colorbar is not None
+
+
+def test_the_ends_of_a_range_are_inside_it(plot: ExplorerPlot) -> None:
+    """The slider opens on the whole span, which has to mark every point rather than none."""
+    plot.plot_projection(measured([10.0, 20.0, 30.0]), 'area')
+
+    plot.highlight_points('area', (10.0, 30.0))
+
+    assert alphas(plot) == [255, 255, 255]
+
+
+def test_a_capitalised_column_is_found_from_its_gui_name(plot: ExplorerPlot) -> None:
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+
+    plot.highlight_points('drug_name', 'ctrl')
+
+    assert alphas(plot) == [255, 255, DIMMED_ALPHA]
+
+
+def test_a_point_without_a_value_is_left_out(plot: ExplorerPlot) -> None:
+    """A criterion cannot speak for an image PhenoMe knows nothing about."""
+    plot.plot_projection(measured([10.0, float('nan'), 30.0]), 'area')
+
+    plot.highlight_points('area', (5.0, 35.0))
+
+    assert alphas(plot) == [255, DIMMED_ALPHA, 255]
+
+
+@pytest.mark.parametrize(
+    ('field', 'criterion'),
+    [
+        pytest.param(None, None, id='nothing-picked'),
+        pytest.param('drug_name', None, id='no-criterion'),
+        pytest.param('gone', 'ctrl', id='not-in-the-projection'),
+    ],
+)
+def test_nothing_to_mark_leaves_every_point_alone(plot: ExplorerPlot, field, criterion) -> None:
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+
+    plot.highlight_points(field, criterion)
+
+    assert alphas(plot) == [255, 255, 255]
+
+
+def test_the_marking_can_be_taken_off(plot: ExplorerPlot) -> None:
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+    plot.highlight_points('drug_name', 'drugA')
+
+    plot.highlight_points()
+
+    assert alphas(plot) == [255, 255, 255]
+
+
+def test_marking_an_empty_canvas_does_nothing(plot: ExplorerPlot) -> None:
+    plot.highlight_points('drug_name', 'ctrl')
+
+    assert series(plot) == {}
+
+
+def test_a_new_projection_is_drawn_unmarked(plot: ExplorerPlot) -> None:
+    """The marking was picked against the points it was applied to, not against these."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+    plot.highlight_points('drug_name', 'drugA')
+
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+
+    assert alphas(plot) == [255, 255, 255]
+
+
+def test_the_marking_holds_without_a_colouring(plot: ExplorerPlot) -> None:
+    """The field marked on is picked apart from the one coloured by, so either can stand alone."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), None)
+
+    plot.highlight_points('drug_name', 'drugA')
+
+    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, 255]
 
 
 # ----------------------------------------------------------------------------

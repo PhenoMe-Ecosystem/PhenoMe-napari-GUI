@@ -584,6 +584,293 @@ def test_the_two_forms_write_their_own_parameter(
 
 
 # ----------------------------------------------------------------------------
+# The highlight controls, read off the drawn projection
+# ----------------------------------------------------------------------------
+
+
+def measured_projection(areas: list[float]) -> pd.DataFrame:
+    """ A projection carrying a measured property alongside its metadata. """
+    frame = coordinates(groups=['ctrl', 'ctrl', 'drugA'])
+    frame['area'] = areas
+    return frame
+
+
+def highlight_page(window: InteractiveExplorerWindow):
+    """ The control currently shown for the chosen field. """
+    return window._highlight_stack.currentWidget()
+
+
+@pytest.fixture
+def measured(loaded_explorer: InteractiveExplorerWindow, computing, processed):
+    """ Return a hook drawing a projection carrying a measured property.
+
+    The property has to be one the pipeline holds as well as one the projection carries: the fields
+    on offer are the colouring's, which reads the computed property keys rather than the frame.
+
+    Returns:
+        Callable[[list[float]], None]: Called as measured([120.0, 512.0]).
+    """
+    def _draw(areas: list[float]) -> None:
+        results = processed(loaded_explorer._phenome, len(areas))
+        results.properties = [{'area': area} for area in areas]
+
+        computing(measured_projection(areas))
+        loaded_explorer._compute_button.click()
+
+    return _draw
+
+
+def test_the_highlight_field_offers_what_the_colouring_offers(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """Both read the same columns, so the plot and the marking can be told to answer for the same one."""
+    computing()
+    loaded_explorer._compute_button.click()
+
+    assert items(loaded_explorer._highlight_field_combo) == items(loaded_explorer._color_by_combo)
+
+
+def test_the_highlight_group_waits_on_a_projection(loaded_explorer: InteractiveExplorerWindow) -> None:
+    """Its values are the drawn points', so there is nothing for it to offer until they exist."""
+    assert not loaded_explorer._highlight_group.isEnabled()
+    assert loaded_explorer._highlight_group.toolTip() == 'Please compute a projection first.'
+
+
+def test_the_highlight_group_opens_once_a_projection_is_drawn(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+
+    loaded_explorer._compute_button.click()
+
+    assert loaded_explorer._highlight_group.isEnabled()
+    assert loaded_explorer._highlight_group.toolTip() == ''
+
+
+def test_a_field_of_labels_is_picked_from_its_values(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_values_combo
+    assert items(loaded_explorer._highlight_values_combo) == ['ctrl', 'drugA']
+
+
+def test_a_field_of_measurements_is_picked_from_its_range(
+    loaded_explorer: InteractiveExplorerWindow, measured
+) -> None:
+    measured([120.0, 512.0, 340.0])
+
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_range_slider
+    assert loaded_explorer._highlight_range_slider.minimum() == 120.0
+    assert loaded_explorer._highlight_range_slider.maximum() == 512.0
+
+
+def test_the_range_opens_on_the_whole_of_it(loaded_explorer: InteractiveExplorerWindow, measured) -> None:
+    """Wide open reads as picking every point, where a slice would pick one nobody asked for."""
+    measured([120.0, 512.0, 340.0])
+
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+
+    assert tuple(loaded_explorer._highlight_range_slider.value()) == (120.0, 512.0)
+
+
+def test_the_control_changes_with_the_kind_of_field(
+    loaded_explorer: InteractiveExplorerWindow, measured
+) -> None:
+    measured([120.0, 512.0, 340.0])
+
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_range_slider
+
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_values_combo
+
+
+def test_a_measured_column_of_one_value_leaves_the_slider_room(
+    loaded_explorer: InteractiveExplorerWindow, measured
+) -> None:
+    """Both ends in the same place would leave the handles nowhere to go."""
+    measured([7.0, 7.0, 7.0])
+
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+
+    assert loaded_explorer._highlight_range_slider.minimum() == 7.0
+    assert loaded_explorer._highlight_range_slider.maximum() > 7.0
+
+
+def test_a_field_the_projection_does_not_carry_offers_nothing(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """A column added to the metadata after the run is not in it, which must not raise."""
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._phenome.metadata_df['cluster'] = [0, 1] * 3
+    loaded_explorer.refresh_highlight()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('cluster')
+
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_values_combo
+    assert items(loaded_explorer._highlight_values_combo) == []
+
+
+def test_computing_again_brings_the_values_up_to_date(
+    loaded_explorer: InteractiveExplorerWindow, computing, reduction
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    assert items(loaded_explorer._highlight_values_combo) == ['ctrl', 'drugA']
+
+    reduction(coordinates(groups=['drugB', 'drugB', 'drugC']))
+    loaded_explorer._compute_button.click()
+
+    assert items(loaded_explorer._highlight_values_combo) == ['drugB', 'drugC']
+
+
+def test_the_highlight_checkbox_changes_no_parameter(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """It marks what is drawn, and says nothing about how the projection is computed."""
+    computing()
+    loaded_explorer._compute_button.click()
+    before = explorer_params(loaded_explorer).model_copy(deep=True)
+
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    assert loaded_explorer._highlight_checkbox.text() == 'Highlight'
+    assert explorer_params(loaded_explorer) == before
+
+
+# ----------------------------------------------------------------------------
+# Marking the drawn points from the highlight controls
+# ----------------------------------------------------------------------------
+
+
+def dimmed_rows(window: InteractiveExplorerWindow) -> list[bool]:
+    """ Which of the drawn points the canvas is currently fading back. """
+    dimmed = window._canvas._dimmed
+    return [] if dimmed is None else list(dimmed)
+
+
+def test_checking_the_box_marks_the_picked_points(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    # The projection holds ctrl, ctrl, drugA
+    assert dimmed_rows(loaded_explorer) == [True, True, False]
+
+
+def test_unchecking_the_box_takes_the_marking_off(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    loaded_explorer._highlight_checkbox.setChecked(False)
+
+    assert dimmed_rows(loaded_explorer) == []
+
+
+def test_picking_another_value_marks_it_straight_away(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """A pick made with the box already checked takes effect where it is made."""
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('ctrl')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+
+    assert dimmed_rows(loaded_explorer) == [True, True, False]
+
+
+def test_moving_the_range_marks_what_it_now_holds(
+    loaded_explorer: InteractiveExplorerWindow, measured
+) -> None:
+    measured([120.0, 512.0, 340.0])
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    loaded_explorer._highlight_range_slider.setValue((300.0, 600.0))
+
+    assert dimmed_rows(loaded_explorer) == [True, False, False]
+
+
+def test_a_pick_made_with_the_box_unchecked_marks_nothing(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+
+    assert dimmed_rows(loaded_explorer) == []
+
+
+def test_the_picked_value_keeps_its_type(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    """The combo shows the time as text where the column holds it as one, which would match nothing."""
+    frame = coordinates()
+    frame['Cluster'] = [0, 1, 1]
+    computing(frame)
+    loaded_explorer._compute_button.click()
+    loaded_explorer._phenome.metadata_df['cluster'] = [0, 1] * 3
+    loaded_explorer.refresh_highlight()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('cluster')
+    loaded_explorer._highlight_values_combo.setCurrentText('1')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    assert loaded_explorer._highlight_values_combo.currentData() == 1
+    assert dimmed_rows(loaded_explorer) == [True, False, False]
+
+
+def test_recolouring_keeps_the_marking(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    """Recolouring draws the points again, which would otherwise come back unmarked."""
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    loaded_explorer._color_by_combo.setCurrentText('time')
+
+    assert dimmed_rows(loaded_explorer) == [True, True, False]
+
+
+def test_computing_again_marks_the_new_points(
+    loaded_explorer: InteractiveExplorerWindow, computing, reduction
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    reduction(coordinates(groups=['drugA', 'ctrl', 'ctrl']))
+    loaded_explorer._compute_button.click()
+
+    assert dimmed_rows(loaded_explorer) == [False, True, True]
+
+
+# ----------------------------------------------------------------------------
 # Clicking a point through to the viewer
 # ----------------------------------------------------------------------------
 
