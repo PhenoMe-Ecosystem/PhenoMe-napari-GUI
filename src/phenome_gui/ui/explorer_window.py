@@ -55,9 +55,6 @@ class InteractiveExplorerWindow(QDialog):
     Unlike the parameter forms, it writes straight into params.explorer rather than into a copy handed
     back once confirmed, there being nothing to confirm: the window stays open, and its settings are
     read whenever the projection is computed.
-
-    TODO: The highlight group picks a field and a value but does not mark anything with them yet, and
-    the selection group is still to be written.
     """
 
     def __init__(
@@ -217,10 +214,14 @@ class InteractiveExplorerWindow(QDialog):
         self._highlight_select_button = QPushButton("Highlight")
         self._clear_select_button = QPushButton("Clear")
 
-        # Checkable, so the plot waiting for a box is something the window shows rather than
-        # something only the cursor gives away. It unchecks itself once the box has been drawn.
+        # Checkable, so the plot waiting for a shape is something the window shows rather than
+        # something only the cursor gives away. Whichever drew the selection unchecks itself once it
+        # has been drawn, and checking one of them unchecks the other: the plot waits for one shape.
         self._box_select_button.setCheckable(True)
+        self._lasso_select_button.setCheckable(True)
         self._box_select_button.clicked.connect(self._on_box_select_clicked)
+        self._lasso_select_button.clicked.connect(self._on_lasso_select_clicked)
+        self._highlight_select_button.clicked.connect(self._on_highlight_select_clicked)
         self._clear_select_button.clicked.connect(self._on_clear_selection_clicked)
         selection_row.addWidget(self._box_select_button)
         selection_row.addWidget(self._lasso_select_button)
@@ -596,13 +597,46 @@ class InteractiveExplorerWindow(QDialog):
 
     def _on_box_select_clicked(self) -> None:
         """ Wait for a box to be drawn over the plot, or stop waiting when the button is let go of. """
+        self._lasso_select_button.setChecked(False)
+
         if self._box_select_button.isChecked():
             self._canvas.begin_box_selection()
         else:
-            self._canvas.cancel_box_selection()
+            self._canvas.cancel_selection()
+
+    def _on_lasso_select_clicked(self) -> None:
+        """ Wait for a lasso to be drawn over the plot, or stop waiting when the button is let go of.
+
+        The two buttons are a choice of one shape: checking this one lets the box go, and the plot
+        waits for whichever was asked for last.
+        """
+        self._box_select_button.setChecked(False)
+
+        if self._lasso_select_button.isChecked():
+            self._canvas.begin_lasso_selection()
+        else:
+            self._canvas.cancel_selection()
+
+    def _on_highlight_select_clicked(self) -> None:
+        """ Use the points the highlight answers for as a selection.
+
+        The field and the value are the ones picked in the Highlight group, whether or not its box is
+        checked: that box decides whether the plot fades the rest of the points back, where this asks
+        for the points those two name. What comes of it is a selection like any other, counted and
+        listed the way a drawn box's is.
+        """
+        # A shape was being waited for, and the question has just been answered another way
+        self._canvas.cancel_selection()
+
+        indices = self._canvas.select_matching(
+            self._highlight_field_combo.currentText(), self._highlight_criterion()
+        )
+
+        self._on_points_selected(indices)
+
 
     def _on_points_selected(self, indices: list[int]) -> None:
-        """ Take note of the points a drawn box picked out, and show what they are.
+        """ Take note of the points a drawn shape picked out, and show what they are.
 
         The canvas says which images were picked and washes them over; the count and the table are
         the window's to keep, the canvas holding no metadata to fill a table with.
@@ -611,7 +645,10 @@ class InteractiveExplorerWindow(QDialog):
             indices (list[int]): The index PhenoMe holds each selected image at.
         """
         self._selected_indices = indices
+
+        # Whichever of the two was waiting has had its answer
         self._box_select_button.setChecked(False)
+        self._lasso_select_button.setChecked(False)
 
         self._num_select_label.setText(f"{len(indices)} points selected.")
         self._show_selection()

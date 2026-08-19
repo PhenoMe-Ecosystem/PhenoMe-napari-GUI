@@ -9,6 +9,7 @@ import pandas as pd
 import pyqtgraph as pg
 import pytest
 from qtpy.QtCore import QPointF, QRectF, Qt
+from qtpy.QtGui import QPolygonF
 from qtpy.QtWidgets import QToolTip
 
 from phenome_gui.ui.plotting import (
@@ -668,12 +669,196 @@ def test_the_picked_images_are_announced(plot: ExplorerPlot, qtbot) -> None:
     assert announced.args == [[20, 30]]
 
 
-def test_waiting_for_a_box_can_be_called_off(plot: ExplorerPlot) -> None:
-    plot.begin_box_selection()
+@pytest.mark.parametrize('begin', ['begin_box_selection', 'begin_lasso_selection'], ids=['box', 'lasso'])
+def test_waiting_for_a_shape_can_be_called_off(plot: ExplorerPlot, begin: str) -> None:
+    getattr(plot, begin)()
 
-    plot.cancel_box_selection()
+    plot.cancel_selection()
 
     assert not plot._viewbox.selecting
+
+
+# ----------------------------------------------------------------------------
+# Picking points out with a lasso
+# ----------------------------------------------------------------------------
+
+
+def lasso(*corners: tuple[float, float]) -> QPolygonF:
+    """ A path drawn over the plot, in the coordinates the points are held in. """
+    return QPolygonF([QPointF(x, y) for x, y in corners])
+
+
+def test_a_lasso_picks_out_the_points_inside_it(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    # A loop around the last two of (0, 1), (1, 2), (2, 3)
+    picked = plot.select_in_lasso(lasso((0.5, 1.5), (2.5, 1.5), (2.5, 3.5), (0.5, 3.5)))
+
+    assert picked == [20, 30]
+
+
+def test_a_lasso_holds_only_what_it_went_round(plot: ExplorerPlot) -> None:
+    """The reason to draw one: a shape a box would have to take its neighbours in to cover."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    # A rectangle over all three points, with a bay cut into it from the right that the middle one
+    # sits in: everything but x from 0.5 to 3 at y from 1.5 to 2.5
+    picked = plot.select_in_lasso(
+        lasso(
+            (-1.0, 0.0), (3.0, 0.0), (3.0, 1.5), (0.5, 1.5),
+            (0.5, 2.5), (3.0, 2.5), (3.0, 4.0), (-1.0, 4.0),
+        )
+    )
+
+    # The points sit at (0, 1), (1, 2) and (2, 3), the middle one inside the bay
+    assert picked == [10, 30]
+
+
+def test_a_lasso_left_ajar_still_holds(plot: ExplorerPlot) -> None:
+    """The path is closed as it is read, a drawn loop rarely ending where it started."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    picked = plot.select_in_lasso(lasso((0.5, 1.5), (2.5, 1.5), (2.5, 3.5), (0.6, 3.4)))
+
+    assert picked == [20, 30]
+
+
+@pytest.mark.parametrize(
+    'corners',
+    [
+        pytest.param(((1.0, 2.0),), id='one-point'),
+        pytest.param(((0.0, 1.0), (2.0, 3.0)), id='a-line'),
+    ],
+)
+def test_a_path_that_encloses_nothing_picks_out_nothing(plot: ExplorerPlot, corners) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    assert plot.select_in_lasso(lasso(*corners)) == []
+    assert selection(plot) is None
+
+
+def test_a_lasso_on_an_empty_canvas_picks_out_nothing(plot: ExplorerPlot) -> None:
+    assert plot.select_in_lasso(lasso((0.0, 0.0), (5.0, 0.0), (5.0, 5.0))) == []
+
+
+def test_the_points_a_lasso_picks_out_are_washed_over(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    plot.select_in_lasso(lasso((0.5, 1.5), (2.5, 1.5), (2.5, 3.5), (0.5, 3.5)))
+
+    (spot_x, _) = selection(plot).getData()
+    assert list(spot_x) == [1.0, 2.0]
+
+
+def test_a_drag_draws_the_lasso_and_hands_it_over(plot: ExplorerPlot, qtbot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot.begin_lasso_selection()
+
+    plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(20.0, 0.0), finish=False))
+    plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(20.0, 20.0), finish=False))
+    assert plot._viewbox.lasso_band.isVisible()
+
+    with qtbot.waitSignal(plot._viewbox.lasso_selected, timeout=1000) as announced:
+        plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(0.0, 20.0)))
+
+    # Where the drag began, and each place it was reported at since
+    assert announced.args[0].count() == 4
+    assert not plot._viewbox.lasso_band.isVisible()
+    assert not plot._viewbox.selecting
+
+
+def test_a_drag_pans_the_plot_when_no_lasso_was_asked_for(plot: ExplorerPlot, qtbot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    with qtbot.assertNotEmitted(plot._viewbox.lasso_selected):
+        plot._viewbox.mouseDragEvent(FakeDrag(QPointF(0.0, 0.0), QPointF(50.0, 50.0)))
+
+
+def test_the_band_is_drawn_among_the_points(plot: ExplorerPlot) -> None:
+    """It hangs with them rather than in the pixels the drag was reported in, or it is drawn off-screen."""
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+    plot._plot.vb.setRange(xRange=(0, 10), yRange=(0, 10), padding=0)
+    plot.begin_lasso_selection()
+
+    corner = plot._viewbox.childGroup.mapToParent(QPointF(2.0, 3.0))
+    plot._viewbox.mouseDragEvent(FakeDrag(corner, corner, finish=False))
+
+    drawn = plot._viewbox.lasso_band.path().boundingRect()
+    assert drawn.left() == pytest.approx(2.0, abs=0.1)
+    assert drawn.top() == pytest.approx(3.0, abs=0.1)
+
+
+def test_the_lasso_band_is_drawn_like_the_box_band(plot: ExplorerPlot) -> None:
+    """The two shapes a selection is drawn as should read as one another."""
+    band = plot._viewbox.lasso_band
+    scale_box = plot._viewbox.rbScaleBox
+
+    assert band.pen().color().name() == scale_box.pen().color().name()
+    assert band.brush().color().name() == scale_box.brush().color().name()
+    assert band.brush().color().alpha() == scale_box.brush().color().alpha()
+
+
+# ----------------------------------------------------------------------------
+# Picking points out by what they hold
+# ----------------------------------------------------------------------------
+
+
+def test_a_value_picks_out_the_points_holding_it(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    picked = plot.select_matching('drug_name', 'ctrl')
+
+    assert picked == [10, 20]
+
+
+def test_a_range_picks_out_the_points_inside_it(plot: ExplorerPlot) -> None:
+    plot.plot_projection(measured([10.0, 20.0, 30.0]), 'area')
+
+    picked = plot.select_matching('area', (15.0, 25.0))
+
+    assert picked == [1]
+
+
+def test_the_points_picked_by_a_value_are_washed_over(plot: ExplorerPlot) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    plot.select_matching('drug_name', 'drugA')
+
+    (spot_x, _) = selection(plot).getData()
+    assert list(spot_x) == [2.0]
+
+
+@pytest.mark.parametrize(
+    ('field', 'criterion'),
+    [
+        pytest.param(None, None, id='nothing-picked'),
+        pytest.param('drug_name', None, id='no-criterion'),
+        pytest.param('gone', 'ctrl', id='not-in-the-projection'),
+    ],
+)
+def test_no_criterion_picks_out_nothing(plot: ExplorerPlot, field, criterion) -> None:
+    plot.plot_projection(indexed_projection([10, 20, 30]), 'drug_name')
+
+    assert plot.select_matching(field, criterion) == []
+    assert selection(plot) is None
+
+
+def test_a_criterion_on_an_empty_canvas_picks_out_nothing(plot: ExplorerPlot) -> None:
+    assert plot.select_matching('drug_name', 'ctrl') == []
+
+
+def test_what_a_highlight_fades_is_what_a_criterion_leaves_out(plot: ExplorerPlot) -> None:
+    """One mask read two ways: the same field and value fade the plot and pick the points out."""
+    frame = indexed_projection([10, 20, 30])
+
+    plot.plot_projection(frame, 'drug_name')
+    plot.highlight_points('drug_name', 'ctrl')
+    dimmed = list(plot._dimmed)
+
+    plot.plot_projection(frame, 'drug_name')
+    plot.select_matching('drug_name', 'ctrl')
+
+    assert list(~plot._selected) == dimmed
 
 
 # ----------------------------------------------------------------------------

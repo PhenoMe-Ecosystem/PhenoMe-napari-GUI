@@ -11,7 +11,8 @@ import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
-from qtpy.QtWidgets import QToolTip, QWidget
+from qtpy.QtGui import QPainterPath, QPolygonF
+from qtpy.QtWidgets import QGraphicsPathItem, QToolTip, QWidget
 
 logger = logging.getLogger("main_logger")
 
@@ -80,9 +81,19 @@ DIMMED_ALPHA = 33
 # projection to the next and changing again with every zoom.
 HOVER_RADIUS = 12
 
+# The two shapes a selection can be drawn as, and what the plot answers when asked which it is
+# waiting for. Either reads as true while it waits, and None once it is not waiting for anything.
+BOX_SELECTION = 'box'
+LASSO_SELECTION = 'lasso'
+
+# The lasso is drawn the way pyqtgraph draws its own rubber band - the same yellow line over the same
+# wash - so the two shapes a selection can be drawn as look like one another.
+LASSO_PEN_COLOUR = (255, 255, 100)
+LASSO_BRUSH_COLOUR = (255, 255, 0, 100)
+
 # Wash laid over a selected point, rather than a colour replacing its own: what the point was
 # coloured by is still worth reading once it has been picked out.
-SELECTION_COLOUR = "#003780"
+SELECTION_COLOUR = "#EEFF00"
 SELECTION_ALPHA = 110
 SELECTION_SIZE = MARKER_SIZE + 2
 
@@ -158,8 +169,11 @@ def metadata_columns(projection_df: pd.DataFrame) -> list[str]:
     ]
 
 
-def _format_value(value) -> str:
-    """ Write a column's value the way a tooltip should read it.
+def format_value(value) -> str:
+    """ Write a column's value the way it should be read rather than parsed.
+
+    Public alongside the other three: the tooltip and the table of a selection both show a projection
+    to be read, and a coordinate or a property written to its last decimal reads as nothing.
 
     Args:
         value: The value held for one image, of whatever type its column has.
@@ -176,22 +190,52 @@ def _format_value(value) -> str:
 
 
 class _SelectionViewBox(pg.ViewBox):
-    """ The plot's view box, which can be asked once for a rectangle drawn over it.
+    """ The plot's view box, which can be asked once for a shape drawn over it.
 
     pyqtgraph already draws a rubber band and works out what it covers - that is how its rectangle
-    zoom works - so being asked for a box is that same drag with the zoom left off at the end.
+    zoom works - so being asked for a box is that same drag with the zoom left off at the end. A
+    lasso is the same drag again, gathering where the pointer went rather than only where it started
+    and stopped, and drawn with the same yellow band pyqtgraph uses for the box.
     """
 
-    # Emitted with the rectangle drawn, in the plot's own coordinates
+    # Emitted with the shape drawn, in the plot's own coordinates: a rectangle for the one, the path
+    # the pointer took for the other
     region_selected = Signal(object)
+    lasso_selected = Signal(object)
 
     def __init__(self, *args, **kwargs) -> None:
-        """ Build the view box, drawing rather than selecting until it is asked to. """
+        """ Build the view box, panning and zooming until it is asked for a shape. """
         super().__init__(*args, **kwargs)
-        self.selecting = False
+
+        # Which shape it is waiting for, or None while it is waiting for none
+        self.selecting = None
+
+        # Where the pointer has been through the lasso being drawn, and the band drawn along it
+        self._lasso_points = []
+        self._lasso_band = None
+
+    @property
+    def lasso_band(self):
+        """ The band drawn along the lasso, built the first time one is drawn.
+
+        Built the way pyqtgraph builds its own rubber band, down to the pen and the wash: over
+        everything else, and left out of what the view sizes itself to, so drawing a lasso never
+        moves the plot under it.
+        """
+        if self._lasso_band is None:
+            band = QGraphicsPathItem()
+            band.setPen(pg.mkPen(LASSO_PEN_COLOUR, width=1))
+            band.setBrush(pg.mkBrush(*LASSO_BRUSH_COLOUR))
+            band.setZValue(1e9)
+            band.hide()
+
+            self._lasso_band = band
+            self.addItem(band, ignoreBounds=True)
+
+        return self._lasso_band
 
     def mouseDragEvent(self, event, axis=None) -> None:  # noqa: N802 - the name pyqtgraph calls it by
-        """ Draw the box being dragged, and hand it over once it is let go of.
+        """ Draw the shape being dragged, and hand it over once it is let go of.
 
         Args:
             event: The drag, as the scene reports it.
@@ -204,6 +248,17 @@ class _SelectionViewBox(pg.ViewBox):
 
         event.accept()
 
+        if self.selecting == LASSO_SELECTION:
+            self._drag_lasso(event)
+        else:
+            self._drag_box(event)
+
+    def _drag_box(self, event) -> None:
+        """ Draw the box being dragged, and hand it over once it is let go of.
+
+        Args:
+            event: The drag, as the scene reports it.
+        """
         if not event.isFinish():
             self.updateScaleBox(event.buttonDownPos(), event.pos())
             return
@@ -216,8 +271,51 @@ class _SelectionViewBox(pg.ViewBox):
         drawn = self.childGroup.mapRectFromParent(drawn)
 
         # One box per asking: the mode is over as soon as the box is let go of
-        self.selecting = False
+        self.selecting = None
         self.region_selected.emit(drawn)
+
+    def _drag_lasso(self, event) -> None:
+        """ Draw the lasso being dragged, and hand the path over once it is let go of.
+
+        Args:
+            event: The drag, as the scene reports it.
+        """
+        # Gathered in the coordinates the points are held in rather than in the pixels the drag is
+        # reported in: the band is drawn among the points, and what is handed over is read against
+        # them. Mapped a point at a time, the way the box maps its two corners.
+        if not self._lasso_points:
+            self._lasso_points.append(self.childGroup.mapFromParent(pg.Point(event.buttonDownPos())))
+
+        # Where the pointer is now, on the last move as much as on the ones before it: a drag ends
+        # where it was let go of, and the loop is not closed until that has been drawn round to
+        self._lasso_points.append(self.childGroup.mapFromParent(pg.Point(event.pos())))
+
+        if not event.isFinish():
+            self._draw_lasso_band()
+            return
+
+        self.lasso_band.hide()
+
+        drawn = QPolygonF(self._lasso_points)
+        self._lasso_points = []
+
+        # One lasso per asking, as with a box
+        self.selecting = None
+        self.lasso_selected.emit(drawn)
+
+    def _draw_lasso_band(self) -> None:
+        """ Redraw the band along the path the pointer has taken so far.
+
+        Closed as it is drawn rather than only at the end, so what the loop already holds is there to
+        be read while it is still being drawn round.
+        """
+        path = QPainterPath(self._lasso_points[0])
+        for point in self._lasso_points[1:]:
+            path.lineTo(point)
+        path.closeSubpath()
+
+        self.lasso_band.setPath(path)
+        self.lasso_band.show()
 
 
 class ExplorerPlot(pg.GraphicsLayoutWidget):
@@ -254,6 +352,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         # box, and hands the drawn rectangle over rather than zooming to it
         self._viewbox = _SelectionViewBox()
         self._viewbox.region_selected.connect(self._on_region_selected)
+        self._viewbox.lasso_selected.connect(self._on_lasso_selected)
 
         self._plot = self.addPlot(row=0, col=0, viewBox=self._viewbox)
         self._legend = self._plot.addLegend(offset=(-10, 10))
@@ -381,12 +480,28 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         The mode lasts one box: the view box goes back to panning and zooming as soon as the box is
         let go of, so the plot is not left in a state the pointer gives no sign of.
         """
-        self._viewbox.selecting = True
+        self._begin_selection(BOX_SELECTION)
+
+    def begin_lasso_selection(self) -> None:
+        """ Wait for a lasso to be drawn over the plot, and pick the points inside it out.
+
+        The same one-shot waiting as a box, for the shape a box cannot make: a cluster that runs at
+        an angle, or curls, is drawn round rather than boxed in.
+        """
+        self._begin_selection(LASSO_SELECTION)
+
+    def _begin_selection(self, shape: str) -> None:
+        """ Wait for one of the two shapes to be drawn over the plot.
+
+        Args:
+            shape (str): Which of them to wait for, BOX_SELECTION or LASSO_SELECTION.
+        """
+        self._viewbox.selecting = shape
         self._viewbox.setCursor(Qt.CursorShape.CrossCursor)
 
-    def cancel_box_selection(self) -> None:
-        """ Stop waiting for a box, leaving whatever is already selected as it is. """
-        self._viewbox.selecting = False
+    def cancel_selection(self) -> None:
+        """ Stop waiting for a shape, leaving whatever is already selected as it is. """
+        self._viewbox.selecting = None
         self._viewbox.unsetCursor()
 
     def _on_region_selected(self, rect: QRectF) -> None:
@@ -401,6 +516,48 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         logger.info("Selected %d points.", len(indices))
 
         self.points_selected.emit(indices)
+
+    def _on_lasso_selected(self, polygon: QPolygonF) -> None:
+        """ Pick out the points a drawn lasso encloses, and announce which images they are.
+
+        Args:
+            polygon (QPolygonF): The path the pointer took, in the plot's own coordinates.
+        """
+        self._viewbox.unsetCursor()
+
+        indices = self.select_in_lasso(polygon)
+        logger.info("Selected %d points.", len(indices))
+
+        self.points_selected.emit(indices)
+
+    def select_in_lasso(self, polygon: QPolygonF) -> list[int]:
+        """ Pick out the points enclosed by a drawn path, washing them over on the plot.
+
+        Args:
+            polygon (QPolygonF): The path the points are picked from, in the plot's own coordinates.
+                Closed as it is read, so a loop left ajar still holds what it went round.
+        Returns:
+            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
+                rows of the projection stand in on a frame carrying no such column.
+        """
+        if self._points is None or self._points.empty:
+            return []
+
+        # Two points make a line and a line holds nothing, which is what a click or a straight drag
+        # leaves behind
+        if polygon.count() < 3:
+            self._selected = None
+        else:
+            inside = [
+                polygon.containsPoint(QPointF(x, y), Qt.FillRule.OddEvenFill)
+                for x, y in zip(self._points[self._x_column], self._points[self._y_column], strict=True)
+            ]
+            self._selected = pd.Series(inside, index=self._points.index)
+
+        self._clear_canvas()
+        self._draw()
+
+        return self.selected_indices()
 
     def select_in_box(self, rect: QRectF) -> list[int]:
         """ Pick out the points falling inside a box, washing them over on the plot.
@@ -422,6 +579,32 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             x_values.between(normalised.left(), normalised.right())
             & y_values.between(normalised.top(), normalised.bottom())
         )
+
+        self._clear_canvas()
+        self._draw()
+
+        return self.selected_indices()
+
+    def select_matching(self, field: str | None, criterion) -> list[int]:
+        """ Pick out the points answering a criterion, washing them over on the plot.
+
+        The other way to a selection: the points a box is drawn around, or the points a field and a
+        value name. What comes of it is the same either way, this being the same mask the highlight
+        fades the plot by, read the right way up.
+
+        Args:
+            field (str): Metadata column or property the criterion is read on. None, or a column the
+                projection does not carry, picks nothing out.
+            criterion: Either two numbers, read as the ends of a range the value has to fall between,
+                or a single value the point has to hold. None picks nothing out.
+        Returns:
+            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
+                rows of the projection stand in on a frame carrying no such column.
+        """
+        if self._points is None or self._points.empty:
+            return []
+
+        self._selected = self._matching_rows(field, criterion)
 
         self._clear_canvas()
         self._draw()
@@ -469,19 +652,25 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         if self._points is None:
             return
 
-        self._dimmed = self._dimmed_rows(field, criterion)
+        # What is faded back is what the criterion does not answer for
+        matching = self._matching_rows(field, criterion)
+        self._dimmed = None if matching is None else ~matching
 
         self._clear_canvas()
         self._draw()
 
-    def _dimmed_rows(self, field: str | None, criterion: str | tuple[float]) -> "pd.Series | None":
-        """ Work out which of the drawn rows a criterion leaves out.
+    def _matching_rows(self, field: str | None, criterion: str | tuple[float]) -> "pd.Series | None":
+        """ Work out which of the drawn rows answer a criterion.
+
+        Read one way by the highlighting, which fades back the rows that do not, and the other by the
+        selecting, which picks out the rows that do: one criterion, one answer, two uses.
 
         Args:
             field (str): Column the criterion is read on.
             criterion: The range or the value the points are held to.
         Returns:
-            pd.Series: True for each row to fade back, or None when there is nothing to fade.
+            pd.Series: True for each row answering the criterion, or None when there is no criterion
+                to hold them to and nothing to say.
         """
         column = resolve_column(self._points, field)
         if column is None or criterion is None:
@@ -494,11 +683,11 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         # cannot speak for.
         if isinstance(criterion, tuple | list) and len(criterion) == 2:
             low, high = criterion
-            kept = values.between(low, high)
+            matching = values.between(low, high)
         else:
-            kept = values == criterion
+            matching = values == criterion
 
-        return ~kept.fillna(False).astype(bool)
+        return matching.fillna(False).astype(bool)
 
     def _draw_groups(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw one series per value of a column of labels, named in the legend.
@@ -743,10 +932,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             lines.append(str(point[IMAGE_COLUMN]))
 
         if self._color_column is not None:
-            lines.append(f'{self._color_column}: {_format_value(point[self._color_column])}')
+            lines.append(f'{self._color_column}: {format_value(point[self._color_column])}')
 
         lines += [
-            f'{column}: {_format_value(point[column])}'
+            f'{column}: {format_value(point[column])}'
             for column in self._metadata_columns()
             if column != self._color_column
         ]

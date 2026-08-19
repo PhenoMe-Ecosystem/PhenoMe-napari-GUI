@@ -4,10 +4,12 @@ The window is handed the rows of the projection that were selected, and knows no
 frames here are written by hand.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QFileDialog, QWidget
 
 from phenome_gui.ui.selection_window import SelectionWindow
 
@@ -56,6 +58,22 @@ def cells(window: SelectionWindow, row: int) -> list[str]:
     return [model.item(row, column).text() for column in range(model.columnCount())]
 
 
+@pytest.fixture
+def saving_to(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the save dialog with a path, without showing it.
+
+    Returns:
+        Callable[[Path | str], None]: Called as saving_to(tmp_path / 'picked.csv'), or with '' for
+            the dialog being closed without a name.
+    """
+    def _answer(file_path) -> None:
+        monkeypatch.setattr(
+            QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(file_path), '')
+        )
+
+    return _answer
+
+
 def test_the_table_starts_empty(window: SelectionWindow) -> None:
     assert window._points_table.model().rowCount() == 0
 
@@ -66,30 +84,59 @@ def test_every_selected_point_is_listed(window: SelectionWindow, points: pd.Data
     assert window._points_table.model().rowCount() == 2
 
 
-def test_the_image_is_named_and_placed_first(window: SelectionWindow, points: pd.DataFrame) -> None:
+def test_the_columns_are_the_projection_s_own(window: SelectionWindow, points: pd.DataFrame) -> None:
+    """The same rows PhenoMe's explorer writes to a CSV, which is every column of the frame."""
     window.show_selection(points)
 
-    assert headers(window)[:2] == ['Index', 'Image']
-    assert cells(window, 0)[:2] == ['10', 'img_000.tif']
+    assert headers(window) == list(points.columns)
 
 
-def test_the_metadata_follows_the_image(window: SelectionWindow, points: pd.DataFrame) -> None:
-    window.show_selection(points)
-
-    assert headers(window) == ['Index', 'Image', 'Drug_name']
-    assert cells(window, 1) == ['20', 'img_001.tif', 'drugA']
-
-
-def test_the_coordinates_and_the_properties_are_left_out(
+def test_the_coordinates_and_the_properties_are_listed_too(
     window: SelectionWindow, points: pd.DataFrame
 ) -> None:
-    """A projection can carry dozens of properties, and a table that wide reads as nothing at all."""
-    assert 'area' not in headers(window) if window._points_table.model().columnCount() else True
-
     window.show_selection(points)
 
-    assert 'area' not in headers(window)
-    assert not any(header.startswith('Component') for header in headers(window))
+    assert 'Component 1' in headers(window)
+    assert 'area' in headers(window)
+
+
+def test_a_row_reads_across_the_frame(window: SelectionWindow, points: pd.DataFrame) -> None:
+    window.show_selection(points)
+
+    assert cells(window, 1) == ['1', '2', 'img_001.tif', '20', 'drugA', '340']
+
+
+def test_a_measurement_is_written_to_be_read(window: SelectionWindow) -> None:
+    """A property to its last decimal fills the column and says no more than four figures do."""
+    window.show_selection(
+        pd.DataFrame({'Image': ['a.tif'], 'Index': [1], 'area': [0.12345678901234]})
+    )
+
+    assert cells(window, 0) == ['a.tif', '1', '0.1235']
+
+
+def test_a_projection_is_listed_column_for_column(window: SelectionWindow) -> None:
+    """Shaped as prepare_embedding_dataframe builds it: coordinates, image, place, metadata, properties.
+
+    Listing it whole is what keeps the table and a CSV of the same selection saying the same thing.
+    """
+    projection = pd.DataFrame(
+        {
+            'Component 1': [0.5, 1.5],
+            'Component 2': [1.5, 2.5],
+            'Image': ['img_000.tif', 'img_001.tif'],
+            'Index': [10, 20],
+            'Drug_name': ['ctrl', 'drugA'],
+            'Time': ['60_min', '60_min'],
+            'area': [120.0, 340.0],
+            'eccentricity': [0.34, 0.99],
+        }
+    )
+
+    window.show_selection(projection)
+
+    assert headers(window) == list(projection.columns)
+    assert window._points_table.model().rowCount() == 2
 
 
 def test_listing_a_selection_replaces_the_one_before(window: SelectionWindow, points: pd.DataFrame) -> None:
@@ -186,3 +233,137 @@ def test_clearing_the_table_announces_nothing(window: SelectionWindow, points: p
 
     with qtbot.assertNotEmitted(window.image_selected):
         window.clear_selection()
+
+
+# ----------------------------------------------------------------------------
+# What can be exported, and when
+# ----------------------------------------------------------------------------
+
+
+def exports(window: SelectionWindow) -> tuple[bool, bool]:
+    """ Whether each of the two export buttons can be pressed. """
+    return window._export_idx_button.isEnabled(), window._export_csv_button.isEnabled()
+
+
+def test_there_is_nothing_to_export_until_something_is_selected(window: SelectionWindow) -> None:
+    assert exports(window) == (False, False)
+
+
+def test_a_selection_opens_the_exports(window: SelectionWindow, points: pd.DataFrame) -> None:
+    window.show_selection(points)
+
+    assert exports(window) == (True, True)
+
+
+@pytest.mark.parametrize('selection', [None, pd.DataFrame()], ids=['none', 'empty'])
+def test_an_empty_selection_closes_the_exports(window: SelectionWindow, points: pd.DataFrame, selection) -> None:
+    window.show_selection(points)
+
+    window.show_selection(selection)
+
+    assert exports(window) == (False, False)
+
+
+def test_clearing_closes_the_exports(window: SelectionWindow, points: pd.DataFrame) -> None:
+    """There is nothing left to write once the selection has been let go of."""
+    window.show_selection(points)
+
+    window.clear_selection()
+
+    assert exports(window) == (False, False)
+
+
+# ----------------------------------------------------------------------------
+# Exporting the indices
+# ----------------------------------------------------------------------------
+
+
+def test_the_indices_are_written_out(
+    window: SelectionWindow, points: pd.DataFrame, saving_to, tmp_path: Path
+) -> None:
+    """The places PhenoMe holds the images at, which is what an index file is for."""
+    written = tmp_path / 'indices.txt'
+    window.show_selection(points)
+    saving_to(written)
+
+    window._export_idx_button.click()
+
+    assert written.read_text() == '10,20'
+
+
+def test_closing_the_dialog_writes_no_indices(
+    window: SelectionWindow, points: pd.DataFrame, saving_to, tmp_path: Path
+) -> None:
+    window.show_selection(points)
+    saving_to('')
+
+    window._export_idx_button.click()
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_indices_of_nothing_are_not_written(
+    window: SelectionWindow, saving_to, tmp_path: Path
+) -> None:
+    """The button is closed with no selection, which the writing does not lean on."""
+    written = tmp_path / 'indices.txt'
+    saving_to(written)
+
+    window._on_export_idx_clicked()
+
+    assert not written.exists()
+
+
+# ----------------------------------------------------------------------------
+# Exporting the table
+# ----------------------------------------------------------------------------
+
+
+def test_the_selection_is_written_out_as_a_csv(
+    window: SelectionWindow, points: pd.DataFrame, saving_to, tmp_path: Path
+) -> None:
+    written = tmp_path / 'selection.csv'
+    window.show_selection(points)
+    saving_to(written)
+
+    window._export_csv_button.click()
+
+    pd.testing.assert_frame_equal(pd.read_csv(written), points)
+
+
+def test_the_csv_holds_the_values_rather_than_what_the_table_shows(
+    window: SelectionWindow, saving_to, tmp_path: Path
+) -> None:
+    """The table rounds a measurement to be read; a file is written to be worked on."""
+    written = tmp_path / 'selection.csv'
+    window.show_selection(pd.DataFrame({'Image': ['a.tif'], 'Index': [1], 'area': [0.12345678901234]}))
+    saving_to(written)
+
+    window._export_csv_button.click()
+
+    assert cells(window, 0)[-1] == '0.1235'
+    assert '0.12345678901234' in written.read_text()
+
+
+def test_the_csv_leaves_out_the_row_numbers(
+    window: SelectionWindow, points: pd.DataFrame, saving_to, tmp_path: Path
+) -> None:
+    """Written without the frame's own index, which stands for nothing outside this table."""
+    written = tmp_path / 'selection.csv'
+    window.show_selection(points)
+    saving_to(written)
+
+    window._export_csv_button.click()
+
+    assert written.read_text().splitlines()[0] == ','.join(points.columns)
+
+
+def test_closing_the_dialog_writes_no_csv(
+    window: SelectionWindow, points: pd.DataFrame, saving_to, tmp_path: Path
+) -> None:
+    window.show_selection(points)
+    saving_to('')
+
+    window._export_csv_button.click()
+
+    assert list(tmp_path.iterdir()) == []

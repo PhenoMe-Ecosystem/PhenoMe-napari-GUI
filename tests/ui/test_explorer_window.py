@@ -15,6 +15,7 @@ from qtpy.QtCore import Qt
 from phenome_gui._widget import PhenoMeWidget
 from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
+from phenome_gui.ui.plotting import BOX_SELECTION, LASSO_SELECTION
 from phenome_gui.utils.params import (
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
@@ -910,6 +911,52 @@ def test_pressing_the_box_button_again_calls_it_off(
     assert not loaded_explorer._canvas._viewbox.selecting
 
 
+def test_the_lasso_button_asks_the_canvas_for_one(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing()
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._lasso_select_button.click()
+
+    assert loaded_explorer._canvas._viewbox.selecting == LASSO_SELECTION
+
+
+@pytest.mark.parametrize(
+    ('pressed', 'released', 'waiting'),
+    [
+        pytest.param('_lasso_select_button', '_box_select_button', LASSO_SELECTION, id='lasso-over-box'),
+        pytest.param('_box_select_button', '_lasso_select_button', BOX_SELECTION, id='box-over-lasso'),
+    ],
+)
+def test_the_two_shapes_are_a_choice_of_one(
+    loaded_explorer: InteractiveExplorerWindow, computing, pressed: str, released: str, waiting: str
+) -> None:
+    """Checking one lets the other go: the plot waits for whichever was asked for last."""
+    computing()
+    loaded_explorer._compute_button.click()
+    getattr(loaded_explorer, released).click()
+
+    getattr(loaded_explorer, pressed).click()
+
+    assert getattr(loaded_explorer, pressed).isChecked()
+    assert not getattr(loaded_explorer, released).isChecked()
+    assert loaded_explorer._canvas._viewbox.selecting == waiting
+
+
+def test_a_drawn_lasso_counts_the_points_it_holds(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._lasso_select_button.click()
+
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+
+    assert loaded_explorer._num_select_label.text() == '2 points selected.'
+    assert not loaded_explorer._lasso_select_button.isChecked()
+
+
 def test_a_drawn_box_counts_the_points_it_covers(
     loaded_explorer: InteractiveExplorerWindow, computing
 ) -> None:
@@ -967,6 +1014,81 @@ def test_clearing_lets_go_of_the_selection(loaded_explorer: InteractiveExplorerW
     assert loaded_explorer._num_select_label.text() == '0 points selected.'
     assert table_rows(loaded_explorer) == 0
     assert loaded_explorer._canvas.selected_indices() == []
+
+
+def test_the_highlight_button_selects_the_points_it_answers_for(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('ctrl')
+
+    loaded_explorer._highlight_select_button.click()
+
+    # The projection holds ctrl, ctrl, drugA
+    assert loaded_explorer._selected_indices == [10, 20]
+    assert loaded_explorer._num_select_label.text() == '2 points selected.'
+
+
+def test_the_highlight_button_pays_no_mind_to_the_checkbox(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """The box fades the plot; the field and the value are picked either way."""
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('drugA')
+    assert not loaded_explorer._highlight_checkbox.isChecked()
+
+    loaded_explorer._highlight_select_button.click()
+    unchecked = list(loaded_explorer._selected_indices)
+
+    loaded_explorer._highlight_checkbox.setChecked(True)
+    loaded_explorer._highlight_select_button.click()
+
+    assert unchecked == [30]
+    assert loaded_explorer._selected_indices == unchecked
+
+
+def test_the_highlight_button_selects_on_a_range_too(
+    loaded_explorer: InteractiveExplorerWindow, measured
+) -> None:
+    measured([120.0, 512.0, 340.0])
+    loaded_explorer._highlight_field_combo.setCurrentText('area')
+    loaded_explorer._highlight_range_slider.setValue((300.0, 600.0))
+
+    loaded_explorer._highlight_select_button.click()
+
+    assert loaded_explorer._num_select_label.text() == '2 points selected.'
+
+
+def test_the_highlight_button_fills_the_table(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_values_combo.setCurrentText('ctrl')
+    loaded_explorer._on_view_selection_clicked()
+
+    loaded_explorer._highlight_select_button.click()
+
+    assert table_rows(loaded_explorer) == 2
+
+
+def test_the_highlight_button_calls_off_a_waiting_box(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """The box was waiting to say which points; the button has just said it another way."""
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+    loaded_explorer._box_select_button.click()
+
+    loaded_explorer._highlight_select_button.click()
+
+    assert not loaded_explorer._canvas._viewbox.selecting
+    assert not loaded_explorer._box_select_button.isChecked()
 
 
 def test_picking_a_row_of_the_selection_shows_its_image(
