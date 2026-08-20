@@ -270,9 +270,10 @@ def coordinates(n_components: int = 2, groups: list[str] | None = None) -> pd.Da
     )
 
     # PhenoMe capitalises the metadata columns it copies into the projection, and hands their values
-    # back as text, which is what keeps a numeric one like the time drawn as groups
+    # back as text, which is what keeps a numeric one like the time drawn as groups. The first three
+    # rows are the ones most of these tests read; a longer frame goes on at a third time.
     frame['Drug_name'] = groups
-    frame['Time'] = ['0', '24', '24'][: len(groups)]
+    frame['Time'] = [('0', '24', '24')[row] if row < 3 else '48' for row in range(len(groups))]
     return frame
 
 
@@ -432,14 +433,13 @@ def test_choosing_another_column_recolours_without_recomputing(
 
 def test_colouring_by_a_property_draws_a_ramp(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
     """A measured column is drawn along a colorbar, where a metadata one keeps its legend."""
-    frame = coordinates()
-    frame['area'] = [120.0, 340.0, 512.0]
+    frame = measured_projection(AREAS)
     computing(frame)
     loaded_explorer._phenome.params.explorer.color_by = 'area'
 
     loaded_explorer._compute_button.click()
 
-    assert drawn(loaded_explorer) == {None: 3}
+    assert drawn(loaded_explorer) == {None: len(AREAS)}
     assert loaded_explorer._canvas._colorbar is not None
     assert loaded_explorer._canvas._legend.items == []
 
@@ -590,10 +590,18 @@ def test_the_two_forms_write_their_own_parameter(
 
 
 def measured_projection(areas: list[float]) -> pd.DataFrame:
-    """ A projection carrying a measured property alongside its metadata. """
-    frame = coordinates(groups=['ctrl', 'ctrl', 'drugA'])
+    """ A projection carrying a measured property alongside its metadata.
+
+    As many rows as there are values: a column is only read as a measurement once it holds enough
+    distinct values to spread a ramp over.
+    """
+    frame = coordinates(groups=[('ctrl', 'drugA')[row % 2] for row in range(len(areas))])
     frame['area'] = areas
     return frame
+
+
+# Enough distinct values for a column to be read as a measurement rather than as labels
+AREAS = [120.0, 512.0, 340.0, 220.0, 780.0, 410.0, 615.0, 905.0]
 
 
 def highlight_page(window: InteractiveExplorerWindow):
@@ -663,28 +671,28 @@ def test_a_field_of_labels_is_picked_from_its_values(
 def test_a_field_of_measurements_is_picked_from_its_range(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:
-    measured([120.0, 512.0, 340.0])
+    measured(AREAS)
 
     loaded_explorer._highlight_field_combo.setCurrentText('area')
 
     assert highlight_page(loaded_explorer) is loaded_explorer._highlight_range_slider
-    assert loaded_explorer._highlight_range_slider.minimum() == 120.0
-    assert loaded_explorer._highlight_range_slider.maximum() == 512.0
+    assert loaded_explorer._highlight_range_slider.minimum() == min(AREAS)
+    assert loaded_explorer._highlight_range_slider.maximum() == max(AREAS)
 
 
 def test_the_range_opens_on_the_whole_of_it(loaded_explorer: InteractiveExplorerWindow, measured) -> None:
     """Wide open reads as picking every point, where a slice would pick one nobody asked for."""
-    measured([120.0, 512.0, 340.0])
+    measured(AREAS)
 
     loaded_explorer._highlight_field_combo.setCurrentText('area')
 
-    assert tuple(loaded_explorer._highlight_range_slider.value()) == (120.0, 512.0)
+    assert tuple(loaded_explorer._highlight_range_slider.value()) == (min(AREAS), max(AREAS))
 
 
 def test_the_control_changes_with_the_kind_of_field(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:
-    measured([120.0, 512.0, 340.0])
+    measured(AREAS)
 
     loaded_explorer._highlight_field_combo.setCurrentText('area')
     assert highlight_page(loaded_explorer) is loaded_explorer._highlight_range_slider
@@ -694,16 +702,16 @@ def test_the_control_changes_with_the_kind_of_field(
     assert highlight_page(loaded_explorer) is loaded_explorer._highlight_values_combo
 
 
-def test_a_measured_column_of_one_value_leaves_the_slider_room(
+def test_a_column_of_one_value_is_picked_from_a_list_of_it(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:
-    """Both ends in the same place would leave the handles nowhere to go."""
-    measured([7.0, 7.0, 7.0])
+    """A measurement that never varies is read as a label, so it is picked the way labels are."""
+    measured([7.0] * len(AREAS))
 
     loaded_explorer._highlight_field_combo.setCurrentText('area')
 
-    assert loaded_explorer._highlight_range_slider.minimum() == 7.0
-    assert loaded_explorer._highlight_range_slider.maximum() > 7.0
+    assert highlight_page(loaded_explorer) is loaded_explorer._highlight_values_combo
+    assert items(loaded_explorer._highlight_values_combo) == ['7.0']
 
 
 def test_a_field_the_projection_does_not_carry_offers_nothing(
@@ -805,13 +813,13 @@ def test_picking_another_value_marks_it_straight_away(
 def test_moving_the_range_marks_what_it_now_holds(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:
-    measured([120.0, 512.0, 340.0])
+    measured(AREAS)
     loaded_explorer._highlight_field_combo.setCurrentText('area')
     loaded_explorer._highlight_checkbox.setChecked(True)
 
     loaded_explorer._highlight_range_slider.setValue((300.0, 600.0))
 
-    assert dimmed_rows(loaded_explorer) == [True, False, False]
+    assert dimmed_rows(loaded_explorer) == [not 300.0 <= area <= 600.0 for area in AREAS]
 
 
 def test_a_pick_made_with_the_box_unchecked_marks_nothing(
@@ -1054,13 +1062,14 @@ def test_the_highlight_button_pays_no_mind_to_the_checkbox(
 def test_the_highlight_button_selects_on_a_range_too(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:
-    measured([120.0, 512.0, 340.0])
+    measured(AREAS)
     loaded_explorer._highlight_field_combo.setCurrentText('area')
     loaded_explorer._highlight_range_slider.setValue((300.0, 600.0))
 
     loaded_explorer._highlight_select_button.click()
 
-    assert loaded_explorer._num_select_label.text() == '2 points selected.'
+    inside = sum(300.0 <= area <= 600.0 for area in AREAS)
+    assert loaded_explorer._num_select_label.text() == f'{inside} points selected.'
 
 
 def test_the_highlight_button_fills_the_table(

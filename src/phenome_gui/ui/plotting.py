@@ -41,6 +41,9 @@ CONTINUOUS_COLORMAP = 'viridis'
 # is coloured along a ramp whatever its size.
 CATEGORICAL_COLUMNS = {'cluster', 'cluster_id', 'class'}
 
+# Number of unique values from which a columns is considered continuous
+MIN_CONTINUOUS = 8
+
 # Background the points are drawn on, matching napari's dark theme. The colours above are stepped for
 # this surface, so the two go together.
 SURFACE = '#1a1a19'
@@ -116,6 +119,10 @@ def is_continuous(values: pd.Series, name: str) -> bool:
     # A boolean is numeric to pandas, and two shades of a ramp for true and false say less than two
     # named groups do
     if pd.api.types.is_bool_dtype(values):
+        return False
+
+    # Check if unique number of values is sufficient
+    if len(values.unique()) < MIN_CONTINUOUS:
         return False
 
     return pd.api.types.is_numeric_dtype(values)

@@ -13,14 +13,17 @@ from qtpy.QtGui import QPolygonF
 from qtpy.QtWidgets import QToolTip
 
 from phenome_gui.ui.plotting import (
+    CATEGORICAL_COLUMNS,
     DIMMED_ALPHA,
     HIGHLIGHT_COLOUR,
     HOVER_RADIUS,
+    MIN_CONTINUOUS,
     MISSING_COLOUR,
     SELECTION_ALPHA,
     SELECTION_COLOUR,
     SERIES_COLOURS,
     ExplorerPlot,
+    is_continuous,
 )
 
 
@@ -98,6 +101,10 @@ def measured(values: list, column: str = 'area') -> pd.DataFrame:
     """ A projection carrying a measured column, as the properties arrive alongside the coordinates. """
     frame = projection([''] * len(values))
     return frame.drop(columns='Drug_name').assign(**{column: values})
+
+
+# Enough distinct values for the canvas to read a column as a measurement rather than as labels
+MEASUREMENTS = [10.0 * step for step in range(1, MIN_CONTINUOUS + 1)]
 
 
 # ----------------------------------------------------------------------------
@@ -189,52 +196,116 @@ def test_missing_values_are_grouped_rather_than_named_nan(plot: ExplorerPlot) ->
 
 
 # ----------------------------------------------------------------------------
+# Telling a measurement from a set of labels
+# ----------------------------------------------------------------------------
+
+
+def test_a_column_of_measurements_is_continuous() -> None:
+    assert is_continuous(pd.Series(np.arange(MIN_CONTINUOUS, dtype=float)), 'area')
+
+
+def test_a_column_of_few_values_is_read_as_labels() -> None:
+    """Too few values to make a ramp of: a handful of numbers name their images rather than measure them."""
+    assert not is_continuous(pd.Series([1.0, 2.0, 3.0]), 'area')
+
+
+def test_the_number_of_values_is_what_counts_rather_than_the_number_of_rows() -> None:
+    """A thousand images of three sizes are three groups, however many rows say so."""
+    repeated = pd.Series([1.0, 2.0, 3.0] * 400)
+
+    assert not is_continuous(repeated, 'area')
+
+
+@pytest.mark.parametrize(
+    ('distinct', 'continuous'),
+    [
+        pytest.param(MIN_CONTINUOUS - 1, False, id='one-short'),
+        pytest.param(MIN_CONTINUOUS, True, id='just-enough'),
+    ],
+)
+def test_the_threshold_is_where_it_says_it_is(distinct: int, continuous: bool) -> None:
+    values = pd.Series(np.arange(distinct, dtype=float))
+
+    assert is_continuous(values, 'area') is continuous
+
+
+def test_a_column_of_one_value_is_read_as_labels() -> None:
+    """A measurement that never varies has no range to spread points over, and reads as one group."""
+    assert not is_continuous(pd.Series([7.0] * 20), 'area')
+
+
+def test_a_measurement_with_gaps_is_still_a_measurement() -> None:
+    """Images PhenoMe knows nothing about leave holes, which say nothing about the kind of column."""
+    values = pd.Series([*np.arange(MIN_CONTINUOUS, dtype=float), float('nan'), float('nan')])
+
+    assert is_continuous(values, 'area')
+
+
+@pytest.mark.parametrize('name', sorted(CATEGORICAL_COLUMNS))
+def test_a_column_named_for_labels_is_never_a_measurement(name: str) -> None:
+    """The cluster labels are numbers, and plenty of them, but a ramp over them measures nothing."""
+    values = pd.Series(np.arange(50))
+
+    assert not is_continuous(values, name)
+
+
+def test_a_column_of_words_is_never_a_measurement() -> None:
+    assert not is_continuous(pd.Series([f'drug_{value}' for value in range(50)]), 'drug_name')
+
+
+def test_true_and_false_are_never_a_measurement() -> None:
+    """A boolean is numeric to pandas, but two shades of a ramp say less than two named groups."""
+    assert not is_continuous(pd.Series([True, False] * 25), 'is_control')
+
+
+# ----------------------------------------------------------------------------
 # Measured columns, drawn along a ramp
 # ----------------------------------------------------------------------------
 
 
 def test_a_measured_column_is_drawn_as_one_series_with_a_colorbar(plot: ExplorerPlot) -> None:
-    plot.plot_projection(measured([10.5, 20.5, 30.5]), 'area')
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
 
-    assert series(plot) == {None: 3}
+    assert series(plot) == {None: len(MEASUREMENTS)}
     assert legend_labels(plot) == []
     assert plot._colorbar is not None
-    assert plot._colorbar.values == (10.5, 30.5)
+    assert plot._colorbar.values == (MEASUREMENTS[0], MEASUREMENTS[-1])
 
 
 def test_the_colorbar_is_named_after_the_column(plot: ExplorerPlot) -> None:
-    plot.plot_projection(measured([1.0, 2.0], column='eccentricity'), 'eccentricity')
+    plot.plot_projection(measured(MEASUREMENTS, column='eccentricity'), 'eccentricity')
 
     assert 'eccentricity' in colorbar_label(plot)
 
 
 def test_the_points_run_along_the_ramp(plot: ExplorerPlot) -> None:
     """Every point takes its own colour from its value, rather than the whole series taking one."""
-    plot.plot_projection(measured([0.0, 5.0, 10.0]), 'area')
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
 
     colours = point_colours(plot)
-    assert len(set(colours)) == 3
+    assert len(set(colours)) == len(MEASUREMENTS)
 
 
 def test_whole_numbers_are_still_a_measurement(plot: ExplorerPlot) -> None:
-    """PhenoMe would call this one categorical: 'area' is a pixel count, whole and here barely varied.
+    """PhenoMe would call this one categorical: 'area' is a pixel count, and whole numbers of them.
 
-    Drawn as groups it would be a legend of one-image entries, which is why the name rather than the
-    values is what makes a column discrete here.
+    It calls a numeric column discrete up to 256 distinct values, which a pixel count on any small
+    dataset falls under. Here it is the name that reserves a column for labels, and a handful of
+    values that turns one into them, so a spread of whole numbers is still measured.
     """
-    plot.plot_projection(measured([120.0, 340.0, 512.0]), 'area')
+    plot.plot_projection(measured([120.0, 340.0, 512.0, 600.0, 780.0, 900.0, 1100.0, 1500.0]), 'area')
 
-    assert series(plot) == {None: 3}
+    assert series(plot) == {None: 8}
     assert plot._colorbar is not None
 
 
 def test_a_numbered_label_column_is_still_a_group(plot: ExplorerPlot) -> None:
-    """The cluster labels are numbers, and a ramp over them would read as a measurement they are not."""
-    frame = measured([0, 1, 1], column='cluster')
+    """The cluster labels are numbers, and enough of them to make a ramp of, which they are not."""
+    frame = measured(list(range(MIN_CONTINUOUS + 2)), column='cluster')
 
     plot.plot_projection(frame, 'cluster')
 
-    assert series(plot) == {'1': 2, '0': 1}
+    assert len(series(plot)) == MIN_CONTINUOUS + 2
     assert plot._colorbar is None
 
 
@@ -248,23 +319,24 @@ def test_true_and_false_are_two_groups(plot: ExplorerPlot) -> None:
 
 def test_a_point_without_a_value_is_left_neutral(plot: ExplorerPlot) -> None:
     """It has no place on the ramp, and dropping it would leave a hole in the cloud."""
-    plot.plot_projection(measured([10.0, float('nan'), 30.0]), 'area')
+    plot.plot_projection(measured([float('nan'), *MEASUREMENTS]), 'area')
 
-    assert series(plot) == {None: 3}
-    assert point_colours(plot)[1] == MISSING_COLOUR
-    assert point_colours(plot)[0] != MISSING_COLOUR
+    assert series(plot) == {None: len(MEASUREMENTS) + 1}
+    assert point_colours(plot)[0] == MISSING_COLOUR
+    assert point_colours(plot)[1] != MISSING_COLOUR
 
 
-def test_a_measured_column_holding_one_value_does_not_divide_by_zero(plot: ExplorerPlot) -> None:
-    plot.plot_projection(measured([7.0, 7.0, 7.0]), 'area')
+def test_a_column_of_one_value_is_drawn_as_one_group(plot: ExplorerPlot) -> None:
+    """A measurement that never varies has no range to spread the points over, and reads as a label."""
+    plot.plot_projection(measured([7.0] * 10), 'area')
 
-    assert series(plot) == {None: 3}
-    assert plot._colorbar.values == (7.0, 7.0)
+    assert series(plot) == {'7.0': 10}
+    assert plot._colorbar is None
 
 
 def test_the_two_kinds_of_colouring_undo_each_other(plot: ExplorerPlot) -> None:
     """Each leaves chrome of its own behind, so switching either way has to take the other's away."""
-    plot.plot_projection(measured([1.0, 2.0, 3.0]), 'area')
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
     assert plot._colorbar is not None
 
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
@@ -272,7 +344,7 @@ def test_the_two_kinds_of_colouring_undo_each_other(plot: ExplorerPlot) -> None:
     assert plot._colorbar is None
     assert sorted(legend_labels(plot)) == ['ctrl', 'drugA']
 
-    plot.plot_projection(measured([1.0, 2.0, 3.0]), 'area')
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
 
     assert plot._colorbar is not None
     assert legend_labels(plot) == []
@@ -386,11 +458,13 @@ def test_the_legend_keeps_its_colours_while_the_points_are_marked(plot: Explorer
 
 
 def test_a_range_leaves_the_points_inside_it_alone(plot: ExplorerPlot) -> None:
-    plot.plot_projection(measured([10.0, 20.0, 30.0]), 'area')
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
 
-    plot.highlight_points('area', (15.0, 25.0))
+    # The values run 10, 20, 30 and up, so the range holds the second, third and fourth of them
+    plot.highlight_points('area', (15.0, 45.0))
 
-    assert alphas(plot) == [DIMMED_ALPHA, 255, DIMMED_ALPHA]
+    assert alphas(plot)[:5] == [DIMMED_ALPHA, 255, 255, 255, DIMMED_ALPHA]
+    assert set(alphas(plot)[4:]) == {DIMMED_ALPHA}
     assert plot._colorbar is not None
 
 
@@ -538,7 +612,9 @@ def test_the_picked_points_are_washed_over(plot: ExplorerPlot) -> None:
 
     (spot_x, _) = selection(plot).getData()
     assert list(spot_x) == [1.0, 2.0]
-    assert selection(plot).opts['brush'].color().name() == SELECTION_COLOUR
+
+    # Compared without their case, a colour being the same colour however it is written down
+    assert selection(plot).opts['brush'].color().name().lower() == SELECTION_COLOUR.lower()
     assert selection(plot).opts['brush'].color().alpha() == SELECTION_ALPHA
 
 
