@@ -251,8 +251,7 @@ class LoadingPanel(QWidget):
         answer = QMessageBox.question(
             self,
             "Load new data?",
-            "Loading a dataset clears everything computed from the current one: the embeddings, the "
-            "properties, the clusters, the retrieved images and the projection.\n\nLoad anyway?",
+            "Loading a new dataset will discard all current results. \n\nProceed?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
