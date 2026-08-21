@@ -5,10 +5,10 @@ from phenome import PhenoMe
 from phenome.utils import ProgressCallback
 from torch import cuda
 
+from ..registries.models import MODEL_OPTIONS
 from .analysis import PhenoMeAnalysis
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
-from .models import MODEL_OPTIONS
 from .params import Params
 
 logger = getLogger(__name__)
@@ -57,6 +57,8 @@ class PhenoMeInterface:
         self.outliers_df = None
         self.projection_df = None
         self.model = None
+        self.process_options = None
+        self.transforms = None
         self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
@@ -96,12 +98,26 @@ class PhenoMeInterface:
     # ------------------------------------------------------------------
 
     def load_model(self) -> None:
-        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline. """
+        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
+
+        A model arrives with the transformations its images are to be prepared with and the arguments
+        its embeddings are to be extracted under, both read from the registries by the name it is
+        known by. They are kept here until the images are processed, which is where they are used, so
+        both are written to the log as they arrive: what a run was made under is otherwise nowhere.
+        """
         model_name = self.params.process.model
 
         real_model_name = MODEL_OPTIONS.get(model_name)
         if real_model_name:
-            self.model = self.image_processing.load_model(real_model_name, device=self.params.process.device)
+            device = self.params.process.device
+            self.model, self.transforms, self.process_options = self.image_processing.load_model(real_model_name, device=device)
+
+            logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
+            logger.info(
+                "Its images are prepared with %s, and processed with %s.",
+                'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
+                str(self.process_options) if self.process_options else 'no arguments of its own'
+            )
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
@@ -118,9 +134,23 @@ class PhenoMeInterface:
         """
         checkpoint_path = self.params.paths.checkpoint
 
+        # Written out rather than left to the model that was loaded: the arguments an extraction ran
+        # under are what its embeddings can be read against, and they are the registry's rather than
+        # anything the form shows.
+        logger.info(
+            "Extracting embeddings with '%s', in batches of %d, %s.",
+            self.params.process.model,
+            self.params.process.batch_size,
+            str(self.process_options) if self.process_options else 'with no arguments of its own'
+        )
+
         self.image_processing.process_images(
-            self.model, checkpoint_path, progress_callback=progress_callback,
-            batch_size=self.params.process.batch_size
+            self.model,
+            checkpoint_path,
+            progress_callback=progress_callback,
+            batch_size=self.params.process.batch_size,
+            custom_transformations=self.transforms,
+            **self.process_options
         )
 
     @property

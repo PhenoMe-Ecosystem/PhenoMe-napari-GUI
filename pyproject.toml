@@ -32,6 +32,7 @@ dependencies = [
     "qtpy",
     "scikit-image",
     "phenome",
+    "stedfm",
     "pydantic>=2",
     "pyqtgraph>=0.14.0",
     "superqt",
@@ -49,6 +50,7 @@ dev = [
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "napari[qt]",  # test with napari's default Qt bindings
+    "stedfm",
 ]
 
 [project.entry-points."napari.manifest"]
@@ -66,10 +68,12 @@ constraint-dependencies = ["numpy<2.5"]
 [tool.uv.workspace]
 members = [
     "external/PhenoMe",
+    "external/STED-FM",
 ]
 
 [tool.uv.sources]
 phenome = { workspace = true, editable = true }
+stedfm = { workspace = true, editable = true }
 
 [build-system]
 requires = ["setuptools>=77.0.3", "setuptools_scm"]

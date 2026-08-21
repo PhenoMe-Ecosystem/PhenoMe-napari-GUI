@@ -19,7 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..utils.models import MODEL_OPTIONS
+from ..registries.models import MODEL_OPTIONS
 from ..utils.params import PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 

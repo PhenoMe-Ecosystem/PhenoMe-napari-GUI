@@ -1,11 +1,13 @@
 """Tests for PhenoMeInterface, the single entry point the GUI calls PhenoMe through."""
 
+import logging
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from phenome_gui.registries.models import MODEL_LOADERS
 from phenome_gui.utils.params import (
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
@@ -204,6 +206,163 @@ def test_has_properties_is_a_property(phenome: PhenoMeInterface) -> None:
     assert phenome.has_properties is False
     phenome.properties_df = pd.DataFrame({'area': [1.0]})
     assert phenome.has_properties is True
+
+
+# ----------------------------------------------------------------------------
+# The model, and what its images are prepared and processed with
+# ----------------------------------------------------------------------------
+
+# The two kinds of model the registries hold, as the form names them and as the registry knows them
+DINOV2_MODEL = 'Small (ViT-S/14)'
+STED_MODEL = 'STED-FM ViT-S'
+
+
+@pytest.fixture
+def loadable(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook standing in for the model loaders, which would fetch real weights.
+
+    Only the weights are stood in for. The transformations and the arguments still come from the
+    registries, this being about which of them a loaded model brings with it.
+
+    Returns:
+        Callable[[], None]: Called as loadable().
+    """
+    def _replace() -> None:
+        monkeypatch.setattr(
+            'phenome_gui.registries.models.MODEL_LOADERS',
+            {key: lambda name, device='cpu', **kwargs: f'weights of {name}' for key in MODEL_LOADERS}
+        )
+
+    return _replace
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected'),
+    [
+        pytest.param(DINOV2_MODEL, {'force_rgb': True}, id='dinov2'),
+        pytest.param(STED_MODEL, {'force_rgb': False, 'l2_normalize_channels': False}, id='sted-fm'),
+    ],
+)
+def test_a_loaded_model_brings_the_arguments_it_is_processed_under(
+    phenome: PhenoMeInterface, loadable, model: str, expected: dict
+) -> None:
+    loadable()
+    phenome.params.process.model = model
+
+    phenome.load_model()
+
+    assert phenome.process_options == expected
+
+
+@pytest.mark.parametrize(
+    ('model', 'brings_its_own'),
+    [
+        pytest.param(DINOV2_MODEL, False, id='dinov2'),
+        pytest.param(STED_MODEL, True, id='sted-fm'),
+    ],
+)
+def test_a_loaded_model_brings_the_transformations_its_images_need(
+    phenome: PhenoMeInterface, loadable, model: str, brings_its_own: bool
+) -> None:
+    """PhenoMe reads no transformations as a request for its own, which is what DINOv2 wants."""
+    loadable()
+    phenome.params.process.model = model
+
+    phenome.load_model()
+
+    assert (phenome.transforms is not None) is brings_its_own
+
+
+def test_a_model_nobody_offers_loads_nothing(phenome: PhenoMeInterface, loadable) -> None:
+    loadable()
+    phenome.params.process.model = 'ViT-enormous'
+
+    phenome.load_model()
+
+    assert phenome.model is None
+    assert phenome.process_options is None
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected'),
+    [
+        pytest.param(DINOV2_MODEL, {'force_rgb': True}, id='dinov2'),
+        pytest.param(STED_MODEL, {'force_rgb': False, 'l2_normalize_channels': False}, id='sted-fm'),
+    ],
+)
+def test_the_extraction_runs_under_the_loaded_model_s_arguments(
+    loaded: PhenoMeInterface, loadable, spy, model: str, expected: dict
+) -> None:
+    """The registry's arguments rather than the form's: the form knows nothing of either."""
+    loadable()
+    loaded.pheno.process_images = spy()
+    loaded.params.process.model = model
+    loaded.load_model()
+
+    loaded.process_images()
+
+    given = loaded.pheno.process_images.last
+    assert {name: given.get(name) for name in expected} == expected
+
+
+def test_the_extraction_prepares_the_images_the_model_s_way(
+    loaded: PhenoMeInterface, loadable, spy
+) -> None:
+    loadable()
+    loaded.pheno.process_images = spy()
+    loaded.params.process.model = STED_MODEL
+    loaded.load_model()
+
+    loaded.process_images()
+
+    assert loaded.pheno.process_images.last['custom_transformations'] is loaded.transforms
+    assert loaded.pheno.process_images.last['model_wrapper'] is loaded.model
+
+
+def test_the_extraction_carries_the_batch_size_from_the_form(
+    loaded: PhenoMeInterface, loadable, spy
+) -> None:
+    """What the form does decide, alongside what the registry does."""
+    loadable()
+    loaded.pheno.process_images = spy()
+    loaded.params.process.model = DINOV2_MODEL
+    loaded.params.process.batch_size = 7
+    loaded.load_model()
+
+    loaded.process_images()
+
+    assert loaded.pheno.process_images.last['batch_size'] == 7
+
+
+def test_loading_a_model_says_what_it_will_be_processed_with(
+    phenome: PhenoMeInterface, loadable, caplog: pytest.LogCaptureFixture
+) -> None:
+    """What a run was made under is otherwise nowhere to be read."""
+    loadable()
+    phenome.params.process.model = STED_MODEL
+
+    with caplog.at_level(logging.INFO, logger='phenome_gui.utils.phenome_interface'):
+        phenome.load_model()
+
+    assert STED_MODEL in caplog.text
+    assert 'sted-fm' in caplog.text
+    assert 'force_rgb' in caplog.text
+    assert 'its own transformations' in caplog.text
+
+
+def test_extracting_says_what_it_is_running_under(
+    loaded: PhenoMeInterface, loadable, spy, caplog: pytest.LogCaptureFixture
+) -> None:
+    loadable()
+    loaded.pheno.process_images = spy()
+    loaded.params.process.model = DINOV2_MODEL
+    loaded.load_model()
+
+    with caplog.at_level(logging.INFO, logger='phenome_gui.utils.phenome_interface'):
+        loaded.process_images()
+
+    assert 'Extracting embeddings' in caplog.text
+    assert "'force_rgb': True" in caplog.text
 
 
 # ----------------------------------------------------------------------------
