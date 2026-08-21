@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from phenome_gui.utils.params import (
+    DEFAULT_CHECKPOINT,
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     Params,
@@ -204,6 +205,168 @@ def test_has_properties_is_a_property(phenome: PhenoMeInterface) -> None:
     assert phenome.has_properties is False
     phenome.properties_df = pd.DataFrame({'area': [1.0]})
     assert phenome.has_properties is True
+
+
+# ----------------------------------------------------------------------------
+# Letting go of the results when another dataset is loaded
+# ----------------------------------------------------------------------------
+
+RESULT_FRAMES = ['properties_df', 'clustering_df', 'prototypes_df', 'outliers_df', 'projection_df']
+SOURCE_SECTIONS = ['clustering', 'prototypes', 'outliers', 'explorer']
+
+
+def analysed(interface: PhenoMeInterface, processed) -> PhenoMeInterface:
+    """ Leave a result of every kind on an interface, as a full session would.
+
+    Args:
+        interface (PhenoMeInterface): The interface to fill, whose paths are already pointed at a dataset.
+        processed: The fixture making the pipeline report processed images.
+    Returns:
+        PhenoMeInterface: The same interface, now holding results and parameters naming them.
+    """
+    processed(interface, 6)
+    for attribute in RESULT_FRAMES:
+        setattr(interface, attribute, pd.DataFrame({'image_path': ['img_000.tif']}))
+
+    interface.model = 'a loaded model'
+    interface.params.paths.checkpoint = Path('previous.hdf5')
+    interface.params.explorer.color_by = 'drug_name'
+    interface.params.explorer.filter = {'drug_name': ['ctrl']}
+    interface.params.explorer.exclude = {'time': [24]}
+    interface.params.prototypes.group_by = 'drug_name'
+    interface.params.outliers.group_by = 'time'
+    for section in SOURCE_SECTIONS:
+        getattr(interface.params, section).source = 'properties'
+
+    return interface
+
+
+def test_has_results_is_false_before_anything_is_computed(phenome: PhenoMeInterface) -> None:
+    assert phenome.has_results is False
+
+
+def test_has_results_ignores_the_metadata(loaded: PhenoMeInterface) -> None:
+    """Replacing it is what loading does, rather than something loading costs."""
+    assert loaded.has_results is False
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_has_results_notices_each_kind_of_result(phenome: PhenoMeInterface, attribute: str) -> None:
+    setattr(phenome, attribute, pd.DataFrame({'image_path': []}))
+
+    assert phenome.has_results is True
+
+
+def test_has_results_notices_the_embeddings(phenome: PhenoMeInterface, processed) -> None:
+    processed(phenome, 6)
+
+    assert phenome.has_results is True
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_loading_drops_every_computed_frame(phenome: PhenoMeInterface, processed, attribute: str) -> None:
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert getattr(phenome, attribute) is None
+
+
+def test_loading_empties_the_pipeline(phenome: PhenoMeInterface, processed) -> None:
+    """PhenoMe.find_files() only replaces the files it found, leaving the embeddings behind them."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.pheno.results.n_images == 0
+    assert phenome.has_results is False
+
+
+def test_loading_puts_the_checkpoint_back(phenome: PhenoMeInterface, processed) -> None:
+    """A checkpoint answers only for the images it was filled from."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.params.paths.checkpoint == DEFAULT_CHECKPOINT
+
+
+def test_loading_drops_the_columns_and_values_the_previous_metadata_named(
+    phenome: PhenoMeInterface, processed
+) -> None:
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.params.explorer.color_by is None
+    assert phenome.params.explorer.filter is None
+    assert phenome.params.explorer.exclude is None
+    assert phenome.params.prototypes.group_by is None
+    assert phenome.params.outliers.group_by is None
+
+
+@pytest.mark.parametrize('section', SOURCE_SECTIONS)
+def test_loading_puts_every_feature_space_back(
+    phenome: PhenoMeInterface, processed, section: str
+) -> None:
+    """The properties a source reads went with the results, and the step would raise on them."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert getattr(phenome.params, section).source == 'embeddings'
+
+
+def test_loading_keeps_the_loaded_model(phenome: PhenoMeInterface, processed) -> None:
+    """A downloaded network is not read off the images, and would have to be fetched again."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.model == 'a loaded model'
+
+
+def test_loading_keeps_the_paths_it_is_about_to_read(phenome: PhenoMeInterface, processed, dataset) -> None:
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.params.paths.images == dataset['images']
+    assert phenome.params.paths.metadata == dataset['metadata']
+
+
+def test_loading_from_the_paths_clears_the_results_too(
+    phenome: PhenoMeInterface, processed, path_dataset
+) -> None:
+    analysed(phenome, processed)
+    phenome.params.paths.images = path_dataset['images']
+    phenome.params.paths.masks = path_dataset['masks']
+    phenome.params.paths.template = path_dataset['template']
+
+    phenome.load_data_path()
+
+    assert len(phenome.metadata_df) == 6
+    assert phenome.has_results is False
+
+
+def test_a_load_that_raises_still_leaves_nothing_behind(phenome: PhenoMeInterface, processed) -> None:
+    """The results are dropped before a single file is read, so a failed load cannot keep them alive."""
+    analysed(phenome, processed)
+    phenome.params.paths.metadata = Path('no_such_file.csv')
+
+    with pytest.raises(FileNotFoundError):
+        phenome.load_data_csv()
+
+    assert phenome.metadata_df is None
+    assert phenome.has_results is False
+
+
+def test_clearing_a_fresh_interface_changes_nothing(phenome: PhenoMeInterface) -> None:
+    """Loading the first dataset of a session goes through the same path as loading the next one."""
+    phenome.clear_results()
+
+    assert phenome.has_results is False
+    assert phenome.metadata_df is None
 
 
 # ----------------------------------------------------------------------------

@@ -171,6 +171,116 @@ def test_the_explorer_shares_the_one_interface_and_viewer(widget: PhenoMeWidget)
 
 
 # ----------------------------------------------------------------------------
+# Loading a second dataset, which nothing computed from the first may outlive
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def analysed(widget: PhenoMeWidget, processed, reduction, sync_worker) -> PhenoMeWidget:
+    """ A widget holding a full session: data loaded, images processed, images retrieved and projected.
+
+    The embeddings and the reduction are stubbed, neither being something a test may run.
+    """
+    widget.loading_panel._on_load_data_csv()
+    processed(widget._phenome, 6)
+    widget.processing_panel.refresh_buttons()
+    widget.analysis_panel.set_task_running(False)
+
+    widget._phenome.properties_df = pd.DataFrame({'area': [1.0] * 6})
+    widget.analysis_panel._update_images_table(
+        pd.DataFrame({
+            'drug_name': ['ctrl', 'drugA'],
+            'image_name': ['img_000.tif', 'img_003.tif'],
+            'image_path': ['img_000.tif', 'img_003.tif'],
+        }),
+        'drug_name',
+    )
+
+    # A drawn projection with a selection on it, in the window the explorer button opens
+    reduction(pd.DataFrame({
+        'Component 1': [0.0, 1.0, 2.0],
+        'Component 2': [0.0, 1.0, 2.0],
+        'Index': [0, 1, 2],
+        'drug_name': ['ctrl', 'ctrl', 'drugA'],
+    }))
+    widget.analysis_panel._explorer_button.click()
+    sync_worker(widget._explorer_window, '_projection_worker', widget._phenome.compute_projection)
+    widget._explorer_window._compute_button.click()
+    widget._explorer_window._canvas.points_selected.emit([1, 2])
+
+    # An image on the napari canvas, as browsing the metadata table leaves behind
+    widget.loading_panel._metadata_table.native.setCurrentCell(2, 0)
+
+    return widget
+
+
+def test_a_second_load_empties_the_images_table(analysed: PhenoMeWidget, path_dataset) -> None:
+    load_paths(analysed, path_dataset)
+
+    assert analysed.analysis_panel._images_table.native.rowCount() == 0
+    assert analysed.analysis_panel._images_df is None
+
+
+def test_a_second_load_locks_the_analysis_steps_again(analysed: PhenoMeWidget, path_dataset) -> None:
+    """They run on the embeddings, which went with the dataset they were extracted from."""
+    load_paths(analysed, path_dataset)
+
+    assert not analysed.analysis_panel._run_clustering_button.isEnabled()
+    assert not analysed.processing_panel._props_button.isEnabled()
+
+
+def test_a_second_load_wipes_the_explorer(analysed: PhenoMeWidget, path_dataset) -> None:
+    load_paths(analysed, path_dataset)
+
+    explorer = analysed._explorer_window
+    assert explorer._canvas._points is None
+    assert explorer._canvas._plot.listDataItems() == []
+    assert explorer._selected_indices == []
+    assert explorer._num_select_label.text() == '0 points selected.'
+    assert not explorer._highlight_group.isEnabled()
+
+
+def test_a_second_load_takes_the_image_off_the_viewer(analysed: PhenoMeWidget, path_dataset, viewer) -> None:
+    """What is on the canvas is an image of the previous dataset, which no longer stands for anything."""
+    cleared = viewer.layers.cleared
+
+    load_paths(analysed, path_dataset)
+
+    assert viewer.layers.cleared == cleared + 1
+    assert viewer.layers == []
+
+
+def test_a_second_load_shows_the_new_dataset_alone(analysed: PhenoMeWidget, path_dataset) -> None:
+    load_paths(analysed, path_dataset)
+
+    assert analysed.loading_panel._metadata_table.native.rowCount() == 6
+    assert analysed._phenome.has_results is False
+    assert analysed._phenome.properties_df is None
+
+
+def test_answering_no_to_the_second_load_keeps_everything(
+    analysed: PhenoMeWidget, path_dataset, confirmation
+) -> None:
+    confirmation.accepted = False
+    drawn = list(analysed._explorer_window._canvas._points['Index'])
+
+    load_paths(analysed, path_dataset)
+
+    assert analysed.analysis_panel._images_table.native.rowCount() == 2
+    assert analysed._explorer_window._selected_indices == [1, 2]
+    assert list(analysed._explorer_window._canvas._points['Index']) == drawn
+
+
+def load_paths(widget: PhenoMeWidget, path_dataset) -> None:
+    """ Load the second dataset through the loading panel, the way a user would. """
+    widget.loading_panel._path_radio.setChecked(True)
+    widget.loading_panel._path_image_dir_dialog.value = path_dataset['images']
+    widget.loading_panel._path_mask_dir_dialog.value = path_dataset['masks']
+    widget.loading_panel._path_template.value = path_dataset['template']
+    widget.loading_panel._path_load_data_btn.click()
+
+
+# ----------------------------------------------------------------------------
 # The real plugin, which nothing else exercises
 # ----------------------------------------------------------------------------
 

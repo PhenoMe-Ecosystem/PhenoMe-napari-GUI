@@ -132,6 +132,15 @@ class AnalysisPanel(QWidget):
         layout.addWidget(self._explorer_button, 0)
         self.setLayout(layout)
 
+    def clear_results(self) -> None:
+        """ Let go of the retrieved images, a new dataset having taken the place of the one they came from.
+
+        The buttons are refreshed alongside: the embeddings they run on went with the previous dataset,
+        so every step here closes back down until the new one has been processed.
+        """
+        self._update_images_table(None, None)
+        self._refresh_analysis_buttons()
+
     def set_task_running(self, running: bool) -> None:
         """ Take note that a processing task has started or finished, and lock the buttons accordingly.
 

@@ -16,6 +16,7 @@ from typing import Any  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
+from qtpy.QtWidgets import QMessageBox  # noqa: E402
 from skimage.io import imsave  # noqa: E402
 
 from phenome_gui._widget import PhenoMeWidget  # noqa: E402
@@ -103,6 +104,37 @@ def loaded(phenome: PhenoMeInterface) -> PhenoMeInterface:
     return phenome
 
 
+class Confirmation:
+    """ Stands in for the prompt asking whether the loaded results may be dropped.
+
+    Answers Yes unless a test sets `accepted` to False, and records whether it was asked at all, which
+    is how a test tells a silent load apart from a confirmed one.
+    """
+
+    def __init__(self) -> None:
+        self.accepted = True
+        self.asked = 0
+
+    def __call__(self, *args, **kwargs) -> QMessageBox.StandardButton:
+        self.asked += 1
+        return QMessageBox.StandardButton.Yes if self.accepted else QMessageBox.StandardButton.No
+
+
+@pytest.fixture(autouse=True)
+def confirmation(monkeypatch: pytest.MonkeyPatch) -> Confirmation:
+    """ Answer the prompt shown when a load would drop the results of the loaded dataset.
+
+    Autouse, as a real one is modal: any test loading over existing results would otherwise wait on a
+    window nobody can answer.
+
+    Returns:
+        Confirmation: The stand-in, whose `accepted` a test sets to answer No.
+    """
+    stand_in = Confirmation()
+    monkeypatch.setattr(QMessageBox, 'question', stand_in)
+    return stand_in
+
+
 class StubResults:
     """ Stands in for the PhenoMe results, so a pipeline can look processed without running a model. """
 
@@ -134,7 +166,20 @@ def processed():
 
 
 class FakeLayers(list):
-    """ Stands in for the napari layer list, which the image viewer only ever clears. """
+    """ Stands in for the napari layer list, which the image viewer only ever clears.
+
+    The clears are counted, as they are all the list ever sees: the recorded layers are kept on the
+    viewer itself, so an emptied list would otherwise be indistinguishable from one never filled.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleared = 0
+
+    def clear(self) -> None:
+        """ Take note that the layers were taken off. """
+        self.cleared += 1
+        super().clear()
 
 
 class RecordingViewer:

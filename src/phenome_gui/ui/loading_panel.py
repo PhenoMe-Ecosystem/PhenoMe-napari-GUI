@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 
 import pandas as pd
 from magicgui.widgets import create_widget
@@ -8,6 +9,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -32,6 +34,11 @@ class LoadingPanel(QWidget):
     # Emitted whenever the metadata table has been rewritten, so the steps running on the loaded data can
     # refresh. Fires on a failed load too, as that clears the table and closes those steps back down.
     data_loaded = Signal()
+
+    # Emitted once a load has dropped everything computed from the dataset before it, so whoever shows
+    # those results can let go of them. Kept apart from data_loaded, which is also emitted when the table
+    # is redrawn from the metadata a step has just added to: that is not a load, and drops nothing.
+    results_cleared = Signal()
 
     def __init__(
         self,
@@ -198,11 +205,59 @@ class LoadingPanel(QWidget):
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """
-        self._update_metadata_table(self._phenome.load_data_csv())
+        self._load_data(self._phenome.load_data_csv)
 
     def _on_load_data_path(self) -> None:
         """ Load the data using path-based metadata and show it in the table. """
-        self._update_metadata_table(self._phenome.load_data_path())
+        self._load_data(self._phenome.load_data_path)
+
+    def _load_data(self, load: Callable[[], pd.DataFrame | None]) -> None:
+        """ Ask before dropping what is there, load the dataset, and show it in the table.
+
+        The two metadata structures differ only in the call they load through, so they share this: the
+        confirmation, the announcement and the table are the same either way.
+
+        Args:
+            load: The interface method loading the dataset, which drops the previous results itself.
+        Raises:
+            ValueError: Raised on through _update_metadata_table() when no file was found.
+        """
+        if not self._confirm_clearing():
+            logger.info('Loading was called off, leaving the previous results as they were.')
+            return
+
+        try:
+            metadata_df = load()
+        finally:
+            # The interface drops the previous results before it reads a single file, so whoever shows
+            # them is told whether or not the load itself got as far as finding any.
+            self.results_cleared.emit()
+
+        self._update_metadata_table(metadata_df)
+
+    def _confirm_clearing(self) -> bool:
+        """ Ask whether the results of the loaded dataset may be dropped, when there are any.
+
+        Loading a dataset drops what was computed from the one before it, an embedding run being long
+        enough that losing one to a misplaced click is worth a question. Nothing is asked when there is
+        nothing to lose, so the usual first load goes straight through.
+
+        Returns:
+            bool: True when the load may go ahead.
+        """
+        if not self._phenome.has_results:
+            return True
+
+        answer = QMessageBox.question(
+            self,
+            "Load new data?",
+            "Loading a dataset clears everything computed from the current one: the embeddings, the "
+            "properties, the clusters, the retrieved images and the projection.\n\nLoad anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        return answer == QMessageBox.StandardButton.Yes
 
     def refresh_table(self) -> None:
         """ Redraw the table from the metadata currently held by the interface.

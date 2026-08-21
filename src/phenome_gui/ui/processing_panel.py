@@ -209,6 +209,22 @@ class ProcessingPanel(QWidget):
         self.refresh_buttons()
         self.task_running_changed.emit(running)
 
+    def clear_results(self) -> None:
+        """ Let go of what the dataset loaded before produced, a new one having taken its place.
+
+        The checkpoint field is read back from the parameters rather than left as it was: the interface
+        puts it back to its default when it drops the results, a checkpoint answering only for the
+        images it was filled from. The loaded model is not a result and stays where it is, along with
+        the label naming it.
+        """
+        self._checkpoint_path_dialog.value = str(self._phenome.params.paths.checkpoint)
+
+        self._progress_bar.setRange(0, 1)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFormat('')
+
+        self.refresh_buttons()
+
     def refresh_buttons(self) -> None:
         """ Bring both processing buttons in line with the state of the pipeline.
 

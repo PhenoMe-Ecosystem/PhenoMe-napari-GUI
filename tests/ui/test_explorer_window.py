@@ -1228,3 +1228,100 @@ def test_reopening_the_window_keeps_the_plot(loaded_explorer: InteractiveExplore
     loaded_explorer.refresh_choices()
 
     assert drawn(loaded_explorer) == {'ctrl': 2, 'drugA': 1}
+
+
+# ----------------------------------------------------------------------------
+# Letting go of everything when another dataset is loaded
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def explored(loaded_explorer: InteractiveExplorerWindow, computing) -> InteractiveExplorerWindow:
+    """ An explorer holding a drawn projection, a highlight applied to it and a listed selection. """
+    computing(indexed([10, 20, 30]))
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('drug_name')
+    loaded_explorer._highlight_checkbox.setChecked(True)
+
+    loaded_explorer._canvas.points_selected.emit([20, 30])
+    loaded_explorer._on_view_selection_clicked()
+
+    return loaded_explorer
+
+
+def reloaded(window: InteractiveExplorerWindow) -> InteractiveExplorerWindow:
+    """ Load a dataset the way the loading panel does, then tell the window as the widget does.
+
+    The interface drops its results and finds the new files before the window hears about it, so the
+    window is cleared against the metadata it is about to offer rather than against nothing at all.
+    """
+    window._phenome.load_data_csv()
+    window.clear_results()
+    return window
+
+
+def test_clearing_takes_the_projection_off_the_canvas(explored: InteractiveExplorerWindow) -> None:
+    reloaded(explored)
+
+    assert drawn(explored) == {}
+    assert explored._canvas._points is None
+
+
+def test_a_load_lets_go_of_the_selection(explored: InteractiveExplorerWindow) -> None:
+    """It points at places in results that are no longer there."""
+    reloaded(explored)
+
+    assert explored._selected_indices == []
+    assert explored._num_select_label.text() == '0 points selected.'
+    assert explored._canvas.selected_indices() == []
+    assert table_rows(explored) == 0
+
+
+def test_clearing_closes_the_highlight_back_down(explored: InteractiveExplorerWindow) -> None:
+    assert explored._highlight_group.isEnabled()
+
+    reloaded(explored)
+
+    assert not explored._highlight_checkbox.isChecked()
+    assert not explored._highlight_group.isEnabled()
+    assert explored._highlight_group.toolTip() == 'Please compute a projection first.'
+
+
+def test_clearing_stops_waiting_for_a_shape(explored: InteractiveExplorerWindow) -> None:
+    explored._box_select_button.click()
+
+    reloaded(explored)
+
+    assert not explored._box_select_button.isChecked()
+    assert not explored._lasso_select_button.isChecked()
+    assert explored._canvas._viewbox.selecting is None
+
+
+def test_clearing_refills_the_colouring_from_the_metadata_now_loaded(
+    explored: InteractiveExplorerWindow
+) -> None:
+    explored._color_by_combo.setCurrentText('drug_name')
+
+    reloaded(explored)
+
+    assert items(explored._color_by_combo) == explored._phenome.get_color_by_columns()
+
+
+def test_clearing_after_a_failed_load_leaves_nothing_offered(explored: InteractiveExplorerWindow) -> None:
+    """A load that found no file leaves no metadata to colour by, and the window has to read as much."""
+    explored._phenome.clear_results()
+
+    explored.clear_results()
+
+    assert items(explored._color_by_combo) == []
+    assert not explored._color_by_combo.isEnabled()
+    assert explorer_params(explored).color_by is None
+
+
+def test_clearing_an_untouched_window_raises_nothing(explorer: InteractiveExplorerWindow) -> None:
+    """The window is cleared on every load, including the ones made before anything was computed."""
+    explorer.clear_results()
+
+    assert drawn(explorer) == {}
+    assert explorer._selected_indices == []
