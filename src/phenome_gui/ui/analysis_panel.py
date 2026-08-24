@@ -36,6 +36,10 @@ class AnalysisPanel(QWidget):
     # can pick the new column up.
     clustering_finished = Signal()
 
+    # Emitted when the explorer button is pressed. The window is shown alongside the widget rather than
+    # inside the tab, so it is owned by whoever owns the panels rather than by the panel itself.
+    explorer_requested = Signal()
+
     def __init__(
         self,
         phenome: PhenoMeInterface,
@@ -62,8 +66,8 @@ class AnalysisPanel(QWidget):
     def _build_ui(self) -> None:
         """ Build the analysis tab and its widgets.
 
-        Includes a group to configure and run the clustering, and one to view the prototype and outlier
-        images of a chosen metadata group.
+        Includes a group to configure and run the clustering, one to view the prototype and outlier
+        images of a chosen metadata group, and the button opening the interactive explorer.
         """
         layout = QVBoxLayout()
 
@@ -115,12 +119,27 @@ class AnalysisPanel(QWidget):
 
         images_layout.addWidget(self._images_table.native, 1)
 
+        # Explorer button, kept out of both groups: it opens a window of its own rather than belonging
+        # to the clustering or the retrieval step. Opening it is left to whoever owns the window.
+        self._explorer_button = QPushButton("Interactive Explorer...")
+        self._explorer_button.clicked.connect(self.explorer_requested.emit)
+
         # Refreshed here rather than next to each button, as it needs all of them to exist
         self._refresh_analysis_buttons()
 
         layout.addWidget(clustering_group, 0)
         layout.addWidget(images_group, 1)
+        layout.addWidget(self._explorer_button, 0)
         self.setLayout(layout)
+
+    def clear_results(self) -> None:
+        """ Let go of the retrieved images, a new dataset having taken the place of the one they came from.
+
+        The buttons are refreshed alongside: the embeddings they run on went with the previous dataset,
+        so every step here closes back down until the new one has been processed.
+        """
+        self._update_images_table(None, None)
+        self._refresh_analysis_buttons()
 
     def set_task_running(self, running: bool) -> None:
         """ Take note that a processing task has started or finished, and lock the buttons accordingly.
@@ -136,8 +155,9 @@ class AnalysisPanel(QWidget):
 
         The clustering, prototype and outlier steps all run on the embeddings held by the pipeline, and
         raise when there are none, so the state is read from the interface the same way the properties
-        button does. They share one method as their condition is the same. Called when building the tab
-        and whenever a processing task starts or finishes.
+        button does. The explorer projects those same embeddings, so it waits on them too. They share
+        one method as their condition is the same. Called when building the tab and whenever a
+        processing task starts or finishes.
         """
         has_processed_images = self._phenome.has_processed_images
 
@@ -146,7 +166,12 @@ class AnalysisPanel(QWidget):
         else:
             tooltip = '' if has_processed_images else 'Please extract embeddings first.'
 
-        for button in (self._run_clustering_button, self._prototype_button, self._outlier_button):
+        for button in (
+            self._run_clustering_button,
+            self._prototype_button,
+            self._outlier_button,
+            self._explorer_button,
+        ):
             button.setEnabled(has_processed_images and not self._task_running)
             button.setToolTip(tooltip)
 

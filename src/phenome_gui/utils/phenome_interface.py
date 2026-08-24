@@ -9,9 +9,28 @@ from .analysis import PhenoMeAnalysis
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .models import MODEL_OPTIONS
-from .params import Params
+from .params import DEFAULT_CHECKPOINT, Params
 
 logger = getLogger(__name__)
+
+# The GUI names its algorithms as the papers do, where PhenoMe knows them by a plain lower case key.
+# Keyed by the EmbeddingMethod choices, so every method the form can offer has a translation.
+DR_METHODS = {'t-SNE': 'tsne', 'PCA': 'pca', 'UMAP': 'umap'}
+
+# The GUI picks a canvas to draw on, which PhenoMe reads as a number of components to reduce to.
+DIMS_COMPONENTS = {'2D': 2, '3D': 3}
+
+# Columns naming one image rather than describing it, which colour every point differently and say
+# nothing by it. Dropped only from a dataset large enough for their uniqueness to mean something, the
+# same way PhenoMe's build_informative_color_columns() reads them.
+IDENTIFIER_COLUMNS = {'id', 'filename', 'file_path', 'path', 'index'}
+IDENTIFIER_UNIQUENESS = 0.9
+IDENTIFIER_MIN_ROWS = 10
+
+# Column of a projection holding where each of its rows sits in the PhenoMe results, which is the
+# only way back from a projected point to the image it stands for: the projection carries the name of
+# the image but not its path.
+PROJECTION_INDEX_COLUMN = 'Index'
 
 
 class PhenoMeInterface:
@@ -36,6 +55,7 @@ class PhenoMeInterface:
         self.clustering_df = None
         self.prototypes_df = None
         self.outliers_df = None
+        self.projection_df = None
         self.model = None
         self.cuda_available = cuda.is_available()
 
@@ -44,15 +64,85 @@ class PhenoMeInterface:
         self.phenome_analysis = PhenoMeAnalysis(self.pheno)
 
     # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
+
+    @property
+    def has_results(self) -> bool:
+        """ Whether anything has been computed from the dataset currently loaded.
+
+        The metadata is left out: replacing it is what loading a dataset does, rather than something
+        loading one costs. Read before a load, to know whether there is anything to lose by it.
+
+        Returns:
+            bool: True once a step has run on the loaded images.
+        """
+        return self.has_processed_images or any(
+            frame is not None for frame in (
+                self.properties_df,
+                self.clustering_df,
+                self.prototypes_df,
+                self.outliers_df,
+                self.projection_df,
+            )
+        )
+
+    def clear_results(self) -> None:
+        """ Drop everything computed from the dataset currently loaded.
+
+        Called at the start of every load, so that what the interface holds always answers for the
+        files currently loaded: PhenoMe.find_files() only replaces the files it found, and would
+        otherwise leave the embeddings and the properties of the previous dataset behind them.
+
+        The loaded model is kept, being a downloaded network rather than anything read off the
+        images. Everything else goes, the parameters naming a result included.
+        """
+        # Closes the open checkpoint, and empties the embeddings, the properties and the found files
+        self.pheno.reset(clear_file_df=True)
+
+        self.metadata_df = None
+        self.properties_df = None
+        self.clustering_df = None
+        self.prototypes_df = None
+        self.outliers_df = None
+        self.projection_df = None
+
+        # A checkpoint holds the results of the images it was filled from, and would be read back for
+        # the next dataset as though it answered for those images too
+        self.params.paths.checkpoint = DEFAULT_CHECKPOINT
+
+        # Columns and values of the metadata just dropped, which name nothing in the next one
+        self.params.explorer.color_by = None
+        self.params.explorer.filter = None
+        self.params.explorer.exclude = None
+        self.params.prototypes.group_by = None
+        self.params.outliers.group_by = None
+
+        # Each step's feature space, put back to the one needing no properties: the parameter forms
+        # close the choice when there are none, but leave whatever was picked before standing, and
+        # the step would then be run against properties that are no longer there.
+        for section in (
+            self.params.clustering, self.params.prototypes, self.params.outliers, self.params.explorer
+        ):
+            section.source = type(section).model_fields['source'].default
+
+        logger.info('Cleared the results of the previously loaded dataset.')
+
+    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
     def load_data_csv(self) -> pd.DataFrame:
         """ Load the dataset using a .csv file as metadata source.
 
+        Anything computed from the dataset loaded before is dropped first, so the results never
+        outlive the images they were computed from.
+
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
+        self.clear_results()
+
         images_folder = str(self.params.paths.images)
         masks_folder = str(self.params.paths.masks)
         metadata_csv = str(self.params.paths.metadata)
@@ -62,9 +152,14 @@ class PhenoMeInterface:
     def load_data_path(self) -> pd.DataFrame:
         """ Load the dataset by extracting the metadata from the file paths.
 
+        Anything computed from the dataset loaded before is dropped first, so the results never
+        outlive the images they were computed from.
+
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
+        self.clear_results()
+
         images_folder = str(self.params.paths.images)
         masks_folder = str(self.params.paths.masks)
         template = self.params.paths.template
@@ -229,6 +324,30 @@ class PhenoMeInterface:
         )
         return self.outliers_df
 
+    def compute_projection(self) -> pd.DataFrame:
+        """ Project the images down for the explorer plot. Stores the coordinates in self.projection_df.
+
+        Uses the params to feed arguments. Both the algorithm and the number of dimensions are named
+        for the GUI rather than for PhenoMe - the papers' spelling for the one, a kind of canvas for
+        the other - so both are translated on the way down. The filter and the exclusion go down as
+        they are, PhenoMe naming the first in the plural and reading an unset one and an empty one
+        the same way.
+
+        Returns:
+            pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None
+                when there was nothing to project.
+        """
+        explorer = self.params.explorer
+
+        self.projection_df = self.phenome_analysis.run_dimensionality_reduction(
+            method=DR_METHODS[explorer.method],
+            n_components=DIMS_COMPONENTS[explorer.dims],
+            source=explorer.source,
+            filters=explorer.filter,
+            exclude=explorer.exclude
+        )
+        return self.projection_df
+
     # ------------------------------------------------------------------
     # Metadata access
     # ------------------------------------------------------------------
@@ -248,6 +367,49 @@ class PhenoMeInterface:
 
         reserved = {'file_path', 'mask_path'}
         return [column for column in self.metadata_df.columns if column not in reserved]
+
+    def get_color_by_columns(self) -> list[str]:
+        """ Return everything the explorer plot can colour its points by.
+
+        The metadata columns and the computed properties together, which is how PhenoMe fills the
+        same dropdown in its own explorer: metadata says what an image is, properties say what was
+        measured on it, and either can be worth colouring by. The metadata comes first, the
+        properties after it in the order PhenoMe holds them.
+
+        The columns that cannot inform a colouring are left out, as PhenoMe leaves them out: one
+        holding a single value paints every point alike, and one naming each image paints them all
+        differently. The naming ones are only dropped from a dataset big enough for that to be
+        telling, a handful of images being too few to tell an identifier from a grouping key.
+
+        Returns:
+            list[str]: The columns to offer, empty when no data has been loaded yet.
+        """
+        columns = [column for column in self.get_metadata_columns() if self._is_informative(column)]
+
+        # Properties are measurements, so they are neither identifiers nor, in practice, constant
+        properties = self.pheno.get_available_property_keys()
+
+        return columns + [key for key in properties if key not in columns]
+
+    def _is_informative(self, column: str) -> bool:
+        """ Whether a metadata column says enough about the images to be worth colouring by.
+
+        Args:
+            column (str): Name of the column, which is read alongside its values: only the columns
+                named after an identifier are held to the uniqueness test.
+        Returns:
+            bool: False for a column holding one value throughout, or one naming each image.
+        """
+        values = self.metadata_df[column]
+        distinct = values.nunique(dropna=True)
+
+        if distinct <= 1:
+            return False
+
+        if column.lower() in IDENTIFIER_COLUMNS and len(values) > IDENTIFIER_MIN_ROWS:
+            return distinct <= IDENTIFIER_UNIQUENESS * len(values)
+
+        return True
 
     def get_row_display_data(self, row: int) -> tuple[list[str], list[str] | None, list[dict]]:
         """ Return the content of a metadata row, in the form expected by the image viewer.
@@ -292,6 +454,40 @@ class PhenoMeInterface:
         mask_paths = [row_data['mask_path']] if 'mask_path' in row_data else None
 
         return [image_path], mask_paths, [row_data.to_dict()]
+
+    def get_projection_image_data(self, row: int) -> tuple[list[str], list[str] | None, list[dict]]:
+        """ Return the content of a projection row, in the form expected by the image viewer.
+
+        A projected point is one image, but the projection only carries its name and the place it is
+        held at in the PhenoMe results, so the path is looked up from that place and the mask and the
+        metadata from the path, the way a retrieved image has them looked up.
+
+        Args:
+            row (int): Positional index of the row in the projection dataframe.
+        Returns:
+            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+        """
+        return self.get_image_data_at(int(self.projection_df.iloc[row][PROJECTION_INDEX_COLUMN]))
+
+    def get_image_data_at(self, index: int) -> tuple[list[str], list[str] | None, list[dict]]:
+        """ Return the content of one image, found by where PhenoMe holds it, for the image viewer.
+
+        The place is what a projection carries and what a selection is made of, neither of them
+        holding the path: PhenoMe writes the name of an image and its index and no more, so the path
+        is looked up here and the mask and the metadata from the path.
+
+        Args:
+            index (int): Place of the image in the PhenoMe results.
+        Returns:
+            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+        """
+        image_path = self.pheno.results.img_path[index]
+
+        # PhenoMe holds a list of paths rather than one for the images it reads a channel at a time
+        if isinstance(image_path, list | tuple):
+            image_path = image_path[0]
+
+        return self.get_image_display_data(str(image_path))
 
     def get_metadata_table(self) -> "pd.Dataframe":
         """ Get the metadata dataframe in its current state.

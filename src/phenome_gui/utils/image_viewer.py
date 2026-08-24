@@ -22,6 +22,14 @@ class ImageViewer:
         """
         self._viewer = viewer
 
+    def clear(self) -> None:
+        """ Take every layer off the napari viewer.
+
+        What is displayed is one image of the loaded dataset, so it is taken off when that dataset is
+        let go of, the same way it is taken off to show the next image.
+        """
+        self._viewer.layers.clear()
+
     def display_images(self, image_paths: list[str], mask_paths: list[str] | None = None, row_data: list[dict] | None = None, names: list[str] | None = None) -> None:
         """ Display the images and their masks in the napari viewer.
 
@@ -33,7 +41,7 @@ class ImageViewer:
             row_data (list[dict]): Metadata attached to each layer, one dict per image. None to attach no metadata.
             names (list[str]): Name given to each image layer, the mask layers being suffixed with ' - Mask'. None to name every layer 'Image'.
         """
-        self._viewer.layers.clear()
+        self.clear()
 
         for i, img in enumerate(image_paths):
             metadata = row_data[i] if row_data else None

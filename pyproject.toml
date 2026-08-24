@@ -33,6 +33,8 @@ dependencies = [
     "scikit-image",
     "phenome",
     "pydantic>=2",
+    "pyqtgraph>=0.14.0",
+    "superqt",
 ]
 
 [project.optional-dependencies]

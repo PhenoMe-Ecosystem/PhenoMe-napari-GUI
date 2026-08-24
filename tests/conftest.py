@@ -16,9 +16,11 @@ from typing import Any  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
+from qtpy.QtWidgets import QMessageBox  # noqa: E402
 from skimage.io import imsave  # noqa: E402
 
 from phenome_gui._widget import PhenoMeWidget  # noqa: E402
+from phenome_gui.utils import analysis  # noqa: E402
 from phenome_gui.utils.phenome_interface import PhenoMeInterface  # noqa: E402
 
 # The dataset the fixtures below build. Two grouping columns, so the tests can tell a resolved grouping
@@ -102,12 +104,50 @@ def loaded(phenome: PhenoMeInterface) -> PhenoMeInterface:
     return phenome
 
 
+class Confirmation:
+    """ Stands in for the prompt asking whether the loaded results may be dropped.
+
+    Answers Yes unless a test sets `accepted` to False, and records whether it was asked at all, which
+    is how a test tells a silent load apart from a confirmed one.
+    """
+
+    def __init__(self) -> None:
+        self.accepted = True
+        self.asked = 0
+
+    def __call__(self, *args, **kwargs) -> QMessageBox.StandardButton:
+        self.asked += 1
+        return QMessageBox.StandardButton.Yes if self.accepted else QMessageBox.StandardButton.No
+
+
+@pytest.fixture(autouse=True)
+def confirmation(monkeypatch: pytest.MonkeyPatch) -> Confirmation:
+    """ Answer the prompt shown when a load would drop the results of the loaded dataset.
+
+    Autouse, as a real one is modal: any test loading over existing results would otherwise wait on a
+    window nobody can answer.
+
+    Returns:
+        Confirmation: The stand-in, whose `accepted` a test sets to answer No.
+    """
+    stand_in = Confirmation()
+    monkeypatch.setattr(QMessageBox, 'question', stand_in)
+    return stand_in
+
+
 class StubResults:
     """ Stands in for the PhenoMe results, so a pipeline can look processed without running a model. """
 
     def __init__(self, n_images: int = 0) -> None:
         self.n_images = n_images
         self.metadata: list[dict] = []
+
+        # One dict per image once the properties have been computed, which is where PhenoMe reads the
+        # property keys the explorer offers as colouring columns
+        self.properties: list[dict] = []
+
+        # Path of each processed image, which is what a projected point is resolved back to
+        self.img_path: list[str] = []
 
 
 @pytest.fixture
@@ -126,7 +166,20 @@ def processed():
 
 
 class FakeLayers(list):
-    """ Stands in for the napari layer list, which the image viewer only ever clears. """
+    """ Stands in for the napari layer list, which the image viewer only ever clears.
+
+    The clears are counted, as they are all the list ever sees: the recorded layers are kept on the
+    viewer itself, so an emptied list would otherwise be indistinguishable from one never filled.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleared = 0
+
+    def clear(self) -> None:
+        """ Take note that the layers were taken off. """
+        self.cleared += 1
+        super().clear()
 
 
 class RecordingViewer:
@@ -200,8 +253,64 @@ def spy():
     return Spy
 
 
+class ReductionSpy:
+    """ Stands in for PhenoMe's run_dimensionality_reduction.
+
+    A free function taking the pipeline as its first argument rather than a pipeline method, so it
+    cannot be stubbed by assigning onto the pipeline the way the other PhenoMe calls are.
+    """
+
+    def __init__(self, frame: pd.DataFrame | None, data_type: str = 'Embeddings') -> None:
+        self.frame = frame
+        self.data_type = data_type
+        self.calls: list[dict[str, Any]] = []
+        self.pipelines: list[Any] = []
+
+        # Called while the projection is running, for a test watching what the GUI does meanwhile
+        self.on_call = None
+
+    def __call__(self, pipeline, **kwargs) -> tuple:
+        self.pipelines.append(pipeline)
+        self.calls.append(kwargs)
+        if self.on_call is not None:
+            self.on_call()
+
+        # PhenoMe answers with three Nones when it is left with no data to project
+        if self.frame is None:
+            return None, None, None
+        return self.frame, self.data_type, None
+
+    @property
+    def last(self) -> dict[str, Any]:
+        """ The keyword arguments of the most recent call. """
+        return self.calls[-1]
+
+    @property
+    def called(self) -> bool:
+        """ Whether the reduction has been run at all. """
+        return bool(self.calls)
+
+
+@pytest.fixture
+def reduction(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook replacing PhenoMe's dimensionality reduction with a recording stand-in.
+
+    No test may run a real projection: t-SNE and UMAP are slow, and the pipeline holds no embeddings
+    to project anyway.
+
+    Returns:
+        Callable[[pd.DataFrame | None, str], ReductionSpy]: Called as reduction(frame).
+    """
+    def _replace(frame: pd.DataFrame | None = None, data_type: str = 'Embeddings') -> ReductionSpy:
+        stand_in = ReductionSpy(frame, data_type)
+        monkeypatch.setattr(analysis, 'run_dimensionality_reduction', stand_in)
+        return stand_in
+
+    return _replace
+
+
 class _Signal:
-    """ Minimal stand-in for the `returned` signal of a napari worker. """
+    """ Minimal stand-in for the `returned` and `errored` signals of a napari worker. """
 
     def __init__(self) -> None:
         self._slots = []
@@ -209,9 +318,9 @@ class _Signal:
     def connect(self, slot) -> None:
         self._slots.append(slot)
 
-    def emit(self) -> None:
+    def emit(self, *args) -> None:
         for slot in self._slots:
-            slot()
+            slot(*args)
 
 
 class _SyncWorker:
@@ -219,15 +328,23 @@ class _SyncWorker:
 
     The panels start their long steps on a worker thread, which would make the tests racy. Swapping the
     worker factory for this one keeps the rest of the flow - the finish handler included - identical.
+
+    A raising step is reported the way the real worker reports it, through `errored` rather than out of
+    start(), so a handler waiting on it is exercised as it would be in the running GUI.
     """
 
     def __init__(self, function) -> None:
         self._function = function
         self.returned = _Signal()
+        self.errored = _Signal()
 
     def start(self) -> None:
-        self._function()
-        self.returned.emit()
+        try:
+            self._function()
+        except Exception as error:  # noqa: BLE001 - the real worker catches everything too
+            self.errored.emit(error)
+        else:
+            self.returned.emit()
 
 
 @pytest.fixture
