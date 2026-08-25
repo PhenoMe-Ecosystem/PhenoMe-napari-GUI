@@ -28,7 +28,6 @@ resolution-markers = [
 members = [
     "phenome",
     "phenome-gui",
-    "stedfm",
 ]
 constraints = [{ name = "numpy", specifier = "<2.5" }]
 
@@ -3661,7 +3660,7 @@ requires-dist = [
     { name = "pyqtgraph", specifier = ">=0.14.0" },
     { name = "qtpy" },
     { name = "scikit-image" },
-    { name = "stedfm", editable = "external/STED-FM" },
+    { name = "stedfm", git = "https://github.com/FLClab/STED-FM.git" },
     { name = "superqt" },
 ]
 provides-extras = ["all"]
@@ -3672,7 +3671,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
-    { name = "stedfm", editable = "external/STED-FM" },
+    { name = "stedfm", git = "https://github.com/FLClab/STED-FM.git" },
     { name = "tox-uv" },
 ]
 
@@ -5215,7 +5214,8 @@ wheels = [
 
 [[package]]
 name = "stedfm"
-source = { editable = "external/STED-FM" }
+version = "0.0.1"
+source = { git = "https://github.com/FLClab/STED-FM.git#ffc042efda599884332b6b90f2947f81da9bc2c8" }
 dependencies = [
     { name = "h5py" },
     { name = "huggingface-hub" },
@@ -5237,36 +5237,6 @@ dependencies = [
     { name = "tensorboard" },
     { name = "tifffile" },
     { name = "tiffwrapper" },
-    { name = "timm" },
-    { name = "torch" },
-    { name = "torchinfo" },
-    { name = "torchsummary" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-    { name = "typing-extensions" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "h5py" },
-    { name = "huggingface-hub" },
-    { name = "imagecodecs" },
-    { name = "imageio" },
-    { name = "lightly" },
-    { name = "lightning" },
-    { name = "matplotlib" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pillow" },
-    { name = "pytorch-lightning" },
-    { name = "scikit-image" },
-    { name = "scikit-learn" },
-    { name = "scikit-posthocs" },
-    { name = "scipy" },
-    { name = "seaborn" },
-    { name = "tensorboard" },
-    { name = "tifffile" },
-    { name = "tiffwrapper", git = "https://github.com/FLClab/TiffWrapper.git" },
     { name = "timm" },
     { name = "torch" },
     { name = "torchinfo" },

@@ -73,7 +73,7 @@ members = [
 
 [tool.uv.sources]
 phenome = { workspace = true, editable = true }
-stedfm = { workspace = true, editable = true }
+stedfm = { git = "https://github.com/FLClab/STED-FM.git" }
 
 [build-system]
 requires = ["setuptools>=77.0.3", "setuptools_scm"]
