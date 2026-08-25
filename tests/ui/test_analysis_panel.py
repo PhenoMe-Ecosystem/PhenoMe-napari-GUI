@@ -305,3 +305,37 @@ def test_an_ungrouped_run_names_the_layer_after_the_image_alone(panel: AnalysisP
     panel._images_table.native.setCurrentCell(0, 0)
 
     assert viewer.names[0] == 'solo'
+
+
+# ----------------------------------------------------------------------------
+# Letting go of the retrieved images when another dataset is loaded
+# ----------------------------------------------------------------------------
+
+
+def test_clearing_empties_the_images_table(panel: AnalysisPanel) -> None:
+    panel._update_images_table(prototype_frame(['a.tif', 'b.tif']), 'drug_name')
+    assert panel._images_table.native.rowCount() == 2
+
+    panel.clear_results()
+
+    assert panel._images_table.native.rowCount() == 0
+    assert panel._images_df is None
+    assert panel._images_group_column is None
+
+
+def test_clearing_closes_the_analysis_buttons_back_down(panel: AnalysisPanel, widget) -> None:
+    """The embeddings the four steps run on went with the dataset they were extracted from."""
+    assert all(button.isEnabled() for button in buttons(panel))
+
+    widget._phenome.clear_results()
+    panel.clear_results()
+
+    assert not any(button.isEnabled() for button in buttons(panel))
+    assert all(button.toolTip() == 'Please extract embeddings first.' for button in buttons(panel))
+
+
+def test_clearing_an_empty_panel_raises_nothing(fresh: AnalysisPanel) -> None:
+    """Every load clears the panel, including the ones made before any image was retrieved."""
+    fresh.clear_results()
+
+    assert fresh._images_table.native.rowCount() == 0

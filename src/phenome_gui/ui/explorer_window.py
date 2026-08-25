@@ -253,6 +253,31 @@ class InteractiveExplorerWindow(QDialog):
         # Called here rather than next to each combo box, as it needs both of them to exist
         self.refresh_choices()
 
+    def clear_results(self) -> None:
+        """ Let go of the projection and of everything picked out on it, a new dataset having been loaded.
+
+        The window is built once and kept, where the parameter forms are rebuilt on every use, so what
+        it holds has to be emptied by hand: the plot was drawn from images that are no longer loaded,
+        and the selection made on it points at places in results that are no longer there.
+        """
+        # A shape may have been waited for, and there is nothing left to draw it over
+        self._canvas.cancel_selection()
+        self._box_select_button.setChecked(False)
+        self._lasso_select_button.setChecked(False)
+
+        # Nothing to draw clears the canvas, the frame it was drawn from included. Cleared before the
+        # highlight is switched off, as taking a marking off is drawing the marked frame again.
+        self._canvas.plot_projection(None)
+        self._highlight_checkbox.setChecked(False)
+
+        self._selected_indices = []
+        self._num_select_label.setText("0 points selected.")
+        self._show_selection()
+
+        # Refills the colouring from the new metadata, closes the sources back down, and through
+        # refresh_highlight() closes the highlight group until a projection is computed again
+        self.refresh_choices()
+
     def refresh_choices(self) -> None:
         """ Fill in the colouring columns, and open the choices the pipeline can currently answer for.
 

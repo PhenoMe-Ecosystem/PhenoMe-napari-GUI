@@ -22,6 +22,11 @@ Device = Literal['cpu', 'cuda']
 EmbeddingMethod = Literal['t-SNE', 'PCA', 'UMAP']
 Dims = Literal['2D', '3D']
 
+# Where the embeddings and the properties are written when no other file has been chosen. Named
+# rather than written into the field alone, as loading another dataset puts the path back to it: a
+# checkpoint holds the results of the images it was filled from, and answers for no others.
+DEFAULT_CHECKPOINT = Path('./checkpoint.hdf5')
+
 CLUSTERING_METHOD_CHOICES = list(get_args(ClusteringMethod))
 SOURCE_CHOICES = list(get_args(Source))
 METHOD_CHOICES = list(get_args(OutlierMethod))
@@ -52,7 +57,7 @@ class PathParams(ParamsBase):
     masks: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_masks')
     metadata: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/metadata.csv')
     template: str = '.../(drug_name)/(time)/(filename).*'
-    checkpoint: Path = Path('./checkpoint.hdf5')
+    checkpoint: Path = DEFAULT_CHECKPOINT
 
 
 class ProcessParams(ParamsBase):

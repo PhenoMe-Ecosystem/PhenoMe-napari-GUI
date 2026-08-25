@@ -100,6 +100,93 @@ def test_a_failed_load_clears_the_table_and_raises(panel: LoadingPanel, tmp_path
     assert panel._metadata_table.native.rowCount() == 0
 
 
+# ----------------------------------------------------------------------------
+# Letting go of the previous results, and the question asked before it
+# ----------------------------------------------------------------------------
+
+
+def test_a_first_load_asks_nothing(panel: LoadingPanel, confirmation) -> None:
+    """There is nothing to lose before a step has run, so the usual first load goes straight through."""
+    panel._on_load_data_csv()
+
+    assert confirmation.asked == 0
+    assert panel._metadata_table.native.rowCount() == 6
+
+
+def test_loading_over_results_asks_first(panel: LoadingPanel, processed, confirmation) -> None:
+    processed(panel._phenome, 6)
+
+    panel._on_load_data_csv()
+
+    assert confirmation.asked == 1
+
+
+def test_answering_no_loads_nothing(panel: LoadingPanel, processed, confirmation) -> None:
+    processed(panel._phenome, 6)
+    confirmation.accepted = False
+
+    panel._on_load_data_csv()
+
+    assert panel._phenome.has_results is True
+    assert panel._phenome.metadata_df is None
+    assert panel._metadata_table.native.rowCount() == 0
+
+
+def test_answering_no_announces_nothing(panel: LoadingPanel, processed, confirmation, qtbot) -> None:
+    processed(panel._phenome, 6)
+    confirmation.accepted = False
+
+    with qtbot.assertNotEmitted(panel.results_cleared), qtbot.assertNotEmitted(panel.data_loaded):
+        panel._on_load_data_csv()
+
+
+def test_a_load_announces_that_the_results_are_gone(panel: LoadingPanel, qtbot) -> None:
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000):
+        panel._on_load_data_csv()
+
+
+def test_loading_from_the_paths_announces_it_too(panel: LoadingPanel, path_dataset, qtbot) -> None:
+    panel._path_radio.setChecked(True)
+    panel._path_image_dir_dialog.value = path_dataset['images']
+    panel._path_template.value = path_dataset['template']
+
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000):
+        panel._on_load_data_path()
+
+
+def test_a_failed_load_still_announces_that_the_results_are_gone(
+    panel: LoadingPanel, tmp_path: Path, qtbot
+) -> None:
+    """They are dropped before a single file is read, so finding none does not bring them back."""
+    panel._phenome.params.paths.images = tmp_path / 'empty'
+    (tmp_path / 'empty').mkdir()
+
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000), pytest.raises(ValueError):
+        panel._on_load_data_csv()
+
+
+def test_a_load_that_raises_before_the_table_still_announces_it(panel: LoadingPanel, qtbot) -> None:
+    """pd.read_csv raises on a missing metadata file, past the point where the results were dropped."""
+    panel._phenome.params.paths.metadata = Path('no_such_file.csv')
+
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000), pytest.raises(FileNotFoundError):
+        panel._on_load_data_csv()
+
+
+def test_refresh_table_asks_nothing_and_announces_nothing(
+    panel: LoadingPanel, processed, confirmation, qtbot
+) -> None:
+    """Redrawing the table is not a load: it drops nothing, and must not be taken for one."""
+    panel._on_load_data_csv()
+    processed(panel._phenome, 6)
+
+    with qtbot.assertNotEmitted(panel.results_cleared):
+        panel.refresh_table()
+
+    assert confirmation.asked == 0
+    assert panel._phenome.has_results is True
+
+
 def test_refresh_table_picks_up_a_column_added_elsewhere(panel: LoadingPanel) -> None:
     """This is how the clustering labels reach the table, the analysis panel never touching it directly."""
     panel._on_load_data_csv()

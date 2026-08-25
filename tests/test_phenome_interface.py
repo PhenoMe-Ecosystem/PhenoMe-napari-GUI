@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from phenome_gui.registries.models import MODEL_LOADERS
 from phenome_gui.utils.params import (
+    DEFAULT_CHECKPOINT,
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     Params,
@@ -209,160 +210,165 @@ def test_has_properties_is_a_property(phenome: PhenoMeInterface) -> None:
 
 
 # ----------------------------------------------------------------------------
-# The model, and what its images are prepared and processed with
+# Letting go of the results when another dataset is loaded
 # ----------------------------------------------------------------------------
 
-# The two kinds of model the registries hold, as the form names them and as the registry knows them
-DINOV2_MODEL = 'Small (ViT-S/14)'
-STED_MODEL = 'STED-FM ViT-S'
+RESULT_FRAMES = ['properties_df', 'clustering_df', 'prototypes_df', 'outliers_df', 'projection_df']
+SOURCE_SECTIONS = ['clustering', 'prototypes', 'outliers', 'explorer']
 
 
-@pytest.fixture
-def loadable(monkeypatch: pytest.MonkeyPatch):
-    """ Return a hook standing in for the model loaders, which would fetch real weights.
+def analysed(interface: PhenoMeInterface, processed) -> PhenoMeInterface:
+    """ Leave a result of every kind on an interface, as a full session would.
 
-    Only the weights are stood in for. The transformations and the arguments still come from the
-    registries, this being about which of them a loaded model brings with it.
-
+    Args:
+        interface (PhenoMeInterface): The interface to fill, whose paths are already pointed at a dataset.
+        processed: The fixture making the pipeline report processed images.
     Returns:
-        Callable[[], None]: Called as loadable().
+        PhenoMeInterface: The same interface, now holding results and parameters naming them.
     """
-    def _replace() -> None:
-        monkeypatch.setattr(
-            'phenome_gui.registries.models.MODEL_LOADERS',
-            {key: lambda name, device='cpu', **kwargs: f'weights of {name}' for key in MODEL_LOADERS}
-        )
+    processed(interface, 6)
+    for attribute in RESULT_FRAMES:
+        setattr(interface, attribute, pd.DataFrame({'image_path': ['img_000.tif']}))
 
-    return _replace
+    interface.model = 'a loaded model'
+    interface.params.paths.checkpoint = Path('previous.hdf5')
+    interface.params.explorer.color_by = 'drug_name'
+    interface.params.explorer.filter = {'drug_name': ['ctrl']}
+    interface.params.explorer.exclude = {'time': [24]}
+    interface.params.prototypes.group_by = 'drug_name'
+    interface.params.outliers.group_by = 'time'
+    for section in SOURCE_SECTIONS:
+        getattr(interface.params, section).source = 'properties'
+
+    return interface
 
 
-@pytest.mark.parametrize(
-    ('model', 'expected'),
-    [
-        pytest.param(DINOV2_MODEL, {'force_rgb': True}, id='dinov2'),
-        pytest.param(STED_MODEL, {'force_rgb': False, 'l2_normalize_channels': False}, id='sted-fm'),
-    ],
-)
-def test_a_loaded_model_brings_the_arguments_it_is_processed_under(
-    phenome: PhenoMeInterface, loadable, model: str, expected: dict
+def test_has_results_is_false_before_anything_is_computed(phenome: PhenoMeInterface) -> None:
+    assert phenome.has_results is False
+
+
+def test_has_results_ignores_the_metadata(loaded: PhenoMeInterface) -> None:
+    """Replacing it is what loading does, rather than something loading costs."""
+    assert loaded.has_results is False
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_has_results_notices_each_kind_of_result(phenome: PhenoMeInterface, attribute: str) -> None:
+    setattr(phenome, attribute, pd.DataFrame({'image_path': []}))
+
+    assert phenome.has_results is True
+
+
+def test_has_results_notices_the_embeddings(phenome: PhenoMeInterface, processed) -> None:
+    processed(phenome, 6)
+
+    assert phenome.has_results is True
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_loading_drops_every_computed_frame(phenome: PhenoMeInterface, processed, attribute: str) -> None:
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert getattr(phenome, attribute) is None
+
+
+def test_loading_empties_the_pipeline(phenome: PhenoMeInterface, processed) -> None:
+    """PhenoMe.find_files() only replaces the files it found, leaving the embeddings behind them."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.pheno.results.n_images == 0
+    assert phenome.has_results is False
+
+
+def test_loading_puts_the_checkpoint_back(phenome: PhenoMeInterface, processed) -> None:
+    """A checkpoint answers only for the images it was filled from."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.params.paths.checkpoint == DEFAULT_CHECKPOINT
+
+
+def test_loading_drops_the_columns_and_values_the_previous_metadata_named(
+    phenome: PhenoMeInterface, processed
 ) -> None:
-    loadable()
-    phenome.params.process.model = model
+    analysed(phenome, processed)
 
-    phenome.load_model()
+    phenome.load_data_csv()
 
-    assert phenome.process_options == expected
+    assert phenome.params.explorer.color_by is None
+    assert phenome.params.explorer.filter is None
+    assert phenome.params.explorer.exclude is None
+    assert phenome.params.prototypes.group_by is None
+    assert phenome.params.outliers.group_by is None
 
 
-@pytest.mark.parametrize(
-    ('model', 'brings_its_own'),
-    [
-        pytest.param(DINOV2_MODEL, False, id='dinov2'),
-        pytest.param(STED_MODEL, True, id='sted-fm'),
-    ],
-)
-def test_a_loaded_model_brings_the_transformations_its_images_need(
-    phenome: PhenoMeInterface, loadable, model: str, brings_its_own: bool
+@pytest.mark.parametrize('section', SOURCE_SECTIONS)
+def test_loading_puts_every_feature_space_back(
+    phenome: PhenoMeInterface, processed, section: str
 ) -> None:
-    """PhenoMe reads no transformations as a request for its own, which is what DINOv2 wants."""
-    loadable()
-    phenome.params.process.model = model
+    """The properties a source reads went with the results, and the step would raise on them."""
+    analysed(phenome, processed)
 
-    phenome.load_model()
+    phenome.load_data_csv()
 
-    assert (phenome.transforms is not None) is brings_its_own
-
-
-def test_a_model_nobody_offers_loads_nothing(phenome: PhenoMeInterface, loadable) -> None:
-    loadable()
-    phenome.params.process.model = 'ViT-enormous'
-
-    phenome.load_model()
-
-    assert phenome.model is None
-    assert phenome.process_options is None
+    assert getattr(phenome.params, section).source == 'embeddings'
 
 
-@pytest.mark.parametrize(
-    ('model', 'expected'),
-    [
-        pytest.param(DINOV2_MODEL, {'force_rgb': True}, id='dinov2'),
-        pytest.param(STED_MODEL, {'force_rgb': False, 'l2_normalize_channels': False}, id='sted-fm'),
-    ],
-)
-def test_the_extraction_runs_under_the_loaded_model_s_arguments(
-    loaded: PhenoMeInterface, loadable, spy, model: str, expected: dict
+def test_loading_keeps_the_loaded_model(phenome: PhenoMeInterface, processed) -> None:
+    """A downloaded network is not read off the images, and would have to be fetched again."""
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.model == 'a loaded model'
+
+
+def test_loading_keeps_the_paths_it_is_about_to_read(phenome: PhenoMeInterface, processed, dataset) -> None:
+    analysed(phenome, processed)
+
+    phenome.load_data_csv()
+
+    assert phenome.params.paths.images == dataset['images']
+    assert phenome.params.paths.metadata == dataset['metadata']
+
+
+def test_loading_from_the_paths_clears_the_results_too(
+    phenome: PhenoMeInterface, processed, path_dataset
 ) -> None:
-    """The registry's arguments rather than the form's: the form knows nothing of either."""
-    loadable()
-    loaded.pheno.process_images = spy()
-    loaded.params.process.model = model
-    loaded.load_model()
+    analysed(phenome, processed)
+    phenome.params.paths.images = path_dataset['images']
+    phenome.params.paths.masks = path_dataset['masks']
+    phenome.params.paths.template = path_dataset['template']
 
-    loaded.process_images()
+    phenome.load_data_path()
 
-    given = loaded.pheno.process_images.last
-    assert {name: given.get(name) for name in expected} == expected
-
-
-def test_the_extraction_prepares_the_images_the_model_s_way(
-    loaded: PhenoMeInterface, loadable, spy
-) -> None:
-    loadable()
-    loaded.pheno.process_images = spy()
-    loaded.params.process.model = STED_MODEL
-    loaded.load_model()
-
-    loaded.process_images()
-
-    assert loaded.pheno.process_images.last['custom_transformations'] is loaded.transforms
-    assert loaded.pheno.process_images.last['model_wrapper'] is loaded.model
+    assert len(phenome.metadata_df) == 6
+    assert phenome.has_results is False
 
 
-def test_the_extraction_carries_the_batch_size_from_the_form(
-    loaded: PhenoMeInterface, loadable, spy
-) -> None:
-    """What the form does decide, alongside what the registry does."""
-    loadable()
-    loaded.pheno.process_images = spy()
-    loaded.params.process.model = DINOV2_MODEL
-    loaded.params.process.batch_size = 7
-    loaded.load_model()
+def test_a_load_that_raises_still_leaves_nothing_behind(phenome: PhenoMeInterface, processed) -> None:
+    """The results are dropped before a single file is read, so a failed load cannot keep them alive."""
+    analysed(phenome, processed)
+    phenome.params.paths.metadata = Path('no_such_file.csv')
 
-    loaded.process_images()
+    with pytest.raises(FileNotFoundError):
+        phenome.load_data_csv()
 
-    assert loaded.pheno.process_images.last['batch_size'] == 7
+    assert phenome.metadata_df is None
+    assert phenome.has_results is False
 
 
-def test_loading_a_model_says_what_it_will_be_processed_with(
-    phenome: PhenoMeInterface, loadable, caplog: pytest.LogCaptureFixture
-) -> None:
-    """What a run was made under is otherwise nowhere to be read."""
-    loadable()
-    phenome.params.process.model = STED_MODEL
+def test_clearing_a_fresh_interface_changes_nothing(phenome: PhenoMeInterface) -> None:
+    """Loading the first dataset of a session goes through the same path as loading the next one."""
+    phenome.clear_results()
 
-    with caplog.at_level(logging.INFO, logger='phenome_gui.utils.phenome_interface'):
-        phenome.load_model()
-
-    assert STED_MODEL in caplog.text
-    assert 'sted-fm' in caplog.text
-    assert 'force_rgb' in caplog.text
-    assert 'its own transformations' in caplog.text
-
-
-def test_extracting_says_what_it_is_running_under(
-    loaded: PhenoMeInterface, loadable, spy, caplog: pytest.LogCaptureFixture
-) -> None:
-    loadable()
-    loaded.pheno.process_images = spy()
-    loaded.params.process.model = DINOV2_MODEL
-    loaded.load_model()
-
-    with caplog.at_level(logging.INFO, logger='phenome_gui.utils.phenome_interface'):
-        loaded.process_images()
-
-    assert 'Extracting embeddings' in caplog.text
-    assert "'force_rgb': True" in caplog.text
+    assert phenome.has_results is False
+    assert phenome.metadata_df is None
 
 
 # ----------------------------------------------------------------------------

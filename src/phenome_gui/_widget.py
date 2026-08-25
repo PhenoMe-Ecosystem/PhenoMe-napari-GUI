@@ -73,11 +73,30 @@ class PhenoMeWidget(QWidget):
         panels announce what they have done rather than reaching for each other, so the whole cycle is
         declared here and nowhere else. The explorer request is wired the same way, the analysis panel
         asking for the window rather than holding it.
+
+        Loading runs the cycle the other way round: a new dataset drops what the previous one produced,
+        so each panel is told to let go of its own share of it.
         """
         self.loading_panel.data_loaded.connect(self.processing_panel.refresh_buttons)
         self.processing_panel.task_running_changed.connect(self.analysis_panel.set_task_running)
         self.analysis_panel.clustering_finished.connect(self.loading_panel.refresh_table)
         self.analysis_panel.explorer_requested.connect(self._on_explorer_clicked)
+
+        self.loading_panel.results_cleared.connect(self.processing_panel.clear_results)
+        self.loading_panel.results_cleared.connect(self.analysis_panel.clear_results)
+        self.loading_panel.results_cleared.connect(self._on_results_cleared)
+
+    def _on_results_cleared(self) -> None:
+        """ Let go of what the widget itself holds of the previous dataset.
+
+        The image on the napari canvas and the explorer window are the widget's rather than any panel's
+        - one is shared between the panels, the other shown alongside them - so they are cleared here.
+        The explorer is only reached for once it has been opened, being built on the first click.
+        """
+        self._image_viewer.clear()
+
+        if self._explorer_window is not None:
+            self._explorer_window.clear_results()
 
     def _on_explorer_clicked(self) -> None:
         """ Open the interactive explorer, or raise it when it is already open.

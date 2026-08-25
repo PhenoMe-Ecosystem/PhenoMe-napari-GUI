@@ -4,9 +4,12 @@ Nothing here loads a model or extracts embeddings: the pipeline state is stubbed
 is a sentinel object, since all the panel ever asks is whether one is present.
 """
 
+from pathlib import Path
+
 import pytest
 
 from phenome_gui.ui.processing_panel import ProcessingPanel
+from phenome_gui.utils.params import DEFAULT_CHECKPOINT
 
 
 @pytest.fixture
@@ -216,3 +219,50 @@ def test_the_bar_settles_when_the_task_finishes(panel: ProcessingPanel) -> None:
     assert panel._progress_bar.value() == 1
     assert panel._progress_bar.format() == 'Done!'
     assert panel._process_button.text() == 'Extract Embeddings'
+
+
+# ----------------------------------------------------------------------------
+# Letting go of the previous run when another dataset is loaded
+# ----------------------------------------------------------------------------
+
+
+def test_clearing_reads_the_checkpoint_back_from_the_parameters(ready: ProcessingPanel) -> None:
+    """The interface puts it back to its default, a checkpoint answering only for its own images."""
+    ready._checkpoint_path_dialog.value = 'previous.hdf5'
+    ready._phenome.clear_results()
+
+    ready.clear_results()
+
+    assert Path(ready._checkpoint_path_dialog.value) == Path(DEFAULT_CHECKPOINT).resolve()
+    assert ready._phenome.params.paths.checkpoint == Path(DEFAULT_CHECKPOINT).resolve()
+
+
+def test_clearing_settles_the_progress_bar(ready: ProcessingPanel) -> None:
+    ready._on_progress(3, 10, 'Processing batches')
+
+    ready.clear_results()
+
+    assert ready._progress_bar.value() == 0
+    assert ready._progress_bar.maximum() == 1
+    assert ready._progress_bar.format() == ''
+
+
+def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel) -> None:
+    assert ready._props_button.isEnabled()
+
+    ready._phenome.clear_results()
+    ready.clear_results()
+
+    assert not ready._props_button.isEnabled()
+    assert ready._props_button.toolTip() == 'Please extract embeddings first.'
+
+
+def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
+    """A downloaded network is not read off the images, so the label naming it stays true."""
+    ready._current_model_label.setText('Small (ViT-S/14)')
+
+    ready._phenome.clear_results()
+    ready.clear_results()
+
+    assert ready._current_model_label.text() == 'Small (ViT-S/14)'
+    assert ready._phenome.model is not None

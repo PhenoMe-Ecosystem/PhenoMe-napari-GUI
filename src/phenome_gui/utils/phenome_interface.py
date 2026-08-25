@@ -9,7 +9,8 @@ from ..registries.models import MODEL_OPTIONS
 from .analysis import PhenoMeAnalysis
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
-from .params import Params
+from .models import MODEL_OPTIONS
+from .params import DEFAULT_CHECKPOINT, Params
 
 logger = getLogger(__name__)
 
@@ -66,15 +67,85 @@ class PhenoMeInterface:
         self.phenome_analysis = PhenoMeAnalysis(self.pheno)
 
     # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
+
+    @property
+    def has_results(self) -> bool:
+        """ Whether anything has been computed from the dataset currently loaded.
+
+        The metadata is left out: replacing it is what loading a dataset does, rather than something
+        loading one costs. Read before a load, to know whether there is anything to lose by it.
+
+        Returns:
+            bool: True once a step has run on the loaded images.
+        """
+        return self.has_processed_images or any(
+            frame is not None for frame in (
+                self.properties_df,
+                self.clustering_df,
+                self.prototypes_df,
+                self.outliers_df,
+                self.projection_df,
+            )
+        )
+
+    def clear_results(self) -> None:
+        """ Drop everything computed from the dataset currently loaded.
+
+        Called at the start of every load, so that what the interface holds always answers for the
+        files currently loaded: PhenoMe.find_files() only replaces the files it found, and would
+        otherwise leave the embeddings and the properties of the previous dataset behind them.
+
+        The loaded model is kept, being a downloaded network rather than anything read off the
+        images. Everything else goes, the parameters naming a result included.
+        """
+        # Closes the open checkpoint, and empties the embeddings, the properties and the found files
+        self.pheno.reset(clear_file_df=True)
+
+        self.metadata_df = None
+        self.properties_df = None
+        self.clustering_df = None
+        self.prototypes_df = None
+        self.outliers_df = None
+        self.projection_df = None
+
+        # A checkpoint holds the results of the images it was filled from, and would be read back for
+        # the next dataset as though it answered for those images too
+        self.params.paths.checkpoint = DEFAULT_CHECKPOINT
+
+        # Columns and values of the metadata just dropped, which name nothing in the next one
+        self.params.explorer.color_by = None
+        self.params.explorer.filter = None
+        self.params.explorer.exclude = None
+        self.params.prototypes.group_by = None
+        self.params.outliers.group_by = None
+
+        # Each step's feature space, put back to the one needing no properties: the parameter forms
+        # close the choice when there are none, but leave whatever was picked before standing, and
+        # the step would then be run against properties that are no longer there.
+        for section in (
+            self.params.clustering, self.params.prototypes, self.params.outliers, self.params.explorer
+        ):
+            section.source = type(section).model_fields['source'].default
+
+        logger.info('Cleared the results of the previously loaded dataset.')
+
+    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
     def load_data_csv(self) -> pd.DataFrame:
         """ Load the dataset using a .csv file as metadata source.
 
+        Anything computed from the dataset loaded before is dropped first, so the results never
+        outlive the images they were computed from.
+
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
+        self.clear_results()
+
         images_folder = str(self.params.paths.images)
         masks_folder = str(self.params.paths.masks)
         metadata_csv = str(self.params.paths.metadata)
@@ -84,9 +155,14 @@ class PhenoMeInterface:
     def load_data_path(self) -> pd.DataFrame:
         """ Load the dataset by extracting the metadata from the file paths.
 
+        Anything computed from the dataset loaded before is dropped first, so the results never
+        outlive the images they were computed from.
+
         Returns:
             pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
         """
+        self.clear_results()
+
         images_folder = str(self.params.paths.images)
         masks_folder = str(self.params.paths.masks)
         template = self.params.paths.template
