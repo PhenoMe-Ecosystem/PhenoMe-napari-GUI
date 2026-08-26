@@ -255,10 +255,12 @@ class PhenoMeInterface:
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
         # under are what its embeddings can be read against, and they are the registry's rather than
         # anything the form shows.
+        num_workers = self.params.process.num_workers
         logger.info(
-            "Extracting embeddings with '%s', in batches of %d, %s.",
+            "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
             self.params.process.model,
             self.params.process.batch_size,
+            f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
             str(self.process_options) if self.process_options else 'with no arguments of its own'
         )
 
@@ -267,6 +269,7 @@ class PhenoMeInterface:
             checkpoint_path,
             progress_callback=progress_callback,
             batch_size=self.params.process.batch_size,
+            num_workers=num_workers,
             custom_transformations=self.transforms,
             force_reprocess=force_reprocess,
             **self.process_options

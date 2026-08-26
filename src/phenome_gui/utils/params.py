@@ -27,6 +27,10 @@ Dims = Literal['2D', '3D']
 # checkpoint holds the results of the images it was filled from, and answers for no others.
 DEFAULT_CHECKPOINT = Path('./checkpoint.hdf5')
 
+# The most processes the images may be read in. Held to a number the parameter form can offer and the
+# model can be given, so neither can be set to a count no machine would gain by.
+MAX_WORKERS = 8
+
 CLUSTERING_METHOD_CHOICES = list(get_args(ClusteringMethod))
 SOURCE_CHOICES = list(get_args(Source))
 METHOD_CHOICES = list(get_args(OutlierMethod))
@@ -65,11 +69,19 @@ class ProcessParams(ParamsBase):
 
     `model` holds the user-friendly name shown in the GUI; `PhenoMeInterface.load_model` maps it onto
     the real checkpoint name through MODEL_OPTIONS.
+
+    `num_workers` is the number of processes the images are read in, and defaults to none of them:
+    PhenoMe reads them in the thread the run is made on when there are no workers, and every worker is
+    otherwise a Python started from nothing, which imports torch before it reads its first image. The
+    run waits on all of them before its first batch, which is most of the wait before a run appears to
+    start. Worth raising where starting a process is cheap and the images are slow to read, which is
+    why the choice is offered rather than settled here.
     """
 
     model: str = 'Small (ViT-S/14)'
     device: Device = 'cpu'
     batch_size: int = Field(default=32, ge=1)
+    num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
 
 
 class PropertiesParams(ParamsBase):

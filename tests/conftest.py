@@ -16,7 +16,7 @@ from typing import Any  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
-from qtpy.QtWidgets import QMessageBox  # noqa: E402
+from qtpy.QtWidgets import QMainWindow, QMessageBox  # noqa: E402
 from skimage.io import imsave  # noqa: E402
 
 from phenome_gui._widget import PhenoMeWidget  # noqa: E402
@@ -223,6 +223,33 @@ def widget(viewer: RecordingViewer, dataset: dict[str, Path], qtbot) -> PhenoMeW
     widget._phenome.params.paths.masks = dataset['masks']
     widget._phenome.params.paths.metadata = dataset['metadata']
     return widget
+
+
+@pytest.fixture
+def in_main_window(qtbot):
+    """ Return a hook building a panel inside the main window napari would have put it in.
+
+    A docked table only knows the way back into its area when a main window is above it, Qt
+    refusing to redock a dock it finds in no area of the main window it belongs to. A panel built
+    on its own would therefore pass whether its table comes back or not.
+
+    Returns:
+        Callable[[Callable[[QMainWindow], QWidget]], QWidget]: Called as
+            in_main_window(lambda parent: SomePanel(..., parent)), returning the built panel.
+    """
+    # The windows outlive the calls that built them: qtbot holds only a weak reference, and a
+    # collected window takes the panel down with it.
+    windows = []
+
+    def _build(build_panel):
+        window = QMainWindow()
+        panel = build_panel(window)
+        window.setCentralWidget(panel)
+        qtbot.addWidget(window)
+        windows.append(window)
+        return panel
+
+    return _build
 
 
 class Spy:

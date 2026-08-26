@@ -22,6 +22,7 @@ from .prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
+from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
 
@@ -107,10 +108,12 @@ class AnalysisPanel(QWidget):
         self._outlier_button.clicked.connect(self._on_outlier_clicked)
         images_layout.addWidget(self._outlier_button)
 
-        # Data table to view the retrieved images, one image per row. Holds the frame of whichever step
-        # ran last, kept alongside it so the selection can be resolved back to a full row.
+        # Data table to view the retrieved images, one image per row, in a dock area it can be popped
+        # out of and back into. Holds the frame of whichever step ran last, kept alongside it so the
+        # selection can be resolved back to a full row.
         self._images_df = None
         self._images_group_column = None
+        self._images_area = TableDockArea('Images table', images_group)
         self._images_table = create_widget(
             label='Images Table', widget_type='Table', options={'value': None}
         )
@@ -118,7 +121,8 @@ class AnalysisPanel(QWidget):
         self._images_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._images_table.native.selectionModel().selectionChanged.connect(self._on_image_table_selection)
 
-        images_layout.addWidget(self._images_table.native, 1)
+        self._images_area.setWidget(self._images_table.native)
+        images_layout.addWidget(self._images_area, 1)
 
         # Explorer button, kept out of both groups: it opens a window of its own rather than belonging
         # to the clustering or the retrieval step. Opening it is left to whoever owns the window.

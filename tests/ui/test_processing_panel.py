@@ -15,7 +15,7 @@ from phenome_gui.utils.checkpoint import (
     MODEL_MISMATCH,
     CheckpointMismatch,
 )
-from phenome_gui.utils.params import DEFAULT_CHECKPOINT
+from phenome_gui.utils.params import DEFAULT_CHECKPOINT, MAX_WORKERS
 
 
 @pytest.fixture
@@ -314,16 +314,26 @@ def test_the_checkpoint_path_writes_the_parameter(panel: ProcessingPanel, tmp_pa
 # ----------------------------------------------------------------------------
 
 
-def drive_advanced_form(panel: ProcessingPanel, batch_size: int, accepted: bool) -> None:
-    """ Open the advanced form with its exec_ replaced, so it sets a batch size and settles at once.
+def drive_advanced_form(
+    panel: ProcessingPanel, batch_size: int, accepted: bool, num_workers: int | None = None
+) -> None:
+    """ Open the advanced form with its exec_ replaced, so it fills the fields and settles at once.
 
     The panel builds the form on first use and keeps it, so it is built here and its instance patched,
     leaving every other dialog alone.
+
+    Args:
+        panel (ProcessingPanel): The panel whose form is driven.
+        batch_size (int): The batch size to type into the form.
+        accepted (bool): Whether the form is confirmed or cancelled.
+        num_workers (int | None): The worker count to type in, or None to leave the field as loaded.
     """
     panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
 
     def _exec() -> int:
         panel._batch_size_spinbox.setValue(batch_size)
+        if num_workers is not None:
+            panel._num_workers_spinbox.setValue(num_workers)
         return int(accepted)
 
     panel._advanced_parameters_dialog.exec_ = _exec
@@ -342,6 +352,42 @@ def test_the_advanced_form_discards_a_cancelled_edit(panel: ProcessingPanel) -> 
     drive_advanced_form(panel, 256, accepted=False)
 
     assert panel._phenome.params.process.batch_size == before
+
+
+def test_the_advanced_form_applies_the_worker_count(panel: ProcessingPanel) -> None:
+    drive_advanced_form(panel, 32, accepted=True, num_workers=4)
+
+    assert panel._phenome.params.process.num_workers == 4
+
+
+def test_the_advanced_form_discards_a_cancelled_worker_count(panel: ProcessingPanel) -> None:
+    before = panel._phenome.params.process.num_workers
+
+    drive_advanced_form(panel, 32, accepted=False, num_workers=4)
+
+    assert panel._phenome.params.process.num_workers == before
+
+
+def test_the_worker_count_starts_at_none_of_them(panel: ProcessingPanel) -> None:
+    """Every worker is a wait before the run starts, which is not worth paying unasked."""
+    assert panel._phenome.params.process.num_workers == 0
+
+
+def test_the_worker_field_offers_no_more_than_the_model_takes(panel: ProcessingPanel) -> None:
+    """A count the form can offer and the model rejects would raise on a confirmed edit."""
+    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+
+    assert panel._num_workers_spinbox.minimum() == 0
+    assert panel._num_workers_spinbox.maximum() == MAX_WORKERS
+
+
+def test_the_form_shows_the_worker_count_it_would_run_under(panel: ProcessingPanel) -> None:
+    """The fields are reloaded on every open, so a cancelled edit is never shown again."""
+    panel._phenome.params.process.num_workers = 6
+
+    drive_advanced_form(panel, 32, accepted=False)
+
+    assert panel._num_workers_spinbox.value() == 6
 
 
 # ----------------------------------------------------------------------------

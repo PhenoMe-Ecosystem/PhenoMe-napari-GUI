@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 
 from ..utils.image_viewer import ImageViewer
 from ..utils.phenome_interface import PhenoMeInterface
+from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
 
@@ -137,7 +138,10 @@ class LoadingPanel(QWidget):
         self._csv_load_data_btn.clicked.connect(self._on_load_data_csv)
         self._path_load_data_btn.clicked.connect(self._on_load_data_path)
 
-        # Data table to view metadata
+        # Data table to view metadata, in a dock area it can be popped out of and back into
+        self._table_area = TableDockArea('Metadata table', self)
+        self._table_dock = self._table_area.dock
+
         self._metadata_table = create_widget(
             label='Metadata Table', widget_type='Table', options={'value': None}
         )
@@ -145,9 +149,10 @@ class LoadingPanel(QWidget):
         self._metadata_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._metadata_table.native.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
 
+        self._table_area.setWidget(self._metadata_table.native)
         layout.addWidget(structure_group, 0)
         layout.addWidget(loading_group, 0)
-        layout.addWidget(self._metadata_table.native, 1)
+        layout.addWidget(self._table_area, 1)
 
         self._on_directory_changed()
         self.setLayout(layout)

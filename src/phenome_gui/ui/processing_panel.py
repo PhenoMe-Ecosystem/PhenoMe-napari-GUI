@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 
 from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
-from ..utils.params import PRESET_CHOICES
+from ..utils.params import MAX_WORKERS, PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import ThrottledProgress
 
@@ -306,16 +306,18 @@ class ProcessingPanel(QWidget):
         parameters every time it opens, so the values of a cancelled edit are never kept nor shown again.
         The parameters are only written back when the form is confirmed.
 
-        For now, the advanced parameters include batch size only.
+        For now, the advanced parameters include the batch size and the number of loader workers.
         TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
         """
         if self._advanced_parameters_dialog is None:
             self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
 
         self._batch_size_spinbox.setValue(self._phenome.params.process.batch_size)
+        self._num_workers_spinbox.setValue(self._phenome.params.process.num_workers)
 
         if self._advanced_parameters_dialog.exec_():
             self._phenome.params.process.batch_size = self._batch_size_spinbox.value()
+            self._phenome.params.process.num_workers = self._num_workers_spinbox.value()
 
     def _build_advanced_parameters_dialog(self) -> QDialog:
         """ Build the advanced processing parameters window.
@@ -328,7 +330,7 @@ class ProcessingPanel(QWidget):
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Processing parameters")
-        dialog.setFixedSize(300, 100)
+        dialog.setFixedSize(300, 130)
 
         form_layout = QFormLayout()
 
@@ -336,6 +338,18 @@ class ProcessingPanel(QWidget):
         self._batch_size_spinbox = QSpinBox()
         self._batch_size_spinbox.setRange(1, 1024)
         form_layout.addRow("Batch size", self._batch_size_spinbox)
+
+        # Number of processes the images are read in, none of them by default: a worker is a Python
+        # started from nothing, which imports torch before it reads its first image, and the run waits
+        # on all of them before its first batch. Worth raising where starting a process is cheap and
+        # the images are slow to read.
+        self._num_workers_spinbox = QSpinBox()
+        self._num_workers_spinbox.setRange(0, MAX_WORKERS)
+        self._num_workers_spinbox.setToolTip(
+            'Processes the images are read in. 0 reads them in the processing thread, which starts '
+            'right away; more can read faster once started, at a wait before every run.'
+        )
+        form_layout.addRow("Num. workers", self._num_workers_spinbox)
 
         # OK closes the form with an accepted result, which is what tells the caller to apply the values
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
