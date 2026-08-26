@@ -8,6 +8,7 @@ No test loads real weights: the loaders reach for the network and a few hundred 
 model half is stood in for wherever a whole model would otherwise be built.
 """
 
+import numpy as np
 import pytest
 import torchvision.transforms as T
 
@@ -73,9 +74,9 @@ def test_a_dinov2_model_is_given_three_channels() -> None:
     assert get_dinov2_options() == {'force_rgb': True}
 
 
-def test_the_sted_model_is_left_the_channels_it_was_given() -> None:
-    """STED-FM was trained on one channel, and normalising across three would rewrite its images."""
-    assert get_stedfm_options() == {'force_rgb': False, 'l2_normalize_channels': False}
+def test_the_sted_model_is_left_the_channel_it_was_given() -> None:
+    """STED-FM reads one channel, which repeating it across three would rewrite."""
+    assert get_stedfm_options() == {'force_rgb': False}
 
 
 @pytest.mark.parametrize('model_key', MODEL_KEYS)
@@ -111,16 +112,25 @@ def test_the_sted_model_brings_its_own_transformations() -> None:
     prepared = get_stedfm_transforms()
 
     assert isinstance(prepared, T.Compose)
-    assert [type(step).__name__ for step in prepared.transforms] == [
-        'ToPILImage', 'Resize', 'Grayscale', 'ToTensor'
-    ]
+    assert [type(step).__name__ for step in prepared.transforms] == ['ToTensor', 'Resize']
 
 
-def test_the_sted_model_is_given_the_size_and_the_channel_it_was_trained_on() -> None:
+def test_the_sted_model_is_given_the_size_it_was_trained_on() -> None:
     steps = {type(step).__name__: step for step in get_stedfm_transforms().transforms}
 
     assert steps['Resize'].size == (224, 224)
-    assert steps['Grayscale'].num_output_channels == 1
+    assert steps['Resize'].interpolation == T.InterpolationMode.NEAREST
+
+
+def test_the_sted_model_is_left_the_single_channel_it_reads() -> None:
+    """The channel is neither collapsed nor repeated, the model being loaded to read exactly one.
+
+    PhenoMe hands a (H, W, C) array to the transformations and reads a (C, H, W) tensor back, and
+    with force_rgb off it hands the STED-FM model one channel, which has to survive the preparation.
+    """
+    prepared = get_stedfm_transforms()(np.zeros((64, 48, 1), dtype=np.uint8))
+
+    assert tuple(prepared.shape) == (1, 224, 224)
 
 
 # ----------------------------------------------------------------------------

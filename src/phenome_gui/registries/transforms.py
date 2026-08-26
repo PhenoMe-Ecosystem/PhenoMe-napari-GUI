@@ -11,10 +11,8 @@ def get_stedfm_transforms() -> "T.Compose":
         T.Compose containing the appropriate transforms.
     """
     return T.Compose([
-            T.ToPILImage(),
-            T.Resize((224, 224), interpolation=T.InterpolationMode.NEAREST),
-            T.Grayscale(num_output_channels=1),
             T.ToTensor(),
+            T.Resize((224, 224), interpolation=T.InterpolationMode.NEAREST),
         ])
 
 def get_dinov2_transforms() -> None:

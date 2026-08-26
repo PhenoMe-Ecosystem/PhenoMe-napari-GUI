@@ -1,13 +1,11 @@
 """Tests for PhenoMeInterface, the single entry point the GUI calls PhenoMe through."""
 
-import logging
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from phenome_gui.registries.models import MODEL_LOADERS
 from phenome_gui.utils.params import (
     DEFAULT_CHECKPOINT,
     DIMS_CHOICES,

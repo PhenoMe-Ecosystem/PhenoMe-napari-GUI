@@ -4,8 +4,7 @@ def get_stedfm_options() -> dict:
     Returns:
         dict of kwargs
     """
-    return {"force_rgb":False,
-            "l2_normalize_channels":False}
+    return {"force_rgb":False}
 
 def get_dinov2_options() -> dict:
     """ Get the process_images arguments that are specific to the DinoV2 model.

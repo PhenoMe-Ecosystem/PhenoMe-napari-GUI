@@ -396,6 +396,62 @@ def test_the_axes_are_named_after_the_components(plot: ExplorerPlot) -> None:
 
 
 # ----------------------------------------------------------------------------
+# The scale the points are drawn at
+# ----------------------------------------------------------------------------
+
+# The view pinned somewhere of its own, standing in for a plot that has been zoomed into: pyqtgraph
+# fits the view to what it holds only until the plot is first panned or zoomed.
+PINNED_RANGE = {'xRange': (0.0, 1.0), 'yRange': (0.0, 1.0), 'padding': 0}
+
+
+def far_projection(scale: float = 500.0) -> pd.DataFrame:
+    """ A projection whose coordinates are on a wholly different scale, as another method's are.
+
+    Args:
+        scale: What the coordinates the projection helper lays down are stretched by.
+    """
+    frame = projection(['ctrl', 'ctrl', 'drugA'])
+    for column in ('Component 1', 'Component 2'):
+        frame[column] *= scale
+    return frame
+
+
+def test_a_new_projection_is_fitted_to_its_own_points(plot: ExplorerPlot) -> None:
+    """One method's components are on another's scale, and would be a dot in a corner otherwise."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+    plot._plot.vb.setRange(**PINNED_RANGE)
+
+    plot.plot_projection(far_projection(), 'drug_name')
+
+    # Fitted with a padding of pyqtgraph's own choosing, so the view covers the points rather than
+    # ending exactly on them
+    (left, right), (bottom, top) = plot._plot.vb.viewRange()
+    assert left <= 0.0 and right >= 1000.0
+    assert bottom <= 500.0 and top >= 1500.0
+
+
+def test_recolouring_leaves_the_view_where_it_was(plot: ExplorerPlot) -> None:
+    """The same cloud under another colour, which should stay where it was being looked at."""
+    frame = projection(['ctrl', 'ctrl', 'drugA'])
+    plot.plot_projection(frame, 'drug_name')
+    plot._plot.vb.setRange(**PINNED_RANGE)
+
+    plot.plot_projection(frame, 'time')
+
+    assert plot._plot.vb.viewRange() == [[0.0, 1.0], [0.0, 1.0]]
+
+
+def test_highlighting_leaves_the_view_where_it_was(plot: ExplorerPlot) -> None:
+    """Marking the points draws them again, which is no reason to move the plot under them."""
+    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
+    plot._plot.vb.setRange(**PINNED_RANGE)
+
+    plot.highlight_points('drug_name', 'ctrl')
+
+    assert plot._plot.vb.viewRange() == [[0.0, 1.0], [0.0, 1.0]]
+
+
+# ----------------------------------------------------------------------------
 # Marking out the points a criterion answers for
 # ----------------------------------------------------------------------------
 
@@ -949,8 +1005,8 @@ POINTS = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 def hovered(plot: ExplorerPlot) -> ExplorerPlot:
     """ A canvas with three points drawn on it, at a settled scale.
 
-    The range is pinned so a distance in pixels is a known distance in plot coordinates, the canvas
-    never being shown and so never auto-ranging to what it holds.
+    The range is pinned so a distance in pixels is a known distance in plot coordinates, rather than
+    left at the padded fit the canvas opens a projection on.
     """
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
     plot._plot.vb.setRange(xRange=(0, 10), yRange=(0, 10), padding=0)

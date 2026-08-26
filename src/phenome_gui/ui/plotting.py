@@ -423,17 +423,29 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         x_column, y_column = components
 
+        # Whether these are the points already on the canvas: a recolouring hands the same frame
+        # back, where a projection that has just been computed is a frame of its own
+        redrawn = previous is projection_df
+
         # A selection belongs to the points it was drawn over, so it is kept when the same frame is
         # drawn again - a recolouring is the same images under another colour - and let go of when
         # another one takes its place.
         # Kept whole rather than as coordinates alone, the tooltip reading the rest of the row and
         # the dimming drawing it again
         self._points = projection_df
-        self._selected = selected if previous is projection_df else None
+        self._selected = selected if redrawn else None
         self._x_column, self._y_column = x_column, y_column
         self._color_column = resolve_column(projection_df, color_by)
 
         self._draw()
+
+        # Another projection's components are on another scale entirely, and pyqtgraph only fits the
+        # view to what it holds until the plot is first panned or zoomed, after which the points of
+        # the next one land off the view or in a corner of it. Fitted after the drawing, the range
+        # being read off the items just added, and only for points the canvas was not already
+        # showing: a recolouring is the same cloud, and is left wherever it was being looked at.
+        if not redrawn:
+            self._plot.vb.autoRange()
 
     def _draw(self) -> None:
         """ Draw the frame currently held, coloured by the column currently held.

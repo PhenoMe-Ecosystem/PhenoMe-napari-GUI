@@ -2,6 +2,7 @@
 
 import pandas as pd
 import pytest
+from qtpy.QtWidgets import QMessageBox
 
 from phenome_gui.ui.analysis_panel import AnalysisPanel
 from phenome_gui.ui.clustering_params import ClusterParamsWindow
@@ -339,3 +340,72 @@ def test_clearing_an_empty_panel_raises_nothing(fresh: AnalysisPanel) -> None:
     fresh.clear_results()
 
     assert fresh._images_table.native.rowCount() == 0
+
+
+# ----------------------------------------------------------------------------
+# A step that raises, which the worker swallows into a signal
+# ----------------------------------------------------------------------------
+
+
+class Reported:
+    """ Stands in for the message shown when a step raised, which is modal and would hang a test. """
+
+    def __init__(self) -> None:
+        self.shown = 0
+        self.last = ''
+
+    def __call__(self, parent, title, text, *args, **kwargs) -> None:
+        """ Take note of a message, and of what it said.
+
+        Args:
+            parent: The widget the message would be shown over.
+            title: Its title bar.
+            text: What it says, which is what the tests read.
+            *args: Whatever buttons the caller passed, which are of no interest here.
+            **kwargs: As above.
+        """
+        self.shown += 1
+        self.last = text
+
+
+@pytest.fixture
+def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
+    """ Catch the message a failed step shows, rather than opening a window nobody can close.
+
+    Returns:
+        Reported: The stand-in, holding what was said.
+    """
+    stand_in = Reported()
+    monkeypatch.setattr(QMessageBox, 'critical', stand_in)
+    return stand_in
+
+
+FAILURES = [
+    pytest.param('_on_clustering_failed', 'cluster the images', id='clustering'),
+    pytest.param('_on_prototypes_failed', 'find the prototype images', id='prototypes'),
+    pytest.param('_on_outliers_failed', 'detect the outlier images', id='outliers'),
+]
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_is_reported(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    """Nothing else marks the failure: the buttons stay open and the table keeps its last contents."""
+    getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
+
+    assert reported.shown == 1
+    assert attempted in reported.last
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_says_what_went_wrong(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
+
+    assert 'n_samples=3 while n_clusters=8' in reported.last
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_leaves_the_buttons_open(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    """These steps never close their buttons, so a failure has nothing to reopen."""
+    getattr(panel, handler)(ValueError('nope'))
+
+    assert all(button.isEnabled() for button in buttons(panel))
