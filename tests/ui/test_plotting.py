@@ -19,10 +19,13 @@ from phenome_gui.ui.plotting import (
     HOVER_RADIUS,
     MIN_CONTINUOUS,
     MISSING_COLOUR,
+    MISSING_LABEL,
+    NORMAL_ALPHA,
     SELECTION_ALPHA,
     SELECTION_COLOUR,
     SERIES_COLOURS,
     ExplorerPlot,
+    group_order,
     is_continuous,
 )
 
@@ -70,8 +73,17 @@ def colours(plot: ExplorerPlot) -> list[str]:
 
 
 def legend_labels(plot: ExplorerPlot) -> list[str]:
-    """ The names currently listed in the legend. """
+    """ The names currently listed in the legend, in the order it lists them. """
     return [label.text for _, label in plot._legend.items]
+
+
+def legend_colours(plot: ExplorerPlot) -> list[str]:
+    """ The colour of each legend entry's swatch, in the order the legend lists them.
+
+    An entry is made from the series it names, and draws its swatch from the brush that series was
+    built with, so the two are read the same way.
+    """
+    return [sample.item.opts['brush'].color().name() for sample, _ in plot._legend.items]
 
 
 def point_colours(plot: ExplorerPlot) -> list[str]:
@@ -119,7 +131,7 @@ def test_each_group_is_drawn_and_named(plot: ExplorerPlot) -> None:
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
 
     assert series(plot) == {'ctrl': 2, 'drugA': 1}
-    assert sorted(legend_labels(plot)) == ['ctrl', 'drugA']
+    assert legend_labels(plot) == ['ctrl', 'drugA']
 
 
 def test_the_points_of_a_group_are_its_own(plot: ExplorerPlot) -> None:
@@ -138,6 +150,55 @@ def test_the_largest_group_is_drawn_first(plot: ExplorerPlot) -> None:
     plot.plot_projection(projection(['drugA', 'ctrl', 'ctrl', 'ctrl']), 'drug_name')
 
     assert [item.opts['name'] for item in plot._plot.listDataItems()] == ['ctrl', 'drugA']
+
+
+def test_the_legend_lists_the_groups_in_their_own_order(plot: ExplorerPlot) -> None:
+    """A group is looked up in the legend by its name, which is no help when its place is its size."""
+    plot.plot_projection(projection(['zeta', 'zeta', 'zeta', 'alpha', 'mid']), 'drug_name')
+
+    assert [item.opts['name'] for item in plot._plot.listDataItems()] == ['zeta', 'alpha', 'mid']
+    assert legend_labels(plot) == ['alpha', 'mid', 'zeta']
+
+
+def test_the_legend_reads_numbers_as_numbers(plot: ExplorerPlot) -> None:
+    """The cluster labels are numbers, which listed by their names would read 1, 10, 2."""
+    plot.plot_projection(projection([2, 10, 1], column='Cluster'), 'cluster')
+
+    assert legend_labels(plot) == ['1', '2', '10']
+
+
+def test_the_legend_leaves_the_case_of_a_name_out_of_it(plot: ExplorerPlot) -> None:
+    """Sorted by their characters, the capitalised names would all come before the rest."""
+    plot.plot_projection(projection(['beta', 'Alpha', 'gamma']), 'drug_name')
+
+    assert legend_labels(plot) == ['Alpha', 'beta', 'gamma']
+
+
+def test_the_images_nothing_is_known_about_are_listed_last(plot: ExplorerPlot) -> None:
+    """They are what is left over rather than a group of their own, wherever their label would sort."""
+    plot.plot_projection(projection(['zeta', None, 'alpha']), 'drug_name')
+
+    assert legend_labels(plot) == ['alpha', 'zeta', MISSING_LABEL]
+
+
+def test_the_colours_are_taken_in_the_order_the_legend_lists(plot: ExplorerPlot) -> None:
+    """The legend then reads down the palette, rather than jumping about it by how large a group is."""
+    plot.plot_projection(projection(['zeta', 'zeta', 'alpha']), 'drug_name')
+
+    assert legend_colours(plot) == SERIES_HEX[:2]
+
+    # 'zeta' is drawn first, being the larger of the two, and wears the second colour
+    assert colours(plot) == [SERIES_HEX[1], SERIES_HEX[0]]
+
+
+def test_a_group_keeps_its_colour_as_its_size_changes(plot: ExplorerPlot) -> None:
+    """Taken by size, the colours would swap the moment a re-clustering moved a point between groups."""
+    plot.plot_projection(projection(['zeta', 'zeta', 'alpha']), 'drug_name')
+    first = dict(zip(legend_labels(plot), legend_colours(plot), strict=True))
+
+    plot.plot_projection(projection(['zeta', 'alpha', 'alpha']), 'drug_name')
+
+    assert dict(zip(legend_labels(plot), legend_colours(plot), strict=True)) == first
 
 
 def test_the_colours_are_taken_in_order(plot: ExplorerPlot) -> None:
@@ -264,6 +325,44 @@ def test_true_and_false_are_never_a_measurement() -> None:
 
 
 # ----------------------------------------------------------------------------
+# The order the labels are listed in
+# ----------------------------------------------------------------------------
+
+
+def test_numbers_are_ordered_as_numbers() -> None:
+    assert sorted([10, 2, 1], key=group_order) == [1, 2, 10]
+
+
+def test_numbers_written_as_text_are_ordered_as_numbers() -> None:
+    """A metadata column read out of a file holds its numbers as text, and means them as numbers."""
+    assert sorted(['10', '2', '1'], key=group_order) == ['1', '2', '10']
+
+
+def test_the_numbers_come_before_the_words() -> None:
+    """Nothing orders one against the other, so they are kept apart rather than interleaved."""
+    assert sorted(['ctrl', 2, 1], key=group_order) == [1, 2, 'ctrl']
+
+
+def test_words_are_ordered_without_their_case() -> None:
+    assert sorted(['beta', 'Alpha'], key=group_order) == ['Alpha', 'beta']
+
+
+def test_the_word_nan_is_a_word() -> None:
+    """A column can hold it without meaning a missing value, and it has no place among the numbers."""
+    assert sorted(['nan', 1], key=group_order) == [1, 'nan']
+
+
+def test_the_missing_label_is_ordered_last() -> None:
+    assert sorted([MISSING_LABEL, 'zeta', 'alpha'], key=group_order) == ['alpha', 'zeta', MISSING_LABEL]
+
+
+@pytest.mark.parametrize('missing', [None, float('nan'), pd.NA], ids=['none', 'nan', 'na'])
+def test_a_missing_value_is_ordered_last(missing) -> None:
+    """The field a highlight is picked from reads a column as PhenoMe left it, holes and all."""
+    assert sorted(['zeta', missing, 'alpha'], key=group_order)[-1] is missing
+
+
+# ----------------------------------------------------------------------------
 # Measured columns, drawn along a ramp
 # ----------------------------------------------------------------------------
 
@@ -347,7 +446,7 @@ def test_the_two_kinds_of_colouring_undo_each_other(plot: ExplorerPlot) -> None:
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
 
     assert plot._colorbar is None
-    assert sorted(legend_labels(plot)) == ['ctrl', 'drugA']
+    assert legend_labels(plot) == ['ctrl', 'drugA']
 
     plot.plot_projection(measured(MEASUREMENTS), 'area')
 
@@ -385,7 +484,7 @@ def test_redrawing_replaces_what_was_there(plot: ExplorerPlot) -> None:
     plot.plot_projection(projection(['x', 'y', 'y'], column='Time'), 'time')
 
     assert series(plot) == {'y': 2, 'x': 1}
-    assert sorted(legend_labels(plot)) == ['x', 'y']
+    assert legend_labels(plot) == ['x', 'y']
 
 
 # ----------------------------------------------------------------------------
@@ -494,7 +593,7 @@ def test_a_value_leaves_its_points_alone_and_fades_the_rest(plot: ExplorerPlot) 
 
     plot.highlight_points('drug_name', 'drugA')
 
-    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, 255]
+    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, NORMAL_ALPHA]
 
 
 def test_the_groups_and_their_colours_survive_the_marking(plot: ExplorerPlot) -> None:
@@ -505,7 +604,7 @@ def test_the_groups_and_their_colours_survive_the_marking(plot: ExplorerPlot) ->
     plot.highlight_points('drug_name', 'drugA')
 
     assert series(plot) == {'ctrl': 2, 'drugA': 1}
-    assert sorted(legend_labels(plot)) == ['ctrl', 'drugA']
+    assert legend_labels(plot) == ['ctrl', 'drugA']
     assert hues(plot) == before
 
 
@@ -524,7 +623,7 @@ def test_a_range_leaves_the_points_inside_it_alone(plot: ExplorerPlot) -> None:
     # The values run 10, 20, 30 and up, so the range holds the second, third and fourth of them
     plot.highlight_points('area', (15.0, 45.0))
 
-    assert alphas(plot)[:5] == [DIMMED_ALPHA, 255, 255, 255, DIMMED_ALPHA]
+    assert alphas(plot)[:5] == [DIMMED_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA, DIMMED_ALPHA]
     assert set(alphas(plot)[4:]) == {DIMMED_ALPHA}
     assert plot._colorbar is not None
 
@@ -535,7 +634,7 @@ def test_the_ends_of_a_range_are_inside_it(plot: ExplorerPlot) -> None:
 
     plot.highlight_points('area', (10.0, 30.0))
 
-    assert alphas(plot) == [255, 255, 255]
+    assert alphas(plot) == [NORMAL_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA]
 
 
 def test_a_capitalised_column_is_found_from_its_gui_name(plot: ExplorerPlot) -> None:
@@ -543,7 +642,7 @@ def test_a_capitalised_column_is_found_from_its_gui_name(plot: ExplorerPlot) -> 
 
     plot.highlight_points('drug_name', 'ctrl')
 
-    assert alphas(plot) == [255, 255, DIMMED_ALPHA]
+    assert alphas(plot) == [NORMAL_ALPHA, NORMAL_ALPHA, DIMMED_ALPHA]
 
 
 def test_a_point_without_a_value_is_left_out(plot: ExplorerPlot) -> None:
@@ -552,7 +651,7 @@ def test_a_point_without_a_value_is_left_out(plot: ExplorerPlot) -> None:
 
     plot.highlight_points('area', (5.0, 35.0))
 
-    assert alphas(plot) == [255, DIMMED_ALPHA, 255]
+    assert alphas(plot) == [NORMAL_ALPHA, DIMMED_ALPHA, NORMAL_ALPHA]
 
 
 @pytest.mark.parametrize(
@@ -568,7 +667,7 @@ def test_nothing_to_mark_leaves_every_point_alone(plot: ExplorerPlot, field, cri
 
     plot.highlight_points(field, criterion)
 
-    assert alphas(plot) == [255, 255, 255]
+    assert alphas(plot) == [NORMAL_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA]
 
 
 def test_the_marking_can_be_taken_off(plot: ExplorerPlot) -> None:
@@ -577,7 +676,7 @@ def test_the_marking_can_be_taken_off(plot: ExplorerPlot) -> None:
 
     plot.highlight_points()
 
-    assert alphas(plot) == [255, 255, 255]
+    assert alphas(plot) == [NORMAL_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA]
 
 
 def test_marking_an_empty_canvas_does_nothing(plot: ExplorerPlot) -> None:
@@ -593,7 +692,7 @@ def test_a_new_projection_is_drawn_unmarked(plot: ExplorerPlot) -> None:
 
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
 
-    assert alphas(plot) == [255, 255, 255]
+    assert alphas(plot) == [NORMAL_ALPHA, NORMAL_ALPHA, NORMAL_ALPHA]
 
 
 def test_the_marking_holds_without_a_colouring(plot: ExplorerPlot) -> None:
@@ -602,7 +701,7 @@ def test_the_marking_holds_without_a_colouring(plot: ExplorerPlot) -> None:
 
     plot.highlight_points('drug_name', 'drugA')
 
-    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, 255]
+    assert alphas(plot) == [DIMMED_ALPHA, DIMMED_ALPHA, NORMAL_ALPHA]
 
 
 # ----------------------------------------------------------------------------

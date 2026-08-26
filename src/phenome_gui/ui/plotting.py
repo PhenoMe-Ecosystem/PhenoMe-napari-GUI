@@ -186,6 +186,43 @@ def format_value(value) -> str:
     return str(value)
 
 
+def group_order(value) -> tuple[int, float, str]:
+    """ Sort key listing a label where a reader would look for it.
+
+    Numbers read in numeric order, so the clusters run 1, 2, 10 rather than the 1, 10, 2 their names
+    would give; text reads alphabetically, without its case, one group being no more important than
+    another for being capitalised. The images nothing is known about are gathered under one label
+    which is not a group of its own, and are kept at the end of the list whatever the rest of it says.
+
+    Public alongside the other helpers: the field a highlight is picked from is picked against the
+    legend, so the two have to list the same values in the same order.
+
+    Args:
+        value: The label of one group, of whatever type the column holding it has.
+    Returns:
+        tuple: Key ordering the numbers first, the rest of the labels after them, and the missing
+            ones last.
+    """
+    # The canvas has already gathered the missing values under the label by the time it groups by
+    # them, where the field a highlight is picked from reads the column as PhenoMe left it
+    if pd.isna(value) or value == MISSING_LABEL:
+        return (2, 0.0, '')
+
+    # A cluster label arrives as a number, and a metadata column read out of a file can hold its
+    # numbers as text, which should read as the numbers they are either way
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = None
+
+    # A column can hold the word 'nan' without meaning a missing value, and it has no place among the
+    # numbers: it compares false against every one of them, leaving the order to the sort's own hand
+    if number is None or np.isnan(number):
+        return (1, 0.0, str(value).casefold())
+
+    return (0, number, str(value).casefold())
+
+
 class _SelectionViewBox(pg.ViewBox):
     """ The plot's view box, which can be asked once for a shape drawn over it.
 
@@ -701,6 +738,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
     def _draw_groups(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw one series per value of a column of labels, named in the legend.
 
+        The points are drawn in one order and listed in another: the crowd has to go down before the
+        groups that would be lost under it, where the legend is read by looking a label up and has to
+        be in the order the labels themselves are in.
+
         Args:
             projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
             x_column (str): Column holding the first component.
@@ -715,16 +756,30 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         # The count alone would leave same-sized groups in the order pandas happened to hash them in.
         groups = sorted(labels.unique(), key=lambda value: (-(labels == value).sum(), str(value)))
 
-        for index, group in enumerate(groups):
+        # The order the legend is listed in, which the colours are taken in as well: a group then
+        # keeps the colour it wore when a re-clustering or another projection changed how many points
+        # it holds, where a colour taken by size moves to whichever group grew into it.
+        listed = sorted(groups, key=group_order)
+        places = {group: place for place, group in enumerate(listed)}
+
+        drawn = {}
+        for group in groups:
             rows = labels == group
-            colour = SERIES_COLOURS[index % N_COLOURS]
-            self._add_series(
+            colour = SERIES_COLOURS[places[group] % N_COLOURS]
+            drawn[group] = self._add_series(
                 projection_df.loc[rows, x_column],
                 projection_df.loc[rows, y_column],
                 colour,
                 self._dimmed_brushes(colour, rows),
                 name=str(group)
             )
+
+        # Each series adds its own entry as it is drawn, which leaves the legend in the order they
+        # were drawn in. Filled again here in the order the labels read in, from the same items, so
+        # every entry keeps the swatch its group was drawn with.
+        self._legend.clear()
+        for group in listed:
+            self._legend.addItem(drawn[group], str(group))
 
     def _draw_ramp(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw the points of a measured column along a colour ramp, with a colorbar to read it by.
@@ -998,7 +1053,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
     def _add_series(
         self, x: pd.Series, y: pd.Series, colour, brushes: list | None = None, name: str | None = None
-    ) -> None:
+    ) -> pg.ScatterPlotItem:
         """ Draw one group of points.
 
         Args:
@@ -1008,6 +1063,8 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             brushes (list): A brush per point, for a group the highlight has split. None to leave
                 every point on the group's own colour.
             name (str): Name of the group, which is what puts it in the legend. None to leave it out.
+        Returns:
+            pg.ScatterPlotItem: The series drawn, which is what a legend entry is made from.
         """
         series = pg.ScatterPlotItem(
             x=x.to_numpy(),
@@ -1025,3 +1082,4 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             series.setBrush(brushes)
 
         self._plot.addItem(series)
+        return series

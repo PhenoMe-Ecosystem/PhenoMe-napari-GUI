@@ -668,6 +668,26 @@ def test_a_field_of_labels_is_picked_from_its_values(
     assert items(loaded_explorer._highlight_values_combo) == ['ctrl', 'drugA']
 
 
+def test_a_field_of_numbers_is_listed_in_the_order_the_legend_lists_it(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    """A value is picked against the legend, where the numbers read 1, 2, 10 rather than 1, 10, 2.
+
+    PhenoMe hands the metadata it copies into a projection back as text, so a numeric column arrives
+    as the names of its numbers and would be listed in the order those names sort in.
+    """
+    frame = coordinates()
+    frame['Cluster'] = ['2', '10', '1']
+    computing(frame)
+    loaded_explorer._compute_button.click()
+    loaded_explorer._phenome.metadata_df['cluster'] = [2, 10, 1] * 2
+    loaded_explorer.refresh_choices()
+
+    loaded_explorer._highlight_field_combo.setCurrentText('cluster')
+
+    assert items(loaded_explorer._highlight_values_combo) == ['1', '2', '10']
+
+
 def test_a_field_of_measurements_is_picked_from_its_range(
     loaded_explorer: InteractiveExplorerWindow, measured
 ) -> None:

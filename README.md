@@ -13,7 +13,7 @@ GUI integration of the PhenoMe phenotyping framework
 
 ----------------------------------
 
-This [napari] plugin was generated with [copier] using the [napari-plugin-template] (None).
+This [napari] plugin was generated with [copier] using the [napari-plugin-template].
 
 <!--
 Don't miss the full getting started guide to set up your new package:
@@ -25,7 +25,7 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-You can install `phenome-gui` via [pip]:
+Once this plugin is published, you will be able to install `phenome-gui` via [pip]:
 
 ```bash
 pip install phenome-gui
@@ -37,6 +37,19 @@ If napari is not already installed, you can install `phenome-gui` with napari an
 pip install "phenome-gui[all]"
 ```
 
+For now, follow these instructions:
+
+1. Install napari following the instructions on the website: https://napari.org/stable/getting_started/installation.html
+
+    We recommend [uv] to manage environments.
+
+2. Activate the napari environment: 
+
+    `source .venv/bin/activate`
+
+3. Run the following command: 
+    
+    `uv add "git+https://git.valeria.science/predis/flc-phenome-gui.git"`
 
 
 ## Contributing
@@ -66,3 +79,4 @@ If you encounter any problems, please [file an issue] along with a detailed desc
 [tox]: https://tox.readthedocs.io/en/latest/
 [pip]: https://pypi.org/project/pip/
 [PyPI]: https://pypi.org/
+[uv]:  https://docs.astral.sh/uv/
