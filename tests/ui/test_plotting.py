@@ -106,6 +106,9 @@ def measured(values: list, column: str = 'area') -> pd.DataFrame:
 # Enough distinct values for the canvas to read a column as a measurement rather than as labels
 MEASUREMENTS = [10.0 * step for step in range(1, MIN_CONTINUOUS + 1)]
 
+# The group colours in the order the canvas takes them, written the way a drawn brush reads back
+SERIES_HEX = [colour.name() for colour in SERIES_COLOURS.getColors('qcolor')]
+
 
 # ----------------------------------------------------------------------------
 # Drawing the groups
@@ -140,17 +143,19 @@ def test_the_largest_group_is_drawn_first(plot: ExplorerPlot) -> None:
 def test_the_colours_are_taken_in_order(plot: ExplorerPlot) -> None:
     plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
 
-    assert colours(plot) == SERIES_COLOURS[:2]
+    assert colours(plot) == SERIES_HEX[:2]
 
 
 def test_the_colours_start_over_past_the_last_one(plot: ExplorerPlot) -> None:
-    """A ninth group wears the first colour again, telling it apart only by where its points sit."""
-    groups = [f'group_{i:02d}' for i in range(len(SERIES_COLOURS) + 1)]
+    """The group past the last colour wears the first one again, telling it apart only by where its
+    points sit. The groups are named so that sorting them by name puts them in that order.
+    """
+    groups = [f'group_{i:03d}' for i in range(len(SERIES_HEX) + 1)]
 
     plot.plot_projection(projection(groups), 'drug_name')
 
-    assert len(series(plot)) == len(SERIES_COLOURS) + 1
-    assert colours(plot) == [*SERIES_COLOURS, SERIES_COLOURS[0]]
+    assert len(series(plot)) == len(SERIES_HEX) + 1
+    assert colours(plot) == [*SERIES_HEX, SERIES_HEX[0]]
 
 
 def test_groups_of_the_same_size_keep_a_settled_order(plot: ExplorerPlot) -> None:
@@ -510,7 +515,7 @@ def test_the_legend_keeps_its_colours_while_the_points_are_marked(plot: Explorer
 
     plot.highlight_points('drug_name', 'drugA')
 
-    assert colours(plot) == SERIES_COLOURS[:2]
+    assert colours(plot) == SERIES_HEX[:2]
 
 
 def test_a_range_leaves_the_points_inside_it_alone(plot: ExplorerPlot) -> None:

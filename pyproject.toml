@@ -36,6 +36,7 @@ dependencies = [
     "pydantic>=2",
     "pyqtgraph>=0.14.0",
     "superqt",
+    "colorcet>=3.2.1",
 ]
 
 [project.optional-dependencies]

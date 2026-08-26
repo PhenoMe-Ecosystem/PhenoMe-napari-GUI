@@ -292,9 +292,9 @@ def test_the_cuda_choice_follows_the_hardware(panel: ProcessingPanel) -> None:
 
 
 def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel) -> None:
-    panel._model_selection_combo.setCurrentText('Large (ViT-L/14)')
+    panel._model_selection_combo.setCurrentText('DinoV2 - Large')
 
-    assert panel._phenome.params.process.model == 'Large (ViT-L/14)'
+    assert panel._phenome.params.process.model == 'DinoV2 - Large'
 
 
 def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
@@ -461,12 +461,12 @@ def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel)
 
 def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
     """A downloaded network is not read off the images, so the label naming it stays true."""
-    ready._current_model_label.setText('Small (ViT-S/14)')
+    ready._current_model_label.setText('DinoV2 - Small')
 
     ready._phenome.clear_results()
     ready.clear_results()
 
-    assert ready._current_model_label.text() == 'Small (ViT-S/14)'
+    assert ready._current_model_label.text() == 'DinoV2 - Small'
     assert ready._phenome.model is not None
 
 

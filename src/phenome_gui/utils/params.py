@@ -78,7 +78,7 @@ class ProcessParams(ParamsBase):
     why the choice is offered rather than settled here.
     """
 
-    model: str = 'Small (ViT-S/14)'
+    model: str = 'DinoV2 - Small'
     device: Device = 'cpu'
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)

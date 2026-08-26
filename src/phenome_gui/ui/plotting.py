@@ -16,20 +16,9 @@ from qtpy.QtWidgets import QGraphicsPathItem, QToolTip, QWidget
 
 logger = logging.getLogger("main_logger")
 
-# Colours of the groups, in a fixed order and cycled once there are more groups than colours. A
-# scatter has every colour up against every other, which these eight do not all survive: past the
-# third slot the weakest pairs (orange against yellow, aqua against magenta) are hard to tell apart
-# for a colourblind reader, and past the eighth two groups share a colour outright.
-SERIES_COLOURS = [
-    '#3987e5',  # blue
-    '#d95926',  # orange
-    '#199e70',  # aqua
-    '#c98500',  # yellow
-    '#d55181',  # magenta
-    '#008300',  # green
-    '#9085e9',  # violet
-    '#e66767',  # red
-]
+# Colours of the groups, in a fixed order and cycled once there are more groups than colours.
+SERIES_COLOURS = pg.colormap.get('glasbey_light', 'colorcet')
+N_COLOURS = len(SERIES_COLOURS.getColors())
 
 # Ramp a measured column is coloured along, the one PhenoMe's own explorer opens on
 CONTINUOUS_COLORMAP = 'viridis'
@@ -77,6 +66,7 @@ HIGHLIGHT_SIZE = MARKER_SIZE + 4
 
 # Opacity of a point the highlight leaves out, out of 255. Low enough to read as background, high
 # enough that the shape of the cloud it belongs to is still there to be read against.
+NORMAL_ALPHA = 200
 DIMMED_ALPHA = 33
 
 # How near the pointer has to come to a point, in pixels, for it to count as hovered. Measured in
@@ -727,7 +717,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         for index, group in enumerate(groups):
             rows = labels == group
-            colour = SERIES_COLOURS[index % len(SERIES_COLOURS)]
+            colour = SERIES_COLOURS[index % N_COLOURS]
             self._add_series(
                 projection_df.loc[rows, x_column],
                 projection_df.loc[rows, y_column],
@@ -982,6 +972,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         if dimmed:
             faded = brush.color()
             faded.setAlpha(DIMMED_ALPHA)
+            brush.setColor(faded)
+        else:
+            faded = brush.color()
+            faded.setAlpha(NORMAL_ALPHA)
             brush.setColor(faded)
 
         return brush

@@ -56,11 +56,11 @@ def get_stedfm_model(model_name: str, device: str = "cpu") -> "ModelWrapper":
     return STEDFMWrapper(device=device)
 
 MODEL_OPTIONS = {
-    "Small (ViT-S/14)": "dinov2_vits14_reg",
-    "Base (ViT-B/14)": "dinov2_vitb14_reg",
-    "Large (ViT-L/14)": "dinov2_vitl14_reg",
-    "Giant (ViT-g/14)": "dinov2_vitg14_reg",
-    "STED-FM ViT-S": "sted-fm"
+    "DinoV2 - Small": "dinov2_vits14_reg",
+    "DinoV2 - Base": "dinov2_vitb14_reg",
+    "DinoV2 - Large": "dinov2_vitl14_reg",
+    "DinoV2 - Giant": "dinov2_vitg14_reg",
+    "STED-FM - Small": "sted-fm"
 }
 
 MODEL_LOADERS = {
