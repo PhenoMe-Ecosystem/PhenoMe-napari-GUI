@@ -9,7 +9,7 @@ from ..registries.models import get_model
 
 if TYPE_CHECKING:
     import torchvision.transforms as T
-    from phenome import ModelWrapper
+    from phenome.utils import ModelWrapper
 
 logger = getLogger(__name__)
 
@@ -35,7 +35,7 @@ class ImageProcessing:
         """
         return get_model(model_name, device=device)
 
-    def process_images(self, model_wrapper: ModelWrapper, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose" | None=None, **kwargs) -> None:
+    def process_images(self, model_wrapper: "ModelWrapper", checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose" | None=None, **kwargs) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
         Args:

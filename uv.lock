@@ -3630,6 +3630,7 @@ provides-extras = ["full", "dev"]
 
 [[package]]
 name = "phenome-gui"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "colorcet" },
@@ -3656,7 +3657,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
-    { name = "stedfm" },
     { name = "tox-uv" },
 ]
 
@@ -3682,7 +3682,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
-    { name = "stedfm", git = "https://github.com/FLClab/STED-FM.git" },
     { name = "tox-uv" },
 ]
 
