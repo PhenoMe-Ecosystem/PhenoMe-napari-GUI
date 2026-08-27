@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from magicgui.widgets import create_widget
 from napari.qt.threading import thread_worker
@@ -24,7 +25,7 @@ from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
 from ..utils.params import MAX_WORKERS, PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
-from ..utils.progress import ThrottledProgress
+from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
 
 logger = logging.getLogger("main_logger")
 
@@ -67,6 +68,10 @@ class ProcessingPanel(QWidget):
         # checkpoint's properties rather than recomputing them, and only warns about the keys the new
         # preset asks for and cannot find, so a changed preset has to say so or it is quietly ignored.
         self._preset_changed = False
+
+        # Set from here to ask the task running on the worker thread to stop, and read there from the
+        # progress callback. A fresh one is made for every run, so a stop never carries into the next.
+        self._stop_event: threading.Event | None = None
 
         self._build_ui()
 
@@ -162,6 +167,12 @@ class ProcessingPanel(QWidget):
         properties_layout.addWidget(self._props_button)
         self._refresh_props_button()
 
+        # Stop button, calling off whichever of the two tasks is running. Sits with the progress bar
+        # rather than in either group, being the one control that answers for both of them.
+        self._stop_button = QPushButton('Stop')
+        self._stop_button.clicked.connect(self._on_stop_clicked)
+        self._refresh_stop_button()
+
         # Progress bar, driven from the worker thread through the progress_updated signal
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 1)
@@ -172,6 +183,7 @@ class ProcessingPanel(QWidget):
         layout.addWidget(embeddings_group,1)
         layout.addWidget(properties_group,1)
         layout.addStretch(1)
+        layout.addWidget(self._stop_button)
         layout.addWidget(self._progress_bar)
         self.setLayout(layout)
 
@@ -266,6 +278,44 @@ class ProcessingPanel(QWidget):
         """
         self._refresh_process_button()
         self._refresh_props_button()
+        self._refresh_stop_button()
+
+    def _refresh_stop_button(self) -> None:
+        """ Offer the stop only while there is a task to stop, and only once.
+
+        A stop that has been asked for cannot be asked for again: it is honoured at the next report
+        PhenoMe makes, and the button says so rather than taking a second click that would do nothing.
+        """
+        stop_requested = self._stop_event is not None and self._stop_event.is_set()
+        stoppable = self._processing_task_running and not stop_requested
+
+        self._stop_button.setEnabled(stoppable)
+        self._stop_button.setText('Stopping...' if stop_requested and self._processing_task_running else 'Stop')
+
+        if stoppable:
+            self._stop_button.setToolTip('Stop the running task. What it has computed so far is kept.')
+        elif stop_requested and self._processing_task_running:
+            self._stop_button.setToolTip('Waiting for the current step to finish.')
+        else:
+            self._stop_button.setToolTip('No task is running.')
+
+    def _on_stop_clicked(self) -> None:
+        """ Ask the running task to stop, and wait for it to unwind.
+
+        Nothing is asked of the worker itself: it cannot be killed, and telling it to abort would only
+        keep it from reporting that it was done, leaving the buttons shut for good. The stop is read
+        from the progress callback instead, so it takes effect at the next batch or image, which is
+        also the last one the checkpoint holds.
+
+        A task that happens to finish between here and its next report finishes normally, its result
+        being as good as any other.
+        """
+        if self._stop_event is None:
+            return
+
+        logger.info('Stopping the running task. It stops at its next report, which the checkpoint holds.')
+        self._stop_event.set()
+        self._refresh_stop_button()
 
     def _refresh_process_button(self) -> None:
         """ Enable the embedding extraction button only when both data and a model are loaded, and no task is running.
@@ -376,11 +426,14 @@ class ProcessingPanel(QWidget):
                 return
             force_reprocess = True
 
+        self._stop_event = threading.Event()
+
         worker = self._process_images_worker(force_reprocess)
         worker.returned.connect(self._on_finish_process)
         worker.errored.connect(self._on_process_failed)
-        worker.start()
 
+        # Put the tab in its running state before the run is let go of, rather than after: the lock is
+        # what offers the stop, and the run is what the stop is offered on.
         self._process_button.setText('Processing images...')
         self._set_processing_task_running(True)
 
@@ -388,6 +441,8 @@ class ProcessingPanel(QWidget):
         # indicator until the first batch is reported.
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setFormat('Preparing...')
+
+        worker.start()
 
     def _confirm_overwrite(self, mismatch: CheckpointMismatch) -> bool:
         """ Ask whether a checkpoint that answers for another run may be deleted and filled again.
@@ -469,21 +524,38 @@ class ProcessingPanel(QWidget):
         among other things, which the run before it was asked about but which can still arrive from a
         checkpoint written between the question and the run.
 
+        A stop arrives the same way, the run being called off by raising out of the progress callback,
+        and is not reported as a failure: it was asked for, and it is picked up by asking for the run
+        again.
+
         Args:
             error (Exception): The exception the extraction raised, as the worker caught it.
         """
         self._process_button.setText('Extract Embeddings')
         self._set_processing_task_running(False)
-        self._settle_failed_bar()
+
+        if isinstance(error, TaskStopped):
+            self._settle_bar('Stopped')
+            logger.info(
+                'The extraction was stopped. The checkpoint holds the batches it had committed; '
+                'extract the embeddings again to carry on from there.'
+            )
+            return
+
+        self._settle_bar('Failed')
 
         logger.error('Could not extract the embeddings: %s', error)
         QMessageBox.critical(self, 'Extraction failed', f'Could not extract the embeddings.\n\n{error}')
 
-    def _settle_failed_bar(self) -> None:
-        """ Take the progress bar out of the busy state a failed task left it spinning in. """
+    def _settle_bar(self, status: str) -> None:
+        """ Take the progress bar out of the busy state a task that did not run to its end left it spinning in.
+
+        Args:
+            status (str): What the bar is to read, naming how the task ended.
+        """
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
-        self._progress_bar.setFormat('Failed')
+        self._progress_bar.setFormat(status)
 
     @thread_worker
     def _process_images_worker(self, force_reprocess: bool = False) -> None:
@@ -491,14 +563,17 @@ class ProcessingPanel(QWidget):
 
         PhenoMe reports after every batch, which the throttle thins out before it reaches the bar: a
         report costs a hop to the main thread and a repaint, and the step is only worth taking when it
-        is big enough to show.
+        is big enough to show. The stop is read outside the throttle, every report being a chance to
+        take it and only a hundredth of them reaching the bar.
 
         Args:
             force_reprocess (bool): Whether to delete the checkpoint and process every image again,
                 which is only ever passed for a checkpoint the user has been asked about.
         """
         self._phenome.process_images(
-            progress_callback=ThrottledProgress(self.progress_updated.emit),
+            progress_callback=StoppableProgress(
+                ThrottledProgress(self.progress_updated.emit), self._stop_event
+            ),
             force_reprocess=force_reprocess
         )
 
@@ -531,11 +606,13 @@ class ProcessingPanel(QWidget):
 
     def _on_properties_clicked(self) -> None:
         """ Begins the properties calculation task """
+        self._stop_event = threading.Event()
+
         worker = self._compute_properties_worker(self._preset_changed)
         worker.returned.connect(self._on_finish_properties)
         worker.errored.connect(self._on_properties_failed)
-        worker.start()
 
+        # As in the extraction: the tab is locked, and the stop offered with it, before the run starts
         self._props_button.setText('Calculating properties...')
         self._set_processing_task_running(True)
 
@@ -543,6 +620,8 @@ class ProcessingPanel(QWidget):
         # indicator until the first image is reported.
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setFormat('Preparing...')
+
+        worker.start()
 
     def _on_finish_properties(self) -> None:
         """ Called when the properties calculation is done. Re-enables the button and changes text. """
@@ -565,12 +644,28 @@ class ProcessingPanel(QWidget):
         held shut for the duration of a task, and a raise nobody listens for never reopens them. The
         changed preset is left standing, this run not having computed it.
 
+        A stop is not one of those failures, and answers for the preset differently. PhenoMe clears
+        the properties the checkpoint holds before it computes the first one, so a run that got as far
+        as reporting has already replaced them with the preset it was started under: the change has
+        been made, and saying otherwise would have the next run clear the partial properties it is
+        meant to carry on from.
+
         Args:
             error (Exception): The exception the calculation raised, as the worker caught it.
         """
         self._props_button.setText('Calculate Properties')
         self._set_processing_task_running(False)
-        self._settle_failed_bar()
+
+        if isinstance(error, TaskStopped):
+            self._preset_changed = False
+            self._settle_bar('Stopped')
+            logger.info(
+                'The properties calculation was stopped. The checkpoint holds the images it had '
+                'committed; calculate the properties again to carry on from there.'
+            )
+            return
+
+        self._settle_bar('Failed')
 
         logger.error('Could not compute the properties: %s', error)
         QMessageBox.critical(self, 'Properties failed', f'Could not compute the properties.\n\n{error}')
@@ -589,6 +684,8 @@ class ProcessingPanel(QWidget):
                 file are left where they are.
         """
         self._phenome.compute_properties(
-            progress_callback=ThrottledProgress(self.progress_updated.emit),
+            progress_callback=StoppableProgress(
+                ThrottledProgress(self.progress_updated.emit), self._stop_event
+            ),
             force_update=force_update
         )

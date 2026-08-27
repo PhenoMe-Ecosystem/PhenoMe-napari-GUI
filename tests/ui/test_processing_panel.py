@@ -16,6 +16,7 @@ from phenome_gui.utils.checkpoint import (
     CheckpointMismatch,
 )
 from phenome_gui.utils.params import DEFAULT_CHECKPOINT, MAX_WORKERS
+from phenome_gui.utils.progress import TaskStopped
 
 
 @pytest.fixture
@@ -650,3 +651,172 @@ def test_loading_another_dataset_forgets_the_changed_preset(ready: ProcessingPan
     ready.clear_results()
 
     assert not ready._preset_changed
+
+
+# ----------------------------------------------------------------------------
+# Stopping a running task
+# ----------------------------------------------------------------------------
+
+
+def test_there_is_nothing_to_stop_before_a_run(panel: ProcessingPanel) -> None:
+    assert not panel._stop_button.isEnabled()
+    assert panel._stop_button.toolTip() == 'No task is running.'
+
+
+def test_there_is_still_nothing_to_stop_once_everything_is_loaded(ready: ProcessingPanel) -> None:
+    """Data, a model and processed images open the two task buttons, none of which is a running task."""
+    assert not ready._stop_button.isEnabled()
+
+
+@pytest.mark.parametrize('click', ['_on_process_clicked', '_on_properties_clicked'])
+def test_either_started_task_can_be_stopped(ready: ProcessingPanel, started, mismatched, click: str) -> None:
+    mismatched(None)
+
+    getattr(ready, click)()
+
+    assert ready._stop_button.isEnabled()
+    assert ready._stop_button.text() == 'Stop'
+
+
+def test_a_finished_task_leaves_nothing_to_stop(ready: ProcessingPanel, started, mismatched) -> None:
+    mismatched(None)
+    ready._on_process_clicked()
+
+    ready._on_finish_process()
+
+    assert not ready._stop_button.isEnabled()
+    assert ready._stop_button.text() == 'Stop'
+
+
+def test_stopping_asks_the_task_to_stop(ready: ProcessingPanel, started, mismatched) -> None:
+    mismatched(None)
+    ready._on_process_clicked()
+
+    ready._stop_button.click()
+
+    assert ready._stop_event.is_set()
+
+
+def test_a_stop_cannot_be_asked_for_twice(ready: ProcessingPanel, started, mismatched) -> None:
+    """It is taken at the next report PhenoMe makes, and a second click would do nothing."""
+    mismatched(None)
+    ready._on_process_clicked()
+
+    ready._stop_button.click()
+
+    assert not ready._stop_button.isEnabled()
+    assert ready._stop_button.text() == 'Stopping...'
+    assert ready._stop_button.toolTip() == 'Waiting for the current step to finish.'
+
+
+def test_a_new_run_may_be_stopped_again(ready: ProcessingPanel, started, mismatched) -> None:
+    """Every run gets an event of its own, or the one before it would stop this one at once."""
+    mismatched(None)
+    ready._on_process_clicked()
+    ready._stop_button.click()
+    ready._on_process_failed(TaskStopped())
+
+    ready._on_process_clicked()
+
+    assert ready._stop_button.isEnabled()
+    assert not ready._stop_event.is_set()
+
+
+def test_a_stopped_extraction_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
+    ready._set_processing_task_running(True)
+
+    ready._on_process_failed(TaskStopped())
+
+    assert ready._process_button.isEnabled()
+    assert ready._props_button.isEnabled()
+    assert ready._process_button.text() == 'Extract Embeddings'
+
+
+def test_a_stopped_extraction_is_not_reported_as_a_failure(ready: ProcessingPanel, reported) -> None:
+    """It was asked for, and the checkpoint holds what it had committed."""
+    ready._on_process_failed(TaskStopped())
+
+    assert reported.shown == 0
+
+
+def test_a_stopped_extraction_settles_the_bar(ready: ProcessingPanel, reported) -> None:
+    """A task stopped while it prepares would otherwise leave the bar spinning for good."""
+    ready._on_progress(0, 0, 'Preparing...')
+
+    ready._on_process_failed(TaskStopped())
+
+    assert ready._progress_bar.maximum() == 1
+    assert ready._progress_bar.format() == 'Stopped'
+
+
+def test_a_stopped_properties_run_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
+    ready._set_processing_task_running(True)
+
+    ready._on_properties_failed(TaskStopped())
+
+    assert ready._props_button.isEnabled()
+    assert ready._process_button.isEnabled()
+    assert ready._props_button.text() == 'Calculate Properties'
+
+
+def test_a_stopped_properties_run_is_not_reported_as_a_failure(ready: ProcessingPanel, reported) -> None:
+    ready._on_properties_failed(TaskStopped())
+
+    assert reported.shown == 0
+    assert ready._progress_bar.format() == 'Stopped'
+
+
+def test_a_stopped_properties_run_resumes_rather_than_starting_over(
+    ready: ProcessingPanel, started, reported
+) -> None:
+    """PhenoMe clears the old properties before the first report, so the preset has been applied:
+    forcing it again would wipe the partial run the next click is meant to carry on from."""
+    ready._props_selection_combo.setCurrentText('Complete')
+
+    ready._on_properties_failed(TaskStopped())
+    ready._on_properties_clicked()
+
+    assert not ready._preset_changed
+    assert started.runs == [False]
+
+
+def test_a_task_stopped_between_reports_still_finishes(ready: ProcessingPanel, started, mismatched) -> None:
+    """The stop is only read on a report; one that never comes leaves a result as good as any other."""
+    mismatched(None)
+    ready._on_process_clicked()
+    ready._stop_button.click()
+
+    ready._on_finish_process()
+
+    assert ready._process_button.isEnabled()
+    assert ready._progress_bar.format() == 'Done!'
+
+
+def test_a_stopped_run_is_unwound_out_of_phenome(
+    ready: ProcessingPanel, sync_worker, mismatched, reported, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the stop is read from the callback PhenoMe reports through, and lands on the panel."""
+    mismatched(None)
+    batches = []
+
+    def _extract(progress_callback, force_reprocess: bool = False) -> None:
+        """ Report ten batches the way PhenoMe does, the fourth of which never comes. """
+        for batch in range(1, 11):
+            progress_callback(batch, 10, 'Processing batches')
+            batches.append(batch)
+            if batch == 3:
+                ready._stop_button.click()
+
+    monkeypatch.setattr(ready._phenome, 'process_images', _extract)
+    sync_worker(
+        ready,
+        '_process_images_worker',
+        lambda force: ProcessingPanel._process_images_worker.__wrapped__(ready, force),
+    )
+
+    ready._on_process_clicked()
+
+    assert batches == [1, 2, 3]
+    assert reported.shown == 0
+    assert ready._progress_bar.format() == 'Stopped'
+    assert ready._process_button.isEnabled()

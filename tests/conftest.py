@@ -378,11 +378,17 @@ class _SyncWorker:
 def sync_worker():
     """ Return a hook replacing a panel's worker factory with one that runs inline.
 
+    Whatever the panel passes the factory is passed on to the function, so a step started under a flag
+    is exercised under the flag it would really be given.
+
     Returns:
         Callable[[QWidget, str, Callable], None]: Called as sync_worker(panel, '_prototypes_worker', fn).
     """
     def _replace(panel, worker_name: str, function) -> None:
-        setattr(panel, worker_name, lambda: _SyncWorker(function))
+        def _factory(*args, **kwargs) -> _SyncWorker:
+            return _SyncWorker(lambda: function(*args, **kwargs))
+
+        setattr(panel, worker_name, _factory)
 
     return _replace
 

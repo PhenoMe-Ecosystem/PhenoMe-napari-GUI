@@ -1,8 +1,18 @@
-"""Tests for the progress throttle standing between PhenoMe's reports and the progress bar."""
+"""Tests for the progress hooks standing between PhenoMe's reports and the progress bar.
+
+The throttle thins the reports out on their way to the bar, and the stop reads the other way, a
+report being the only chance PhenoMe gives to call a run off.
+"""
+
+import threading
 
 import pytest
 
-from phenome_gui.utils.progress import ThrottledProgress
+from phenome_gui.utils.progress import (
+    StoppableProgress,
+    TaskStopped,
+    ThrottledProgress,
+)
 
 
 @pytest.fixture
@@ -85,5 +95,54 @@ def test_a_count_starting_over_is_reported(forwarded: list) -> None:
     forwarded.clear()
 
     throttle(1, 1_000, 'Computing properties')
+
+    assert forwarded == [(1, 1_000, 'Computing properties')]
+
+
+# ----------------------------------------------------------------------------
+# Stopping a run, which is read off the reports it makes
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stop() -> threading.Event:
+    """ The event a running task is asked to stop through. """
+    return threading.Event()
+
+
+def test_a_run_that_was_not_stopped_reports_as_it_is(forwarded: list, stop: threading.Event) -> None:
+    stoppable = StoppableProgress(lambda *report: forwarded.append(report), stop)
+
+    stoppable(3, 10, 'Processing batches')
+
+    assert forwarded == [(3, 10, 'Processing batches')]
+
+
+def test_a_stopped_run_raises_on_its_next_report(forwarded: list, stop: threading.Event) -> None:
+    """PhenoMe offers no other hook into its loops, so the run is unwound out of the callback."""
+    stoppable = StoppableProgress(lambda *report: forwarded.append(report), stop)
+    stop.set()
+
+    with pytest.raises(TaskStopped):
+        stoppable(3, 10, 'Processing batches')
+
+    assert forwarded == []
+
+
+def test_the_stop_is_caught_by_the_worker() -> None:
+    """The napari worker only catches Exception; one it misses escapes into the Qt thread pool."""
+    assert issubclass(TaskStopped, Exception)
+
+
+def test_a_stop_is_taken_on_a_report_the_throttle_would_drop(forwarded: list, stop: threading.Event) -> None:
+    """Wrapped the other way round, a stop would wait for the next step of the bar to be taken."""
+    stoppable = StoppableProgress(
+        ThrottledProgress(lambda *report: forwarded.append(report), reports=10), stop
+    )
+    stoppable(1, 1_000, 'Computing properties')
+    stop.set()
+
+    with pytest.raises(TaskStopped):
+        stoppable(2, 1_000, 'Computing properties')
 
     assert forwarded == [(1, 1_000, 'Computing properties')]

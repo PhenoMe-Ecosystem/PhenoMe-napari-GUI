@@ -1,6 +1,6 @@
 [project]
 name = "phenome-gui"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GUI integration of the PhenoMe phenotyping framework"
 readme = "README.md"
 license = "MIT"
@@ -68,6 +68,7 @@ constraint-dependencies = ["numpy<2.5"]
 [tool.uv.workspace]
 members = [
     "external/PhenoMe",
+    "external/STED-FM",
 ]
 
 [tool.uv.sources]
