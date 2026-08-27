@@ -11,7 +11,7 @@ import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
-from qtpy.QtGui import QPainterPath, QPolygonF
+from qtpy.QtGui import QFont, QPainterPath, QPolygonF
 from qtpy.QtWidgets import QGraphicsPathItem, QToolTip, QWidget
 
 logger = logging.getLogger("main_logger")
@@ -57,6 +57,25 @@ INDEX_COLUMN = 'Index'
 
 # Diameter of a drawn point
 MARKER_SIZE = 8
+
+# The colorbar a measured column is read by, drawn over the plot rather than beside it: a bar given a
+# column of its own takes its width from the points, and the plot would move every time the colouring
+# changed from labels to a measurement. Floated, it sits where the legend does for a column of labels,
+# and the axes stay where they are whatever the points are coloured by. Its lengths are in pixels,
+# being drawn over the plot rather than in it, and are a good deal smaller than pyqtgraph's own.
+COLORBAR_LENGTH = 160
+COLORBAR_THICKNESS = 16
+COLORBAR_HEIGHT = 64
+
+# Inset from the top right corner of the plot area, matching the legend's own offset
+COLORBAR_MARGIN = 10
+
+# Point size of the column's name over the bar and of the values under it, both kept down to the size
+# of the bar itself, and the length of the marks the values sit on. The marks are drawn back into the
+# ramp, which is pyqtgraph's own way round and what the negative length asks for.
+COLORBAR_LABEL_SIZE = 12
+COLORBAR_TICK_SIZE = 10
+COLORBAR_TICK_LENGTH = -5
 
 # Ring drawn around the hovered point. White reads against every colour of the palette and the ramp
 # alike, and the ring sits just outside the point so it marks it without hiding what colour it is.
@@ -391,8 +410,13 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._plot = self.addPlot(row=0, col=0, viewBox=self._viewbox)
         self._legend = self._plot.addLegend(offset=(-10, 10))
 
-        # Built beside the plot when a measured column is drawn, and taken off again when it is not
+        # Floated over the plot when a measured column is drawn, and taken off again when it is not
         self._colorbar = None
+
+        # Connected to the canvas rather than to the bar, which is built and dropped with every
+        # drawing: the canvas outlives all of them, where a bar left connected would be asked to
+        # place itself after it had been taken off the scene
+        self._plot.vb.sigResized.connect(lambda _: self._place_colorbar())
 
         # What is currently drawn, kept for the hovering: the projection itself, the two columns its
         # coordinates were taken from, and the column its colours were.
@@ -819,16 +843,63 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         )
 
         self._colorbar = pg.ColorBarItem(
-            values=(low, high), colorMap=colormap, label=column, interactive=False
+            values=(low, high),
+            colorMap=colormap,
+            label=column,
+            interactive=False,
+            orientation='horizontal',
+            width=COLORBAR_THICKNESS
         )
 
-        # The bar keeps an axis on either side of itself, one carrying the ticks and the other the
-        # label, so both are toned down to match the plot's own
-        for axis in ('left', 'right'):
+        # The bar is framed by an axis on each of its four sides. Lying down it carries both the
+        # values and the label along the bottom one and draws the other three as the frame, so all
+        # four are toned down to match the plot's own axes.
+        for axis in ('left', 'right', 'top', 'bottom'):
             self._colorbar.getAxis(axis).setPen(AXIS_COLOUR)
             self._colorbar.getAxis(axis).setTextPen(AXIS_COLOUR)
 
-        self.addItem(self._colorbar, row=0, col=1)
+        # The values are read off a bar a fraction of pyqtgraph's own, and are written to match it:
+        # in a smaller hand, and on marks short enough not to outweigh the ramp they point at
+        ticks = QFont()
+        ticks.setPointSize(COLORBAR_TICK_SIZE)
+        self._colorbar.axis.setStyle(tickFont=ticks, tickLength=COLORBAR_TICK_LENGTH)
+
+        # The column is named over the bar rather than under it, where the name would be left hanging
+        # a line below the values by the room the axis keeps for it. Styled in full, a label taking
+        # the colour it is written in from the same call that sizes it.
+        self._colorbar.axis.setLabel(None)
+        self._colorbar.getAxis('top').setLabel(
+            column, color=AXIS_COLOUR, **{'font-size': f'{COLORBAR_LABEL_SIZE}pt'}
+        )
+
+        # Drawn over the points, so it has to let the pointer through to them: a point under the bar
+        # is still hovered and still clicked
+        for item in (self._colorbar, self._colorbar.bar):
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setAcceptHoverEvents(False)
+
+        # Parented to the view box rather than added to the canvas' layout, which is what keeps it
+        # off the plot's width. Its place is in pixels from the corner, so it stays the same size and
+        # in the same corner however the points underneath it are panned and zoomed.
+        self._colorbar.setParentItem(self._plot.vb)
+        self._place_colorbar()
+
+    def _place_colorbar(self) -> None:
+        """ Sit the colorbar in the top right of the plot area, and keep it there as the plot resizes.
+
+        Called again whenever the view box is resized, the corner it is measured from moving with
+        every resize of the window and with every axis that grows wide enough to push the plot along.
+        """
+        if self._colorbar is None:
+            return
+
+        # The view box's own rectangle starts at its top left corner, which is also where the bar's
+        # place is measured from, so the corner is the width alone
+        area = self._plot.vb.boundingRect()
+        left = area.width() - COLORBAR_LENGTH - COLORBAR_MARGIN
+
+        # Held in a layout an item is given its size; floated it has to be told what it is
+        self._colorbar.setGeometry(QRectF(left, COLORBAR_MARGIN, COLORBAR_LENGTH, COLORBAR_HEIGHT))
 
     def _clear_canvas(self) -> None:
         """ Take everything drawn off the canvas, leaving the frame it was drawn from.
@@ -843,8 +914,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._legend.clear()
         self._plot.clear()
 
+        # Taken off the scene it was floated onto, the canvas' layout never having held it
         if self._colorbar is not None:
-            self.removeItem(self._colorbar)
+            self.scene().removeItem(self._colorbar)
             self._colorbar = None
 
         # The ring and the selection wash went with the plot's other items, leaving only the

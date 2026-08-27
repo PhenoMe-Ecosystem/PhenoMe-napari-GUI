@@ -93,8 +93,8 @@ def point_colours(plot: ExplorerPlot) -> list[str]:
 
 
 def colorbar_label(plot: ExplorerPlot) -> str:
-    """ The name written alongside the colorbar, whichever of its two axes carries it. """
-    labels = [plot._colorbar.getAxis(axis).labelText for axis in ('left', 'right')]
+    """ The name written alongside the colorbar, whichever of its four axes carries it. """
+    labels = [plot._colorbar.getAxis(axis).labelText for axis in ('left', 'right', 'top', 'bottom')]
     return next((label for label in labels if label), '')
 
 
@@ -380,6 +380,25 @@ def test_the_colorbar_is_named_after_the_column(plot: ExplorerPlot) -> None:
     plot.plot_projection(measured(MEASUREMENTS, column='eccentricity'), 'eccentricity')
 
     assert 'eccentricity' in colorbar_label(plot)
+
+
+def test_the_colorbar_takes_no_room_from_the_plot(plot: ExplorerPlot) -> None:
+    """It is floated over the plot area rather than given a column of its own beside it.
+
+    A bar holding a column of the canvas' layout takes its width from the points, which moves the
+    axes every time the colouring changes from labels to a measurement.
+    """
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
+
+    assert plot._colorbar.parentItem() is plot._plot.vb
+    assert len(plot.ci.items) == 1
+
+
+def test_the_colorbar_lies_down(plot: ExplorerPlot) -> None:
+    """Lying along the top of the plot, it covers a strip of the cloud rather than a column of it."""
+    plot.plot_projection(measured(MEASUREMENTS), 'area')
+
+    assert plot._colorbar.horizontal
 
 
 def test_the_points_run_along_the_ramp(plot: ExplorerPlot) -> None:
