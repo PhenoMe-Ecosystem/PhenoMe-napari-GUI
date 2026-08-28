@@ -1,6 +1,8 @@
+from importlib.metadata import PackageNotFoundError, version
+
 try:
-    from ._version import version as __version__
-except ImportError:
+    __version__ = version('phenome-gui')
+except PackageNotFoundError:  # not installed, e.g. running from a source tree
     __version__ = 'unknown'
 
 __all__ = ()
