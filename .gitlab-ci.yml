@@ -1,0 +1,121 @@
+# Version is bumped by hand with:
+#   uv version --bump patch
+#   uv version --bump minor
+#   uv version --bump major
+#
+# Commit pyproject.toml.
+#
+#   merge request -> verify that the version was increased
+#   push to main  -> build wheel + sdist, upload them to the package registry
+#                    -> create vX.Y.Z tag
+#                    -> create GitLab Release linking the wheel + sdist
+
+default:
+  image: ghcr.io/astral-sh/uv:python3.14-trixie
+
+variables:
+  PACKAGE_NAME: phenome-gui
+
+stages:
+  - check
+  - build
+  - release
+
+
+version-bump:
+  stage: check
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+  script:
+    - git fetch --depth=1 origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+
+    - mkdir -p /tmp/base
+    - git show FETCH_HEAD:pyproject.toml > /tmp/base/pyproject.toml
+
+    - BASE=$(cd /tmp/base && uv version --short)
+    - CURRENT=$(uv version --short)
+
+    - |
+      if [ "$CURRENT" = "$BASE" ] || \
+         [ "$(printf '%s\n%s\n' "$BASE" "$CURRENT" | sort -V | head -1)" != "$BASE" ]; then
+        echo "Version was not bumped:"
+        echo "  base:    $BASE"
+        echo "  current: $CURRENT"
+        echo
+        echo "Run: uv version --bump patch"
+        echo "and commit pyproject.toml"
+        exit 1
+      fi
+
+    - 'echo "Version bumped: $BASE -> $CURRENT"'
+
+
+build:
+  stage: build
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - pyproject.toml
+
+  script:
+    - VERSION=$(uv version --short)
+    - echo "VERSION=$VERSION" > version.env
+
+    - uv build --no-sources
+
+    - echo "WHEEL=$(basename dist/*.whl)" >> version.env
+    - echo "SDIST=$(basename dist/*.tar.gz)" >> version.env
+
+    - 'echo "Built version: $VERSION"'
+    - ls -lh dist/
+
+    # Generic registry: predictable URLs, needed by the Release asset links.
+    - |
+      for FILE in dist/*; do
+        echo "Uploading $(basename "$FILE")"
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+          --upload-file "$FILE" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/$(basename "$FILE")"
+      done
+
+  artifacts:
+    paths:
+      - dist/
+    reports:
+      dotenv: version.env
+    expire_in: 1 week
+
+
+release:
+  stage: release
+
+  image: registry.gitlab.com/gitlab-org/cli:latest
+
+  needs:
+    - job: build
+      artifacts: true
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - pyproject.toml
+
+  script:
+    - echo "Creating release v$VERSION"
+
+  release:
+    tag_name: "v$VERSION"
+    name: "v$VERSION"
+    description: "Release v$VERSION"
+    assets:
+      links:
+        - name: "${WHEEL}"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${WHEEL}"
+          link_type: package
+        - name: "${SDIST}"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${SDIST}"
+          link_type: package
