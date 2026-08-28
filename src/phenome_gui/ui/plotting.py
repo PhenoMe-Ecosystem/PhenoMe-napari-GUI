@@ -11,25 +11,14 @@ import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
-from qtpy.QtGui import QPainterPath, QPolygonF
+from qtpy.QtGui import QFont, QPainterPath, QPolygonF
 from qtpy.QtWidgets import QGraphicsPathItem, QToolTip, QWidget
 
 logger = logging.getLogger("main_logger")
 
-# Colours of the groups, in a fixed order and cycled once there are more groups than colours. A
-# scatter has every colour up against every other, which these eight do not all survive: past the
-# third slot the weakest pairs (orange against yellow, aqua against magenta) are hard to tell apart
-# for a colourblind reader, and past the eighth two groups share a colour outright.
-SERIES_COLOURS = [
-    '#3987e5',  # blue
-    '#d95926',  # orange
-    '#199e70',  # aqua
-    '#c98500',  # yellow
-    '#d55181',  # magenta
-    '#008300',  # green
-    '#9085e9',  # violet
-    '#e66767',  # red
-]
+# Colours of the groups, in a fixed order and cycled once there are more groups than colours.
+SERIES_COLOURS = pg.colormap.get('glasbey_light', 'colorcet')
+N_COLOURS = len(SERIES_COLOURS.getColors())
 
 # Ramp a measured column is coloured along, the one PhenoMe's own explorer opens on
 CONTINUOUS_COLORMAP = 'viridis'
@@ -69,6 +58,25 @@ INDEX_COLUMN = 'Index'
 # Diameter of a drawn point
 MARKER_SIZE = 8
 
+# The colorbar a measured column is read by, drawn over the plot rather than beside it: a bar given a
+# column of its own takes its width from the points, and the plot would move every time the colouring
+# changed from labels to a measurement. Floated, it sits where the legend does for a column of labels,
+# and the axes stay where they are whatever the points are coloured by. Its lengths are in pixels,
+# being drawn over the plot rather than in it, and are a good deal smaller than pyqtgraph's own.
+COLORBAR_LENGTH = 160
+COLORBAR_THICKNESS = 16
+COLORBAR_HEIGHT = 64
+
+# Inset from the top right corner of the plot area, matching the legend's own offset
+COLORBAR_MARGIN = 10
+
+# Point size of the column's name over the bar and of the values under it, both kept down to the size
+# of the bar itself, and the length of the marks the values sit on. The marks are drawn back into the
+# ramp, which is pyqtgraph's own way round and what the negative length asks for.
+COLORBAR_LABEL_SIZE = 12
+COLORBAR_TICK_SIZE = 10
+COLORBAR_TICK_LENGTH = -5
+
 # Ring drawn around the hovered point. White reads against every colour of the palette and the ramp
 # alike, and the ring sits just outside the point so it marks it without hiding what colour it is.
 HIGHLIGHT_COLOUR = '#ffffff'
@@ -77,6 +85,7 @@ HIGHLIGHT_SIZE = MARKER_SIZE + 4
 
 # Opacity of a point the highlight leaves out, out of 255. Low enough to read as background, high
 # enough that the shape of the cloud it belongs to is still there to be read against.
+NORMAL_ALPHA = 200
 DIMMED_ALPHA = 33
 
 # How near the pointer has to come to a point, in pixels, for it to count as hovered. Measured in
@@ -194,6 +203,43 @@ def format_value(value) -> str:
         return f'{value:.4g}'
 
     return str(value)
+
+
+def group_order(value) -> tuple[int, float, str]:
+    """ Sort key listing a label where a reader would look for it.
+
+    Numbers read in numeric order, so the clusters run 1, 2, 10 rather than the 1, 10, 2 their names
+    would give; text reads alphabetically, without its case, one group being no more important than
+    another for being capitalised. The images nothing is known about are gathered under one label
+    which is not a group of its own, and are kept at the end of the list whatever the rest of it says.
+
+    Public alongside the other helpers: the field a highlight is picked from is picked against the
+    legend, so the two have to list the same values in the same order.
+
+    Args:
+        value: The label of one group, of whatever type the column holding it has.
+    Returns:
+        tuple: Key ordering the numbers first, the rest of the labels after them, and the missing
+            ones last.
+    """
+    # The canvas has already gathered the missing values under the label by the time it groups by
+    # them, where the field a highlight is picked from reads the column as PhenoMe left it
+    if pd.isna(value) or value == MISSING_LABEL:
+        return (2, 0.0, '')
+
+    # A cluster label arrives as a number, and a metadata column read out of a file can hold its
+    # numbers as text, which should read as the numbers they are either way
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = None
+
+    # A column can hold the word 'nan' without meaning a missing value, and it has no place among the
+    # numbers: it compares false against every one of them, leaving the order to the sort's own hand
+    if number is None or np.isnan(number):
+        return (1, 0.0, str(value).casefold())
+
+    return (0, number, str(value).casefold())
 
 
 class _SelectionViewBox(pg.ViewBox):
@@ -364,8 +410,13 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._plot = self.addPlot(row=0, col=0, viewBox=self._viewbox)
         self._legend = self._plot.addLegend(offset=(-10, 10))
 
-        # Built beside the plot when a measured column is drawn, and taken off again when it is not
+        # Floated over the plot when a measured column is drawn, and taken off again when it is not
         self._colorbar = None
+
+        # Connected to the canvas rather than to the bar, which is built and dropped with every
+        # drawing: the canvas outlives all of them, where a bar left connected would be asked to
+        # place itself after it had been taken off the scene
+        self._plot.vb.sigResized.connect(lambda _: self._place_colorbar())
 
         # What is currently drawn, kept for the hovering: the projection itself, the two columns its
         # coordinates were taken from, and the column its colours were.
@@ -423,17 +474,29 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         x_column, y_column = components
 
+        # Whether these are the points already on the canvas: a recolouring hands the same frame
+        # back, where a projection that has just been computed is a frame of its own
+        redrawn = previous is projection_df
+
         # A selection belongs to the points it was drawn over, so it is kept when the same frame is
         # drawn again - a recolouring is the same images under another colour - and let go of when
         # another one takes its place.
         # Kept whole rather than as coordinates alone, the tooltip reading the rest of the row and
         # the dimming drawing it again
         self._points = projection_df
-        self._selected = selected if previous is projection_df else None
+        self._selected = selected if redrawn else None
         self._x_column, self._y_column = x_column, y_column
         self._color_column = resolve_column(projection_df, color_by)
 
         self._draw()
+
+        # Another projection's components are on another scale entirely, and pyqtgraph only fits the
+        # view to what it holds until the plot is first panned or zoomed, after which the points of
+        # the next one land off the view or in a corner of it. Fitted after the drawing, the range
+        # being read off the items just added, and only for points the canvas was not already
+        # showing: a recolouring is the same cloud, and is left wherever it was being looked at.
+        if not redrawn:
+            self._plot.vb.autoRange()
 
     def _draw(self) -> None:
         """ Draw the frame currently held, coloured by the column currently held.
@@ -699,6 +762,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
     def _draw_groups(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw one series per value of a column of labels, named in the legend.
 
+        The points are drawn in one order and listed in another: the crowd has to go down before the
+        groups that would be lost under it, where the legend is read by looking a label up and has to
+        be in the order the labels themselves are in.
+
         Args:
             projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
             x_column (str): Column holding the first component.
@@ -713,16 +780,30 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         # The count alone would leave same-sized groups in the order pandas happened to hash them in.
         groups = sorted(labels.unique(), key=lambda value: (-(labels == value).sum(), str(value)))
 
-        for index, group in enumerate(groups):
+        # The order the legend is listed in, which the colours are taken in as well: a group then
+        # keeps the colour it wore when a re-clustering or another projection changed how many points
+        # it holds, where a colour taken by size moves to whichever group grew into it.
+        listed = sorted(groups, key=group_order)
+        places = {group: place for place, group in enumerate(listed)}
+
+        drawn = {}
+        for group in groups:
             rows = labels == group
-            colour = SERIES_COLOURS[index % len(SERIES_COLOURS)]
-            self._add_series(
+            colour = SERIES_COLOURS[places[group] % N_COLOURS]
+            drawn[group] = self._add_series(
                 projection_df.loc[rows, x_column],
                 projection_df.loc[rows, y_column],
                 colour,
                 self._dimmed_brushes(colour, rows),
                 name=str(group)
             )
+
+        # Each series adds its own entry as it is drawn, which leaves the legend in the order they
+        # were drawn in. Filled again here in the order the labels read in, from the same items, so
+        # every entry keeps the swatch its group was drawn with.
+        self._legend.clear()
+        for group in listed:
+            self._legend.addItem(drawn[group], str(group))
 
     def _draw_ramp(self, projection_df: pd.DataFrame, x_column: str, y_column: str, column: str) -> None:
         """ Draw the points of a measured column along a colour ramp, with a colorbar to read it by.
@@ -762,16 +843,63 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         )
 
         self._colorbar = pg.ColorBarItem(
-            values=(low, high), colorMap=colormap, label=column, interactive=False
+            values=(low, high),
+            colorMap=colormap,
+            label=column,
+            interactive=False,
+            orientation='horizontal',
+            width=COLORBAR_THICKNESS
         )
 
-        # The bar keeps an axis on either side of itself, one carrying the ticks and the other the
-        # label, so both are toned down to match the plot's own
-        for axis in ('left', 'right'):
+        # The bar is framed by an axis on each of its four sides. Lying down it carries both the
+        # values and the label along the bottom one and draws the other three as the frame, so all
+        # four are toned down to match the plot's own axes.
+        for axis in ('left', 'right', 'top', 'bottom'):
             self._colorbar.getAxis(axis).setPen(AXIS_COLOUR)
             self._colorbar.getAxis(axis).setTextPen(AXIS_COLOUR)
 
-        self.addItem(self._colorbar, row=0, col=1)
+        # The values are read off a bar a fraction of pyqtgraph's own, and are written to match it:
+        # in a smaller hand, and on marks short enough not to outweigh the ramp they point at
+        ticks = QFont()
+        ticks.setPointSize(COLORBAR_TICK_SIZE)
+        self._colorbar.axis.setStyle(tickFont=ticks, tickLength=COLORBAR_TICK_LENGTH)
+
+        # The column is named over the bar rather than under it, where the name would be left hanging
+        # a line below the values by the room the axis keeps for it. Styled in full, a label taking
+        # the colour it is written in from the same call that sizes it.
+        self._colorbar.axis.setLabel(None)
+        self._colorbar.getAxis('top').setLabel(
+            column, color=AXIS_COLOUR, **{'font-size': f'{COLORBAR_LABEL_SIZE}pt'}
+        )
+
+        # Drawn over the points, so it has to let the pointer through to them: a point under the bar
+        # is still hovered and still clicked
+        for item in (self._colorbar, self._colorbar.bar):
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setAcceptHoverEvents(False)
+
+        # Parented to the view box rather than added to the canvas' layout, which is what keeps it
+        # off the plot's width. Its place is in pixels from the corner, so it stays the same size and
+        # in the same corner however the points underneath it are panned and zoomed.
+        self._colorbar.setParentItem(self._plot.vb)
+        self._place_colorbar()
+
+    def _place_colorbar(self) -> None:
+        """ Sit the colorbar in the top right of the plot area, and keep it there as the plot resizes.
+
+        Called again whenever the view box is resized, the corner it is measured from moving with
+        every resize of the window and with every axis that grows wide enough to push the plot along.
+        """
+        if self._colorbar is None:
+            return
+
+        # The view box's own rectangle starts at its top left corner, which is also where the bar's
+        # place is measured from, so the corner is the width alone
+        area = self._plot.vb.boundingRect()
+        left = area.width() - COLORBAR_LENGTH - COLORBAR_MARGIN
+
+        # Held in a layout an item is given its size; floated it has to be told what it is
+        self._colorbar.setGeometry(QRectF(left, COLORBAR_MARGIN, COLORBAR_LENGTH, COLORBAR_HEIGHT))
 
     def _clear_canvas(self) -> None:
         """ Take everything drawn off the canvas, leaving the frame it was drawn from.
@@ -786,8 +914,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         self._legend.clear()
         self._plot.clear()
 
+        # Taken off the scene it was floated onto, the canvas' layout never having held it
         if self._colorbar is not None:
-            self.removeItem(self._colorbar)
+            self.scene().removeItem(self._colorbar)
             self._colorbar = None
 
         # The ring and the selection wash went with the plot's other items, leaving only the
@@ -971,6 +1100,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             faded = brush.color()
             faded.setAlpha(DIMMED_ALPHA)
             brush.setColor(faded)
+        else:
+            faded = brush.color()
+            faded.setAlpha(NORMAL_ALPHA)
+            brush.setColor(faded)
 
         return brush
 
@@ -992,7 +1125,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
     def _add_series(
         self, x: pd.Series, y: pd.Series, colour, brushes: list | None = None, name: str | None = None
-    ) -> None:
+    ) -> pg.ScatterPlotItem:
         """ Draw one group of points.
 
         Args:
@@ -1002,6 +1135,8 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             brushes (list): A brush per point, for a group the highlight has split. None to leave
                 every point on the group's own colour.
             name (str): Name of the group, which is what puts it in the legend. None to leave it out.
+        Returns:
+            pg.ScatterPlotItem: The series drawn, which is what a legend entry is made from.
         """
         series = pg.ScatterPlotItem(
             x=x.to_numpy(),
@@ -1019,3 +1154,4 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             series.setBrush(brushes)
 
         self._plot.addItem(series)
+        return series

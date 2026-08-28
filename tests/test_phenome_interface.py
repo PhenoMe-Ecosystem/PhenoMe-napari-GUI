@@ -10,6 +10,7 @@ from phenome_gui.utils.params import (
     DEFAULT_CHECKPOINT,
     DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
+    MAX_WORKERS,
     Params,
 )
 from phenome_gui.utils.phenome_interface import (
@@ -75,6 +76,66 @@ def test_an_unknown_choice_raises(phenome: PhenoMeInterface) -> None:
 def test_assigning_a_path_coerces_to_a_path(phenome: PhenoMeInterface) -> None:
     phenome.params.paths.checkpoint = '/tmp/somewhere.hdf5'
     assert phenome.params.paths.checkpoint == Path('/tmp/somewhere.hdf5')
+
+
+def test_the_images_are_read_in_no_worker_by_default(phenome: PhenoMeInterface) -> None:
+    """Every worker is a Python started from nothing, waited on before the first batch."""
+    assert phenome.params.process.num_workers == 0
+
+
+@pytest.mark.parametrize('count', [-1, MAX_WORKERS + 1])
+def test_an_impossible_worker_count_raises(phenome: PhenoMeInterface, count: int) -> None:
+    """Fewer than none is meaningless, and more than the form offers no machine would gain by."""
+    with pytest.raises(ValidationError):
+        phenome.params.process.num_workers = count
+
+
+@pytest.mark.parametrize('count', [0, 1, MAX_WORKERS])
+def test_a_possible_worker_count_is_kept(phenome: PhenoMeInterface, count: int) -> None:
+    phenome.params.process.num_workers = count
+
+    assert phenome.params.process.num_workers == count
+
+
+@pytest.fixture
+def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """ Catch the arguments an extraction would be run under, rather than running one.
+
+    The interface hands a model's own arguments down alongside the form's, so the interface is made to
+    look as it does once a model has been loaded: one that brings no arguments of its own.
+
+    Returns:
+        dict: Filled with the keyword arguments handed down, once an extraction has been asked for.
+    """
+    phenome.model = object()
+    phenome.process_options = {}
+
+    passed = {}
+
+    def _capture(model, checkpoint_path, **kwargs) -> None:
+        passed.update(kwargs)
+
+    monkeypatch.setattr(phenome.image_processing, 'process_images', _capture)
+    return passed
+
+
+@pytest.mark.parametrize('count', [0, 2, MAX_WORKERS])
+def test_the_worker_count_reaches_phenome(phenome: PhenoMeInterface, extraction: dict, count: int) -> None:
+    """The whole point of the parameter: a count set in the form and never passed down does nothing."""
+    phenome.params.process.num_workers = count
+
+    phenome.process_images()
+
+    assert extraction['num_workers'] == count
+
+
+def test_the_batch_size_still_reaches_phenome(phenome: PhenoMeInterface, extraction: dict) -> None:
+    """Handed down beside the worker count, and neither may push the other out."""
+    phenome.params.process.batch_size = 64
+
+    phenome.process_images()
+
+    assert extraction['batch_size'] == 64
 
 
 # ----------------------------------------------------------------------------

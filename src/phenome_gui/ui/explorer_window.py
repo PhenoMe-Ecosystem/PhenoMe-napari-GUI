@@ -37,6 +37,7 @@ from .criteria_window import ExcludeWindow, FilterWindow
 from .plotting import (
     INDEX_COLUMN,
     ExplorerPlot,
+    group_order,
     is_continuous,
     resolve_column,
 )
@@ -373,11 +374,8 @@ class InteractiveExplorerWindow(QDialog):
         Args:
             values (pd.Series): The column's values, of which only the distinct ones are listed.
         """
-        distinct = values.unique()
-        try:
-            ordered = sorted(distinct)
-        except TypeError:
-            ordered = sorted(distinct, key=str)
+        # Listed the way the canvas lists its legend, which is what a value is picked against
+        ordered = sorted(values.unique(), key=group_order)
 
         picked = self._highlight_values_combo.currentData()
 

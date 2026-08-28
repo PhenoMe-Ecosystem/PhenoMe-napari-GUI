@@ -5,13 +5,26 @@ from phenome import PhenoMe
 from phenome.utils import ProgressCallback
 from torch import cuda
 
+from ..registries.models import MODEL_OPTIONS
 from .analysis import PhenoMeAnalysis
+from .checkpoint import CheckpointMismatch, inspect_checkpoint
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
-from .models import MODEL_OPTIONS
 from .params import DEFAULT_CHECKPOINT, Params
 
 logger = getLogger(__name__)
+
+# What PhenoMe.process_images() defaults the arguments the GUI never sets to. A checkpoint is validated
+# against these alongside the ones a model brings, so they are written out here rather than left
+# implicit: reading a checkpoint before a run means comparing it against what the run will really use.
+PROCESS_DEFAULTS = {
+    'channel_mode': 'split',
+    'channels': None,
+    'resize_size': 224,
+    'pad_size': None,
+    'force_rgb': True,
+    'l2_normalize_channels': True,
+}
 
 # The GUI names its algorithms as the papers do, where PhenoMe knows them by a plain lower case key.
 # Keyed by the EmbeddingMethod choices, so every method the form can offer has a translation.
@@ -57,6 +70,8 @@ class PhenoMeInterface:
         self.outliers_df = None
         self.projection_df = None
         self.model = None
+        self.process_options = None
+        self.transforms = None
         self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
@@ -171,16 +186,57 @@ class PhenoMeInterface:
     # ------------------------------------------------------------------
 
     def load_model(self) -> None:
-        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline. """
+        """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
+
+        A model arrives with the transformations its images are to be prepared with and the arguments
+        its embeddings are to be extracted under, both read from the registries by the name it is
+        known by. They are kept here until the images are processed, which is where they are used, so
+        both are written to the log as they arrive: what a run was made under is otherwise nowhere.
+        """
         model_name = self.params.process.model
 
         real_model_name = MODEL_OPTIONS.get(model_name)
         if real_model_name:
-            self.model = self.image_processing.load_model(real_model_name, device=self.params.process.device)
+            device = self.params.process.device
+            self.model, self.transforms, self.process_options = self.image_processing.load_model(real_model_name, device=device)
+
+            logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
+            logger.info(
+                "Its images are prepared with %s, and processed with %s.",
+                'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
+                str(self.process_options) if self.process_options else 'no arguments of its own'
+            )
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
-    def process_images(self, progress_callback: ProgressCallback | None=None) -> None:
+    def processing_params(self) -> dict:
+        """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.
+
+        The model's own arguments over PhenoMe's defaults, which is how process_images() below hands
+        them down: what the form does not set, PhenoMe fills in itself. Read before a run to compare a
+        checkpoint against it, so the comparison is made against what the run will really use.
+
+        Returns:
+            dict: The processing parameters, whether or not a model has been loaded.
+        """
+        return {**PROCESS_DEFAULTS, **(self.process_options or {})}
+
+    def inspect_checkpoint(self) -> CheckpointMismatch | None:
+        """ Read the checkpoint an embedding run would be written to, before the run is started.
+
+        PhenoMe raises on a checkpoint it cannot resume from, from the thread the run is made on and
+        halfway through it. Asked here beforehand, the same disagreement can be put to the user while
+        there is still a choice to make about it.
+
+        Returns:
+            CheckpointMismatch | None: What the checkpoint holds that this run would not put there, or
+                None when it agrees, is empty, does not exist, or could not be read.
+        """
+        image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
+
+        return inspect_checkpoint(self.params.paths.checkpoint, self.processing_params(), image_paths)
+
+    def process_images(self, progress_callback: ProgressCallback | None=None, force_reprocess: bool=False) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
         Uses the params to feed arguments.
@@ -190,12 +246,33 @@ class PhenoMeInterface:
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
             calling thread, so a caller running this in a worker thread must not touch widgets in it.
+            force_reprocess: Whether to delete the checkpoint and process every image again. PhenoMe
+                removes the file rather than writing over it, so everything it held is lost: only ever
+                passed for a checkpoint the user has been asked about.
         """
         checkpoint_path = self.params.paths.checkpoint
 
+        # Written out rather than left to the model that was loaded: the arguments an extraction ran
+        # under are what its embeddings can be read against, and they are the registry's rather than
+        # anything the form shows.
+        num_workers = self.params.process.num_workers
+        logger.info(
+            "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
+            self.params.process.model,
+            self.params.process.batch_size,
+            f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
+            str(self.process_options) if self.process_options else 'with no arguments of its own'
+        )
+
         self.image_processing.process_images(
-            self.model, checkpoint_path, progress_callback=progress_callback,
-            batch_size=self.params.process.batch_size
+            self.model,
+            checkpoint_path,
+            progress_callback=progress_callback,
+            batch_size=self.params.process.batch_size,
+            num_workers=num_workers,
+            custom_transformations=self.transforms,
+            force_reprocess=force_reprocess,
+            **self.process_options
         )
 
     @property
@@ -210,17 +287,18 @@ class PhenoMeInterface:
         """
         return self.pheno.results.n_images > 0
 
-    def compute_properties(self, progress_callback: ProgressCallback | None=None) -> pd.DataFrame:
+    def compute_properties(self, progress_callback: ProgressCallback | None=None, force_update: bool=False) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Stores them in self.properties_df.
 
         Uses the params to feed arguments.
 
-        TODO: Computing a different preset over an existing checkpoint may need force_update=True, otherwise
-        PhenoMe warns about the property keys missing from the checkpoint.
-
         Args:
             progress_callback: Hook called as (current, total, desc) after each image. Called from the
                 calling thread, so a caller running this in a worker thread must not touch widgets in it.
+            force_update: Whether to drop the properties the checkpoint holds and compute them all
+                again, which a preset computed over a checkpoint filled under another one needs:
+                PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
+                properties are cleared, the embeddings in the same file being left where they are.
         Returns:
             pd.DataFrame: One row per image, holding the image path and the computed properties.
         """
@@ -230,7 +308,7 @@ class PhenoMeInterface:
         preset = self.params.properties.preset.lower()
 
         self.properties_df = self.image_processing.compute_properties(
-            preset, checkpoint_path, progress_callback=progress_callback
+            preset, checkpoint_path, progress_callback=progress_callback, force_update=force_update
         )
         return self.properties_df
 

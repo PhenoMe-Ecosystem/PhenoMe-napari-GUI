@@ -2,13 +2,17 @@
 
 import pandas as pd
 import pytest
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QMessageBox
 
 from phenome_gui.ui.analysis_panel import AnalysisPanel
 from phenome_gui.ui.clustering_params import ClusterParamsWindow
+from phenome_gui.ui.loading_panel import LoadingPanel
 from phenome_gui.ui.prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
+from phenome_gui.utils.image_viewer import ImageViewer
 
 
 @pytest.fixture
@@ -339,3 +343,130 @@ def test_clearing_an_empty_panel_raises_nothing(fresh: AnalysisPanel) -> None:
     fresh.clear_results()
 
     assert fresh._images_table.native.rowCount() == 0
+
+
+# ----------------------------------------------------------------------------
+# A step that raises, which the worker swallows into a signal
+# ----------------------------------------------------------------------------
+
+
+class Reported:
+    """ Stands in for the message shown when a step raised, which is modal and would hang a test. """
+
+    def __init__(self) -> None:
+        self.shown = 0
+        self.last = ''
+
+    def __call__(self, parent, title, text, *args, **kwargs) -> None:
+        """ Take note of a message, and of what it said.
+
+        Args:
+            parent: The widget the message would be shown over.
+            title: Its title bar.
+            text: What it says, which is what the tests read.
+            *args: Whatever buttons the caller passed, which are of no interest here.
+            **kwargs: As above.
+        """
+        self.shown += 1
+        self.last = text
+
+
+@pytest.fixture
+def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
+    """ Catch the message a failed step shows, rather than opening a window nobody can close.
+
+    Returns:
+        Reported: The stand-in, holding what was said.
+    """
+    stand_in = Reported()
+    monkeypatch.setattr(QMessageBox, 'critical', stand_in)
+    return stand_in
+
+
+FAILURES = [
+    pytest.param('_on_clustering_failed', 'cluster the images', id='clustering'),
+    pytest.param('_on_prototypes_failed', 'find the prototype images', id='prototypes'),
+    pytest.param('_on_outliers_failed', 'detect the outlier images', id='outliers'),
+]
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_is_reported(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    """Nothing else marks the failure: the buttons stay open and the table keeps its last contents."""
+    getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
+
+    assert reported.shown == 1
+    assert attempted in reported.last
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_says_what_went_wrong(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
+
+    assert 'n_samples=3 while n_clusters=8' in reported.last
+
+
+@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
+def test_a_failed_step_leaves_the_buttons_open(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+    """These steps never close their buttons, so a failure has nothing to reopen."""
+    getattr(panel, handler)(ValueError('nope'))
+
+    assert all(button.isEnabled() for button in buttons(panel))
+
+
+# ----------------------------------------------------------------------------
+# The dock area the images table is shown in
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def docked_panel(phenome, viewer, in_main_window) -> AnalysisPanel:
+    """ A panel of its own, inside a main window, which is what the way back needs.
+
+    Built here rather than taken off the widget, which the `panel` fixture hands over already
+    owned by a widget of its own.
+    """
+    return in_main_window(lambda parent: AnalysisPanel(phenome, ImageViewer(viewer), parent))
+
+
+def test_the_images_table_is_shown_in_a_dock_area(docked_panel: AnalysisPanel) -> None:
+    area = docked_panel._images_area
+
+    assert area.dock.widget() is docked_panel._images_table.native
+    assert area.dockWidgetArea(area.dock) == Qt.DockWidgetArea.TopDockWidgetArea
+
+
+def test_popping_the_images_table_out_and_closing_it_brings_it_back(
+    docked_panel: AnalysisPanel, qtbot
+) -> None:
+    """The dock is what puts it back; this is the group box holding up its end, slot and table."""
+    area = docked_panel._images_area
+    group_layout = area.parentWidget().layout()
+    slot = group_layout.indexOf(area)
+
+    area.dock.setFloating(True)
+    area.dock.close()
+
+    qtbot.waitUntil(lambda: not area.dock.isFloating())
+    assert area.dockWidgetArea(area.dock) == Qt.DockWidgetArea.TopDockWidgetArea
+    assert group_layout.indexOf(area) == slot
+    assert area.dock.widget() is docked_panel._images_table.native
+    assert not area.dock.isHidden()
+
+
+def test_the_two_tables_go_back_to_their_own_panels(docked_panel: AnalysisPanel, phenome, viewer,
+                                                    in_main_window, qtbot) -> None:
+    """One table popped out must not land in the other's slot, each area owning its own dock."""
+    loading_panel = in_main_window(lambda parent: LoadingPanel(phenome, ImageViewer(viewer), parent))
+    images, metadata = docked_panel._images_area, loading_panel._table_area
+
+    images.dock.setFloating(True)
+    metadata.dock.setFloating(True)
+    images.dock.close()
+    metadata.dock.close()
+
+    qtbot.waitUntil(lambda: not images.dock.isFloating() and not metadata.dock.isFloating())
+    assert images.dock.parentWidget() is images
+    assert metadata.dock.parentWidget() is metadata
+    assert images.dock.widget() is docked_panel._images_table.native
+    assert metadata.dock.widget() is loading_panel._metadata_table.native

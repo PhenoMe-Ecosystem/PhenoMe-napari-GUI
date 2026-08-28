@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
     QHBoxLayout,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -21,6 +22,7 @@ from .prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
+from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
 
@@ -106,10 +108,12 @@ class AnalysisPanel(QWidget):
         self._outlier_button.clicked.connect(self._on_outlier_clicked)
         images_layout.addWidget(self._outlier_button)
 
-        # Data table to view the retrieved images, one image per row. Holds the frame of whichever step
-        # ran last, kept alongside it so the selection can be resolved back to a full row.
+        # Data table to view the retrieved images, one image per row, in a dock area it can be popped
+        # out of and back into. Holds the frame of whichever step ran last, kept alongside it so the
+        # selection can be resolved back to a full row.
         self._images_df = None
         self._images_group_column = None
+        self._images_area = TableDockArea('Images table', images_group)
         self._images_table = create_widget(
             label='Images Table', widget_type='Table', options={'value': None}
         )
@@ -117,7 +121,8 @@ class AnalysisPanel(QWidget):
         self._images_table.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._images_table.native.selectionModel().selectionChanged.connect(self._on_image_table_selection)
 
-        images_layout.addWidget(self._images_table.native, 1)
+        self._images_area.setWidget(self._images_table.native)
+        images_layout.addWidget(self._images_area, 1)
 
         # Explorer button, kept out of both groups: it opens a window of its own rather than belonging
         # to the clustering or the retrieval step. Opening it is left to whoever owns the window.
@@ -193,6 +198,7 @@ class AnalysisPanel(QWidget):
         logger.info("Compute Clustering clicked, with parameters %s", self._phenome.params.clustering)
         worker = self._compute_clustering_worker()
         worker.returned.connect(self._on_finish_clustering)
+        worker.errored.connect(self._on_clustering_failed)
         worker.start()
 
     @thread_worker
@@ -226,6 +232,7 @@ class AnalysisPanel(QWidget):
         logger.info("View Prototype Images confirmed, with parameters %s", self._phenome.params.prototypes)
         worker = self._prototypes_worker()
         worker.returned.connect(self._on_finish_prototypes)
+        worker.errored.connect(self._on_prototypes_failed)
         worker.start()
 
     @thread_worker
@@ -257,6 +264,7 @@ class AnalysisPanel(QWidget):
         logger.info("View Outlier Images confirmed, with parameters %s", self._phenome.params.outliers)
         worker = self._outliers_worker()
         worker.returned.connect(self._on_finish_outliers)
+        worker.errored.connect(self._on_outliers_failed)
         worker.start()
 
     @thread_worker
@@ -269,6 +277,45 @@ class AnalysisPanel(QWidget):
         outliers_df = self._phenome.outliers_df
         logger.info("Found %d outlier images.", 0 if outliers_df is None else len(outliers_df))
         self._update_images_table(outliers_df, self._phenome.params.outliers.group_by)
+
+    def _on_clustering_failed(self, error: Exception) -> None:
+        """ Report a clustering that raised.
+
+        Args:
+            error (Exception): The exception the clustering raised, as the worker caught it.
+        """
+        self._report_failure('cluster the images', error)
+
+    def _on_prototypes_failed(self, error: Exception) -> None:
+        """ Report a prototype search that raised.
+
+        Args:
+            error (Exception): The exception the search raised, as the worker caught it.
+        """
+        self._report_failure('find the prototype images', error)
+
+    def _on_outliers_failed(self, error: Exception) -> None:
+        """ Report an outlier detection that raised.
+
+        Args:
+            error (Exception): The exception the detection raised, as the worker caught it.
+        """
+        self._report_failure('detect the outlier images', error)
+
+    def _report_failure(self, attempted: str, error: Exception) -> None:
+        """ Say that a step raised, the worker having swallowed the exception into a signal.
+
+        None of these steps close their buttons while they run, so a raise nobody listens for leaves
+        the tab exactly as it was: the table still shows whatever the last step that worked put there,
+        and nothing says the button did anything at all. Only the message is missing, so only the
+        message is given here.
+
+        Args:
+            attempted (str): What was being attempted, read into the message.
+            error (Exception): The exception the step raised, as the worker caught it.
+        """
+        logger.error('Could not %s: %s', attempted, error)
+        QMessageBox.critical(self, 'Analysis failed', f'Could not {attempted}.\n\n{error}')
 
     def _update_images_table(self, images_df: pd.DataFrame | None, group_by: str | None) -> None:
         """ Show the images retrieved by the prototype or outlier step, one image per row.
