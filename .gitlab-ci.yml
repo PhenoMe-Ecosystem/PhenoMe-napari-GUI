@@ -28,10 +28,8 @@ version-bump:
   script:
     - git fetch --depth=1 origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
 
-    # Read the base pyproject.toml as a plain file: `uv version` errors out on a
-    # dynamic version, which the target branch uses until the first hand-bumped
-    # version lands. An empty BASE means "no static version there"; malformed
-    # TOML still exits non-zero and fails the job.
+    # Current pyproject on main has no version; it uses dynamic: ["version"].
+    # `uv version` breaks in that case, so we need to check if there is a dynamic version in pyproject.
     - |
       BASE=$(git show FETCH_HEAD:pyproject.toml | python3 -c '
       import sys, tomllib
