@@ -3630,6 +3630,7 @@ provides-extras = ["full", "dev"]
 
 [[package]]
 name = "phenome-gui"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "colorcet" },

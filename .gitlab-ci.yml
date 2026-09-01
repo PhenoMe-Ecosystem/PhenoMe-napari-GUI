@@ -1,0 +1,111 @@
+# Version is bumped by hand with:
+#   uv version --bump patch
+#   uv version --bump minor
+#   uv version --bump major
+#
+# Commit pyproject.toml.
+#
+#   merge request -> verify that the version was increased
+#   push to main -> create new release
+
+default:
+  image: ghcr.io/astral-sh/uv:python3.14-trixie
+
+variables:
+  PACKAGE_NAME: phenome-gui
+
+stages:
+  - check
+  - release
+
+
+version-bump:
+  stage: check
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+  script:
+    - git fetch --depth=1 origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+
+    # Current pyproject on main has no version; it uses dynamic: ["version"].
+    # `uv version` breaks in that case, so we need to check if there is a dynamic version in pyproject.
+    - |
+      BASE=$(git show FETCH_HEAD:pyproject.toml | python3 -c '
+      import sys, tomllib
+      project = tomllib.load(sys.stdin.buffer).get("project", {})
+      print("" if "version" in project.get("dynamic", []) else project.get("version", ""))
+      ')
+
+    - CURRENT=$(uv version --short)
+
+    - |
+      if [ -z "$BASE" ]; then
+        echo "Target branch $CI_MERGE_REQUEST_TARGET_BRANCH_NAME declares no static"
+        echo "version (still dynamic), so there is nothing to compare against."
+        echo "  current: $CURRENT"
+        exit 0
+      fi
+
+    - |
+      if [ "$CURRENT" = "$BASE" ] || \
+         [ "$(printf '%s\n%s\n' "$BASE" "$CURRENT" | sort -V | head -1)" != "$BASE" ]; then
+        echo "Version was not bumped:"
+        echo "  base:    $BASE"
+        echo "  current: $CURRENT"
+        echo
+        echo "Run: uv version --bump patch"
+        echo "and commit pyproject.toml"
+        exit 1
+      fi
+
+    - 'echo "Version bumped: $BASE -> $CURRENT"'
+
+
+# Shared by the two jobs below. They must stay in lockstep: `release` needs
+# `release-version`, so a pipeline containing one but not the other fails to
+# be created at all.
+.release-rules: &release-rules
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    changes:
+      - pyproject.toml
+
+
+# The version has to be read on the uv image and handed over as a dotenv
+# report: the `release` job below runs on the glab image, which has no uv, and
+# the `release:` keyword is expanded by the runner after the script exits, so a
+# shell variable set in that job's own script would never reach it.
+release-version:
+  stage: check
+
+  rules: *release-rules
+
+  script:
+    - VERSION=$(uv version --short)
+    - echo "VERSION=$VERSION" > version.env
+    - 'echo "Releasing version: $VERSION"'
+
+  artifacts:
+    reports:
+      dotenv: version.env
+    expire_in: 1 week
+
+
+release:
+  stage: release
+
+  image: registry.gitlab.com/gitlab-org/cli:latest
+
+  needs:
+    - job: release-version
+      artifacts: true
+
+  rules: *release-rules
+
+  script:
+    - echo "Creating release v$VERSION"
+
+  release:
+    tag_name: "v$VERSION"
+    name: "v$VERSION"
+    description: "Release v$VERSION"

@@ -1,6 +1,6 @@
 [project]
 name = "phenome-gui"
-dynamic = ["version"]
+version = "0.1.0"
 description = "GUI integration of the PhenoMe phenotyping framework"
 readme = "README.md"
 license = "MIT"
@@ -76,7 +76,7 @@ phenome = { workspace = true, editable = true }
 stedfm = { git = "https://github.com/FLClab/STED-FM.git" }
 
 [build-system]
-requires = ["setuptools>=77.0.3", "setuptools_scm"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -87,10 +87,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml"]
-
-[tool.setuptools_scm]
-write_to = "src/phenome_gui/_version.py"
-fallback_version = "0.0.1+nogit"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
