@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
 
 from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
-from ..utils.params import MAX_WORKERS, PRESET_CHOICES
+from ..utils.params import CHANNEL_MODE_CHOICES, MAX_WORKERS, PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
 
@@ -356,16 +356,19 @@ class ProcessingPanel(QWidget):
         parameters every time it opens, so the values of a cancelled edit are never kept nor shown again.
         The parameters are only written back when the form is confirmed.
 
-        For now, the advanced parameters include the batch size and the number of loader workers.
+        For now, the advanced parameters include the channel mode, the batch size and the number of
+        loader workers.
         TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
         """
         if self._advanced_parameters_dialog is None:
             self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
 
+        self._channel_mode_combo.setCurrentText(self._phenome.params.process.channel_mode)
         self._batch_size_spinbox.setValue(self._phenome.params.process.batch_size)
         self._num_workers_spinbox.setValue(self._phenome.params.process.num_workers)
 
         if self._advanced_parameters_dialog.exec_():
+            self._phenome.params.process.channel_mode = self._channel_mode_combo.currentText()
             self._phenome.params.process.batch_size = self._batch_size_spinbox.value()
             self._phenome.params.process.num_workers = self._num_workers_spinbox.value()
 
@@ -380,9 +383,20 @@ class ProcessingPanel(QWidget):
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Processing parameters")
-        dialog.setFixedSize(300, 130)
+        dialog.setFixedSize(300, 160)
 
         form_layout = QFormLayout()
+
+        # What a multi-channel image is embedded as. First of the three, being the only one that
+        # decides what is embedded rather than how quickly: the other two leave the same embeddings.
+        self._channel_mode_combo = QComboBox()
+        self._channel_mode_combo.addItems(CHANNEL_MODE_CHOICES)
+        self._channel_mode_combo.setToolTip(
+            "How a multi-channel image reaches the model. 'split' embeds each channel on its own and "
+            "joins the results; 'combined' feeds the channels as one image. A checkpoint filled under "
+            "one is not resumed under the other."
+        )
+        form_layout.addRow("Channel mode", self._channel_mode_combo)
 
         # Number of images PhenoMe feeds to the model at once
         self._batch_size_spinbox = QSpinBox()

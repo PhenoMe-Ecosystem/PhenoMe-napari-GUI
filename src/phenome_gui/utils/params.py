@@ -20,7 +20,7 @@ OutlierMethod = Literal['z-score', 'iqr']
 PropertiesPreset = Literal['Basic', 'Standard', 'Complete', 'Shape', 'Intensity']
 Device = Literal['cpu', 'cuda']
 EmbeddingMethod = Literal['t-SNE', 'PCA', 'UMAP']
-Dims = Literal['2D', '3D']
+ChannelMode = Literal['split', 'combined']
 
 # Where the embeddings and the properties are written when no other file has been chosen. Named
 # rather than written into the field alone, as loading another dataset puts the path back to it: a
@@ -36,7 +36,7 @@ SOURCE_CHOICES = list(get_args(Source))
 METHOD_CHOICES = list(get_args(OutlierMethod))
 PRESET_CHOICES = list(get_args(PropertiesPreset))
 EMBEDDING_METHOD_CHOICES = list(get_args(EmbeddingMethod))
-DIMS_CHOICES = list(get_args(Dims))
+CHANNEL_MODE_CHOICES = list(get_args(ChannelMode))
 
 
 class ParamsBase(BaseModel):
@@ -57,9 +57,9 @@ class PathParams(ParamsBase):
     into a Path.
     """
 
-    images: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_images')
-    masks: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/Ecoli_masks')
-    metadata: Path = Path('~/datasets/toy_dataset/Ecoli_toy_example/metadata.csv')
+    images: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
+    masks: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_masks')
+    metadata: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/metadata.csv')
     template: str = '.../(drug_name)/(time)/(filename).*'
     checkpoint: Path = DEFAULT_CHECKPOINT
 
@@ -69,6 +69,12 @@ class ProcessParams(ParamsBase):
 
     `model` holds the user-friendly name shown in the GUI; `PhenoMeInterface.load_model` maps it onto
     the real checkpoint name through MODEL_OPTIONS.
+
+    `channel_mode` decides what a multi-channel image is embedded as. 'split' embeds each channel on
+    its own and joins the results, so a channel keeps its own place in the embedding; 'combined' feeds
+    the channels as one image, so what the model reads is the channels together. The two answer
+    different questions of the same images and are not comparable, which is why a checkpoint filled
+    under one is not resumed under the other.
 
     `num_workers` is the number of processes the images are read in, and defaults to none of them:
     PhenoMe reads them in the thread the run is made on when there are no workers, and every worker is
@@ -80,6 +86,7 @@ class ProcessParams(ParamsBase):
 
     model: str = 'DinoV2 - Small'
     device: Device = 'cpu'
+    channel_mode: ChannelMode = 'split'
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
 
@@ -150,7 +157,6 @@ class ExplorerParams(ParamsBase):
     """
 
     method: EmbeddingMethod = 't-SNE'
-    dims: Dims = '2D'
     source: Source = 'embeddings'
     color_by: str | None = None
     filter: dict[str, list[Any]] | None = None

@@ -6,16 +6,17 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.params import (
+    CHANNEL_MODE_CHOICES,
     DEFAULT_CHECKPOINT,
-    DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     MAX_WORKERS,
     Params,
 )
 from phenome_gui.utils.phenome_interface import (
-    DIMS_COMPONENTS,
     DR_METHODS,
+    PROJECTION_COMPONENTS,
     PhenoMeInterface,
 )
 
@@ -136,6 +137,97 @@ def test_the_batch_size_still_reaches_phenome(phenome: PhenoMeInterface, extract
     phenome.process_images()
 
     assert extraction['batch_size'] == 64
+
+
+@pytest.mark.parametrize('mode', CHANNEL_MODE_CHOICES)
+def test_the_channel_mode_reaches_phenome(phenome: PhenoMeInterface, extraction: dict, mode: str) -> None:
+    """A mode picked in the form and never handed down would leave every run on PhenoMe's default."""
+    phenome.params.process.channel_mode = mode
+
+    phenome.process_images()
+
+    assert extraction['channel_mode'] == mode
+
+
+def test_the_form_has_the_last_word_on_the_channel_mode(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """A model may name the same argument, and what was picked is what runs - handed down once."""
+    phenome.process_options = {'channel_mode': 'split', 'force_rgb': False}
+    phenome.params.process.channel_mode = 'combined'
+
+    phenome.process_images()
+
+    assert extraction['channel_mode'] == 'combined'
+
+    # The rest of the model's arguments are still the model's, the form settling only its own
+    assert extraction['force_rgb'] is False
+
+
+def test_a_model_keeps_the_arguments_the_form_does_not_set(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    phenome.process_options = {'force_rgb': False}
+
+    phenome.process_images()
+
+    assert extraction['force_rgb'] is False
+    assert extraction['channel_mode'] == 'split'
+
+
+# ----------------------------------------------------------------------------
+# What a checkpoint is compared against, which has to be what the run really uses
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('mode', CHANNEL_MODE_CHOICES)
+def test_the_checkpoint_is_compared_against_the_picked_channel_mode(
+    phenome: PhenoMeInterface, mode: str
+) -> None:
+    """The first key PhenoMe refuses to resume across, so a run under the other one has to be caught."""
+    phenome.params.process.channel_mode = mode
+
+    assert phenome.processing_params()['channel_mode'] == mode
+
+
+def test_the_defaults_fill_in_what_neither_the_form_nor_the_model_sets(
+    phenome: PhenoMeInterface
+) -> None:
+    """PhenoMe fills these in itself, so a checkpoint is compared against them rather than against nothing."""
+    params = phenome.processing_params()
+
+    assert params['resize_size'] == 224
+    assert params['force_rgb'] is True
+
+
+def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """Comparing a checkpoint against arguments the run does not use is comparing against nothing."""
+    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.channel_mode = 'combined'
+    compared = phenome.processing_params()
+
+    phenome.process_images()
+
+    assert all(compared[key] == extraction[key] for key in phenome.process_arguments())
+
+
+def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What makes the overwrite prompt fire on a mode change rather than resuming the other run's embeddings."""
+    read_with = {}
+
+    def _capture(path, processing_params, image_paths):
+        read_with.update(processing_params)
+
+    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', _capture)
+    phenome.params.process.channel_mode = 'combined'
+
+    phenome.inspect_checkpoint()
+
+    assert read_with['channel_mode'] == 'combined'
 
 
 # ----------------------------------------------------------------------------
@@ -605,15 +697,14 @@ def test_results_are_stored_and_returned(
 # ----------------------------------------------------------------------------
 
 
-def coordinates(n_components: int = 2) -> pd.DataFrame:
-    """ A frame shaped like the one the reduction returns. """
-    return pd.DataFrame({f'Component {i + 1}': [0.0, 1.0] for i in range(n_components)})
+def coordinates() -> pd.DataFrame:
+    """ A frame shaped like the one the reduction returns, two components as the canvas draws. """
+    return pd.DataFrame({f'Component {i + 1}': [0.0, 1.0] for i in range(PROJECTION_COMPONENTS)})
 
 
 def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, reduction) -> None:
-    stand_in = reduction(coordinates(3))
+    stand_in = reduction(coordinates())
     loaded.params.explorer.method = 't-SNE'
-    loaded.params.explorer.dims = '3D'
     loaded.params.explorer.source = 'properties'
 
     loaded.compute_projection()
@@ -621,7 +712,7 @@ def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, redu
     assert stand_in.pipelines[-1] is loaded.pheno
     assert stand_in.last == {
         'method': 'tsne',
-        'n_components': 3,
+        'n_components': PROJECTION_COMPONENTS,
         'source': 'properties',
         'filters': None,
         'exclude': None,
@@ -666,22 +757,20 @@ def test_every_method_goes_down_under_its_phenome_name(
     assert stand_in.last['method'] == phenome_name
 
 
-@pytest.mark.parametrize(('dims', 'n_components'), [('2D', 2), ('3D', 3)])
-def test_the_canvas_is_read_as_a_number_of_components(
-    loaded: PhenoMeInterface, reduction, dims: str, n_components: int
+def test_the_projection_always_asks_for_the_two_the_canvas_draws(
+    loaded: PhenoMeInterface, reduction
 ) -> None:
-    stand_in = reduction(coordinates(n_components))
-    loaded.params.explorer.dims = dims
+    """The canvas draws a flat cloud, so the count is fixed rather than picked in the explorer."""
+    stand_in = reduction(coordinates())
 
     loaded.compute_projection()
 
-    assert stand_in.last['n_components'] == n_components
+    assert stand_in.last['n_components'] == 2
 
 
 def test_the_translations_cover_every_choice() -> None:
     """A choice added to the parameter model without a translation would raise on the first compute."""
     assert set(DR_METHODS) == set(EMBEDDING_METHOD_CHOICES)
-    assert set(DIMS_COMPONENTS) == set(DIMS_CHOICES)
 
 
 def test_the_projection_is_stored_and_returned(loaded: PhenoMeInterface, reduction) -> None:

@@ -31,15 +31,18 @@ class StubCheckpoint:
         self._mismatches = mismatches or []
         self._paths = paths or []
         self.closed = False
+        self.validated_against = None
 
     def validate_processing_params(self, current_params: dict) -> list:
         """ Return the parameters this checkpoint disagrees with, as PhenoMe's comparator does.
 
         Args:
-            current_params (dict): The parameters of the run, which the stub does not read.
+            current_params (dict): The parameters of the run. Kept rather than read, the comparison
+                being PhenoMe's: what matters here is that the run's own arguments reach it.
         Returns:
             list: The mismatches it was built with.
         """
+        self.validated_against = current_params
         return self._mismatches
 
     @property
@@ -133,6 +136,25 @@ def test_differing_parameters_are_a_model_mismatch(existing) -> None:
     result = inspect_checkpoint(stub.path, PARAMS, ['/data/a.tif'])
 
     assert result.reason == MODEL_MISMATCH
+
+
+def test_a_differing_channel_mode_is_a_mismatch(existing) -> None:
+    """The first of the keys PhenoMe compares, and the one the processing form can now change."""
+    stub = existing(mismatches=[('channel_mode', 'split', 'combined')], paths=['/data/a.tif'])
+
+    result = inspect_checkpoint(stub.path, PARAMS, ['/data/a.tif'])
+
+    assert result.reason == MODEL_MISMATCH
+
+
+def test_the_run_s_own_arguments_are_what_the_checkpoint_is_compared_against(existing) -> None:
+    """PhenoMe makes the comparison, so what is handed to it is the whole of this module's part in it."""
+    stub = existing(paths=['/data/a.tif'])
+    params = {**PARAMS, 'channel_mode': 'combined'}
+
+    inspect_checkpoint(stub.path, params, ['/data/a.tif'])
+
+    assert stub.validated_against == params
 
 
 def test_the_model_mismatch_adds_no_detail_of_its_own(existing) -> None:

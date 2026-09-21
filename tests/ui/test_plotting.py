@@ -4,6 +4,8 @@ The canvas is handed a projection and the name of a column to colour it by, and 
 so the frames here are written by hand rather than computed.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
@@ -1427,3 +1429,81 @@ def test_clicking_a_cleared_canvas_announces_nothing(hovered: ExplorerPlot) -> N
     hovered._on_mouse_clicked(click)
 
     assert not click.accepted
+
+
+# ----------------------------------------------------------------------------
+# Writing the plot out as a picture
+# ----------------------------------------------------------------------------
+
+# The first bytes of a PNG file, which is what says the image exporter wrote it
+PNG_MAGIC = b'\x89PNG'
+
+
+@pytest.fixture
+def drawn(plot: ExplorerPlot) -> ExplorerPlot:
+    """ A canvas with a projection drawn on it, there being something to write out. """
+    plot.plot_projection(projection(['ctrl', 'drugA', 'drugA']), 'drug_name')
+    return plot
+
+
+def test_the_plot_is_written_as_an_svg(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    written = tmp_path / 'plot.svg'
+
+    drawn.export_plot(written, 'svg')
+
+    assert '<svg' in written.read_text()
+
+
+def test_the_plot_is_written_as_a_png(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    written = tmp_path / 'plot.png'
+
+    drawn.export_plot(written, 'png')
+
+    assert written.read_bytes().startswith(PNG_MAGIC)
+
+
+def test_the_groups_reach_the_written_plot(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    """The legend is parented to the view box, so it goes down with the points rather than being lost."""
+    written = tmp_path / 'plot.svg'
+
+    drawn.export_plot(written, 'svg')
+
+    assert 'ctrl' in written.read_text()
+
+
+@pytest.mark.parametrize('extension', ['SVG', '.svg', '.SVG'], ids=['upper', 'dotted', 'both'])
+def test_the_file_type_is_read_however_it_is_spelled(
+    drawn: ExplorerPlot, tmp_path: Path, extension: str
+) -> None:
+    """A name's own suffix can be handed over as it was read off it, dot and all."""
+    written = tmp_path / 'plot.svg'
+
+    drawn.export_plot(written, extension)
+
+    assert '<svg' in written.read_text()
+
+
+def test_a_path_is_taken_as_text_or_as_a_path(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    written = tmp_path / 'plot.png'
+
+    drawn.export_plot(str(written), 'png')
+
+    assert written.read_bytes().startswith(PNG_MAGIC)
+
+
+def test_a_file_type_the_canvas_cannot_write_is_refused(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    written = tmp_path / 'plot.jpg'
+
+    with pytest.raises(ValueError, match='jpg'):
+        drawn.export_plot(written, 'jpg')
+
+    assert not written.exists()
+
+
+def test_an_empty_canvas_is_still_written(plot: ExplorerPlot, tmp_path: Path) -> None:
+    """Nothing gates the canvas itself: the window is what waits for a projection to be drawn."""
+    written = tmp_path / 'plot.png'
+
+    plot.export_plot(written, 'png')
+
+    assert written.read_bytes().startswith(PNG_MAGIC)

@@ -7,7 +7,7 @@ is a sentinel object, since all the panel ever asks is whether one is present.
 from pathlib import Path
 
 import pytest
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QFormLayout, QMessageBox
 
 from phenome_gui.ui.processing_panel import ProcessingPanel
 from phenome_gui.utils.checkpoint import (
@@ -15,7 +15,11 @@ from phenome_gui.utils.checkpoint import (
     MODEL_MISMATCH,
     CheckpointMismatch,
 )
-from phenome_gui.utils.params import DEFAULT_CHECKPOINT, MAX_WORKERS
+from phenome_gui.utils.params import (
+    CHANNEL_MODE_CHOICES,
+    DEFAULT_CHECKPOINT,
+    MAX_WORKERS,
+)
 from phenome_gui.utils.progress import TaskStopped
 
 
@@ -316,7 +320,11 @@ def test_the_checkpoint_path_writes_the_parameter(panel: ProcessingPanel, tmp_pa
 
 
 def drive_advanced_form(
-    panel: ProcessingPanel, batch_size: int, accepted: bool, num_workers: int | None = None
+    panel: ProcessingPanel,
+    batch_size: int,
+    accepted: bool,
+    num_workers: int | None = None,
+    channel_mode: str | None = None,
 ) -> None:
     """ Open the advanced form with its exec_ replaced, so it fills the fields and settles at once.
 
@@ -328,6 +336,7 @@ def drive_advanced_form(
         batch_size (int): The batch size to type into the form.
         accepted (bool): Whether the form is confirmed or cancelled.
         num_workers (int | None): The worker count to type in, or None to leave the field as loaded.
+        channel_mode (str | None): The channel mode to pick, or None to leave the field as loaded.
     """
     panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
 
@@ -335,6 +344,8 @@ def drive_advanced_form(
         panel._batch_size_spinbox.setValue(batch_size)
         if num_workers is not None:
             panel._num_workers_spinbox.setValue(num_workers)
+        if channel_mode is not None:
+            panel._channel_mode_combo.setCurrentText(channel_mode)
         return int(accepted)
 
     panel._advanced_parameters_dialog.exec_ = _exec
@@ -389,6 +400,56 @@ def test_the_form_shows_the_worker_count_it_would_run_under(panel: ProcessingPan
     drive_advanced_form(panel, 32, accepted=False)
 
     assert panel._num_workers_spinbox.value() == 6
+
+
+# ----------------------------------------------------------------------------
+# The channel mode, which decides what is embedded rather than how quickly
+# ----------------------------------------------------------------------------
+
+
+def test_the_channel_mode_offers_the_values_the_model_accepts(panel: ProcessingPanel) -> None:
+    """Offering anything else would raise on assignment, the field being typed as a literal."""
+    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+
+    combo = panel._channel_mode_combo
+    assert [combo.itemText(row) for row in range(combo.count())] == CHANNEL_MODE_CHOICES
+
+
+def test_the_channel_mode_is_the_first_thing_asked(panel: ProcessingPanel) -> None:
+    """It decides what is embedded, where the fields under it only decide how quickly."""
+    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+
+    form = panel._advanced_parameters_dialog.layout()
+    assert form.itemAt(0, QFormLayout.ItemRole.FieldRole).widget() is panel._channel_mode_combo
+    assert form.itemAt(0, QFormLayout.ItemRole.LabelRole).widget().text() == 'Channel mode'
+
+
+def test_the_channel_mode_starts_split(panel: ProcessingPanel) -> None:
+    """PhenoMe's own default, a channel keeping its own place in the embedding."""
+    assert panel._phenome.params.process.channel_mode == 'split'
+
+
+def test_the_advanced_form_applies_the_channel_mode(panel: ProcessingPanel) -> None:
+    drive_advanced_form(panel, 32, accepted=True, channel_mode='combined')
+
+    assert panel._phenome.params.process.channel_mode == 'combined'
+
+
+def test_the_advanced_form_discards_a_cancelled_channel_mode(panel: ProcessingPanel) -> None:
+    before = panel._phenome.params.process.channel_mode
+
+    drive_advanced_form(panel, 32, accepted=False, channel_mode='combined')
+
+    assert panel._phenome.params.process.channel_mode == before
+
+
+def test_the_form_shows_the_channel_mode_it_would_run_under(panel: ProcessingPanel) -> None:
+    """The fields are reloaded on every open, so the combo opens on the stored mode rather than the first."""
+    panel._phenome.params.process.channel_mode = 'combined'
+
+    drive_advanced_form(panel, 32, accepted=False)
+
+    assert panel._channel_mode_combo.currentText() == 'combined'
 
 
 # ----------------------------------------------------------------------------

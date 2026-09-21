@@ -17,8 +17,8 @@ logger = getLogger(__name__)
 # What PhenoMe.process_images() defaults the arguments the GUI never sets to. A checkpoint is validated
 # against these alongside the ones a model brings, so they are written out here rather than left
 # implicit: reading a checkpoint before a run means comparing it against what the run will really use.
+# The channel mode is not among them, being the form's to set.
 PROCESS_DEFAULTS = {
-    'channel_mode': 'split',
     'channels': None,
     'resize_size': 224,
     'pad_size': None,
@@ -30,8 +30,8 @@ PROCESS_DEFAULTS = {
 # Keyed by the EmbeddingMethod choices, so every method the form can offer has a translation.
 DR_METHODS = {'t-SNE': 'tsne', 'PCA': 'pca', 'UMAP': 'umap'}
 
-# The GUI picks a canvas to draw on, which PhenoMe reads as a number of components to reduce to.
-DIMS_COMPONENTS = {'2D': 2, '3D': 3}
+# The canvas draws a flat cloud, so the images are always reduced to the two components it plots.
+PROJECTION_COMPONENTS = 2
 
 # Columns naming one image rather than describing it, which colour every point differently and say
 # nothing by it. Dropped only from a dataset large enough for their uniqueness to mean something, the
@@ -209,17 +209,31 @@ class PhenoMeInterface:
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
+    def process_arguments(self) -> dict:
+        """ The arguments a run is made with: the model's own, under what the form settles.
+
+        The form has the last word, so what was picked in it is what runs. Gathered here rather than
+        spelled out at the call below, which is also what keeps a model naming the same argument from
+        being handed down twice.
+
+        Returns:
+            dict: The arguments handed to PhenoMe on top of the ones the run itself names.
+        """
+        return {**(self.process_options or {}), 'channel_mode': self.params.process.channel_mode}
+
     def processing_params(self) -> dict:
         """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.
 
-        The model's own arguments over PhenoMe's defaults, which is how process_images() below hands
-        them down: what the form does not set, PhenoMe fills in itself. Read before a run to compare a
-        checkpoint against it, so the comparison is made against what the run will really use.
+        The arguments the run is really made with over PhenoMe's defaults, which is how
+        process_images() below hands them down: what neither the form nor the model sets, PhenoMe
+        fills in itself. Read before a run to compare a checkpoint against it, so the comparison is
+        made against what the run will really use - the channel mode included, which is the first
+        thing PhenoMe refuses to resume a checkpoint across.
 
         Returns:
             dict: The processing parameters, whether or not a model has been loaded.
         """
-        return {**PROCESS_DEFAULTS, **(self.process_options or {})}
+        return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
     def inspect_checkpoint(self) -> CheckpointMismatch | None:
         """ Read the checkpoint an embedding run would be written to, before the run is started.
@@ -241,8 +255,6 @@ class PhenoMeInterface:
 
         Uses the params to feed arguments.
 
-        TODO: Include the remaining advanced parameters from the form.
-
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
             calling thread, so a caller running this in a worker thread must not touch widgets in it.
@@ -253,15 +265,16 @@ class PhenoMeInterface:
         checkpoint_path = self.params.paths.checkpoint
 
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
-        # under are what its embeddings can be read against, and they are the registry's rather than
-        # anything the form shows.
+        # under are what its embeddings can be read against, and they are the registry's and the
+        # form's rather than only what the form shows.
         num_workers = self.params.process.num_workers
+        arguments = self.process_arguments()
         logger.info(
             "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
             self.params.process.model,
             self.params.process.batch_size,
             f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
-            str(self.process_options) if self.process_options else 'with no arguments of its own'
+            str(arguments)
         )
 
         self.image_processing.process_images(
@@ -272,7 +285,7 @@ class PhenoMeInterface:
             num_workers=num_workers,
             custom_transformations=self.transforms,
             force_reprocess=force_reprocess,
-            **self.process_options
+            **arguments
         )
 
     @property
@@ -405,11 +418,11 @@ class PhenoMeInterface:
     def compute_projection(self) -> pd.DataFrame:
         """ Project the images down for the explorer plot. Stores the coordinates in self.projection_df.
 
-        Uses the params to feed arguments. Both the algorithm and the number of dimensions are named
-        for the GUI rather than for PhenoMe - the papers' spelling for the one, a kind of canvas for
-        the other - so both are translated on the way down. The filter and the exclusion go down as
-        they are, PhenoMe naming the first in the plural and reading an unset one and an empty one
-        the same way.
+        Uses the params to feed arguments. The algorithm is named for the GUI rather than for PhenoMe
+        - the papers' spelling rather than a plain key - so it is translated on the way down. The
+        number of components is not a parameter at all, the canvas drawing a flat cloud and nothing
+        else. The filter and the exclusion go down as they are, PhenoMe naming the first in the
+        plural and reading an unset one and an empty one the same way.
 
         Returns:
             pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None
@@ -419,7 +432,7 @@ class PhenoMeInterface:
 
         self.projection_df = self.phenome_analysis.run_dimensionality_reduction(
             method=DR_METHODS[explorer.method],
-            n_components=DIMS_COMPONENTS[explorer.dims],
+            n_components=PROJECTION_COMPONENTS,
             source=explorer.source,
             filters=explorer.filter,
             exclude=explorer.exclude

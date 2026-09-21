@@ -5,10 +5,12 @@ them by, and knows nothing about where either came from.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
+import pyqtgraph.exporters as exporters
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import QFont, QPainterPath, QPolygonF
@@ -108,6 +110,13 @@ LASSO_BRUSH_COLOUR = (255, 255, 0, 100)
 SELECTION_COLOUR = "#EEFF00"
 SELECTION_ALPHA = 110
 SELECTION_SIZE = MARKER_SIZE + 2
+
+# The file types the plot can be written as, each keyed by the extension it is written under. Named
+# here rather than picked apart in the writing, so a format added to the canvas is added in one place.
+EXPORT_FORMATS = {
+    'svg': exporters.SVGExporter,
+    'png': exporters.ImageExporter,
+}
 
 
 def is_continuous(values: pd.Series, name: str) -> bool:
@@ -455,8 +464,6 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             color_by (str): Metadata column or property the points are coloured by. Labels are drawn
                 as groups and measurements along a ramp. None, or a column the projection does not
                 carry, draws them as a single unnamed group.
-
-        TODO: 3D projections!
         """
         previous, selected = self._points, self._selected
         self._clear()
@@ -466,8 +473,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         components = [column for column in projection_df.columns if column.startswith(COMPONENT_PREFIX)]
 
-        # PhenoMe returns as many components as were asked for, where the canvas can only draw two of
-        # them. A 3D projection is left undrawn rather than shown as the flat slice it is not.
+        # The canvas draws a flat cloud and the projection is always computed with two components, so
+        # anything else is a frame this canvas did not ask for and cannot place: left undrawn rather
+        # than shown as the slice of itself the first two columns would make.
         if len(components) != 2:
             logger.info("A %d-dimensional projection cannot be drawn on this canvas.", len(components))
             return
@@ -1155,3 +1163,29 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         self._plot.addItem(series)
         return series
+
+    def export_plot(self, path: str | Path, extension: str) -> None:
+        """ Write the plot as it is currently drawn to a file.
+
+        What is written is the plot item rather than the canvas, which is the same picture: the
+        legend and the colorbar are parented to the view box, so both go down with the points, and
+        the background they are drawn on goes with them.
+
+        Args:
+            path (str | Path): Where the file is written, the caller having named it.
+            extension (str): The file type to write, 'svg' or 'png'. Read without its case or a
+                leading dot, so a name's own suffix can be handed straight over.
+        Raises:
+            ValueError: The extension names a file type the canvas cannot write.
+        """
+        key = extension.lower().lstrip('.')
+
+        if key not in EXPORT_FORMATS:
+            offered = ', '.join(f"'{name}'" for name in EXPORT_FORMATS)
+            raise ValueError(f"Unrecognized file type '{extension}'; must be one of {offered}.")
+
+        self.setBackground(None)
+        EXPORT_FORMATS[key](self._plot).export(str(path))
+        logger.info("Wrote the plot to '%s'.", path)
+        self.setBackground(SURFACE)
+

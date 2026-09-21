@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -28,7 +29,6 @@ from ..utils.image_viewer import ImageViewer
 # never be offered here. The sources are shared with the analysis forms, the feature spaces being
 # PhenoMe's rather than any one step's.
 from ..utils.params import (
-    DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     SOURCE_CHOICES,
 )
@@ -44,6 +44,15 @@ from .plotting import (
 from .selection_window import SelectionWindow
 
 logger = logging.getLogger("main_logger")
+
+# The file types the plot can be written as: how the save dialog names each one, and the extension
+# the canvas asks for it under. Kept as one mapping so the dialog's filters and their translation
+# cannot drift apart, and ordered, the first being the one the dialog opens on.
+GRAPH_FORMATS = {'SVG Files (*.svg)': 'svg', 'PNG Images (*.png)': 'png'}
+GRAPH_FILTERS = ';;'.join(GRAPH_FORMATS)
+
+# Name the save dialog opens on, its extension being the format it also opens on
+DEFAULT_GRAPH_NAME = 'phenome_plot.svg'
 
 
 class InteractiveExplorerWindow(QDialog):
@@ -119,16 +128,6 @@ class InteractiveExplorerWindow(QDialog):
         self._method_combo.currentTextChanged.connect(self._on_method_changed)
         method_row.addWidget(self._method_combo)
         embedding_layout.addLayout(method_row)
-
-        # Number of dimensions combo box
-        dims_row = QHBoxLayout()
-        dims_row.addWidget(QLabel("Dims:"))
-        self._dims_combo = QComboBox()
-        self._dims_combo.addItems(DIMS_CHOICES)
-        self._dims_combo.setCurrentText(self._phenome.params.explorer.dims)
-        self._dims_combo.currentTextChanged.connect(self._on_dims_changed)
-        dims_row.addWidget(self._dims_combo)
-        embedding_layout.addLayout(dims_row)
 
         # Feature space combo box, opened by refresh_choices() once the properties have been computed
         source_row = QHBoxLayout()
@@ -247,6 +246,13 @@ class InteractiveExplorerWindow(QDialog):
         controls_layout.addWidget(selection_group)
         controls_layout.addStretch(1)
 
+        # Writes the canvas out as a picture. Sits under the groups rather than in one of them, being
+        # about the whole plot rather than about any one step, and is closed by refresh_choices()
+        # until there is a projection drawn to write.
+        self._export_graph_button = QPushButton("Export graph...")
+        self._export_graph_button.clicked.connect(self._on_export_graph_clicked)
+        controls_layout.addWidget(self._export_graph_button)
+
         layout.addWidget(self._canvas, 1)
         layout.addLayout(controls_layout, 0)
         self.setLayout(layout)
@@ -313,7 +319,18 @@ class InteractiveExplorerWindow(QDialog):
         self._source_combo.setEnabled(has_properties)
         self._source_combo.setToolTip('' if has_properties else 'Please calculate properties first.')
 
+        self._refresh_export()
         self.refresh_highlight()
+
+    def _refresh_export(self) -> None:
+        """ Open the export once there is a projection drawn to write, and close it again when there is not.
+
+        The same wait the highlight group is held to, and for the same reason: what would be written
+        is whatever is on the canvas, which is nothing until a projection has been computed.
+        """
+        has_projection = self._phenome.projection_df is not None
+        self._export_graph_button.setEnabled(has_projection)
+        self._export_graph_button.setToolTip('' if has_projection else 'Please compute a projection first.')
 
     def refresh_highlight(self) -> None:
         """ Fill in the fields the points can be marked on, and the values of the chosen one.
@@ -454,13 +471,6 @@ class InteractiveExplorerWindow(QDialog):
         """
         self._phenome.params.explorer.method = self._method_combo.currentText()
 
-    def _on_dims_changed(self) -> None:
-        """ Update the number of dimensions parameter when the selection changes.
-
-        Changing it does not redraw the plot, the projection being computed by the Compute button.
-        """
-        self._phenome.params.explorer.dims = self._dims_combo.currentText()
-
     def _on_source_changed(self) -> None:
         """ Update the feature space parameter when the selection changes.
 
@@ -548,6 +558,9 @@ class InteractiveExplorerWindow(QDialog):
         self._selected_indices = []
         self._num_select_label.setText("0 points selected.")
         self._show_selection()
+
+        # There is now something drawn to write out, where there may not have been before
+        self._refresh_export()
 
         # The highlight controls read their values off the projection, so a new one has to reach
         # them. Refreshing the field is also what marks the new drawing, the highlight going with
@@ -720,3 +733,39 @@ class InteractiveExplorerWindow(QDialog):
         self._view_selection_dialog.show()
         self._view_selection_dialog.raise_()
         self._view_selection_dialog.activateWindow()
+
+    def _on_export_graph_clicked(self) -> None:
+        """ Write the drawn plot out as a picture, to a file named in a save dialog.
+
+        The format is the one picked in the dialog rather than the one the name is spelled with: the
+        filters are what the dialog offers the choice as, and the name is only a name. A dialog
+        closed without one writes nothing, the way the selection exports treat the same answer.
+
+        The canvas refuses a file type it cannot write, which a name typed over the filter can still
+        ask for. Reported rather than let go: this runs as a Qt slot, where an exception would leave
+        the window standing with nothing to say for itself.
+        """
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Exporting Graph",
+            DEFAULT_GRAPH_NAME,
+            GRAPH_FILTERS
+        )
+
+        if not file_path:
+            return
+
+        # The dialog hands back no filter when none was picked, leaving the name to say what was
+        # meant - which is also all a name typed with its own extension ever had to go on.
+        extension = GRAPH_FORMATS.get(selected_filter) or Path(file_path).suffix
+
+        # A name given without one is spelled out under the format it was saved as, rather than left
+        # as a file nothing will open. A name whose extension disagrees with the picked format is
+        # left as it was typed: the format is the dialog's to say, the name the user's.
+        if not Path(file_path).suffix:
+            file_path = f"{file_path}.{extension.lstrip('.')}"
+
+        try:
+            self._canvas.export_plot(file_path, extension)
+        except ValueError as error:
+            logger.error("Could not export the plot: %s", error)
