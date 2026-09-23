@@ -7,9 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from phenome_gui.utils import phenome_interface
+from phenome_gui.utils.checkpoint import (
+    MODEL_MISMATCH,
+    CheckpointMismatch,
+)
 from phenome_gui.utils.params import (
     CHANNEL_MODE_CHOICES,
-    DEFAULT_CHECKPOINT,
     EMBEDDING_METHOD_CHOICES,
     MAX_WORKERS,
     Params,
@@ -19,6 +22,8 @@ from phenome_gui.utils.phenome_interface import (
     PROJECTION_COMPONENTS,
     PhenoMeInterface,
 )
+
+from .conftest import CHECKPOINT_PROPERTIES
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -211,6 +216,132 @@ def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
     phenome.process_images()
 
     assert all(compared[key] == extraction[key] for key in phenome.process_arguments())
+
+
+@pytest.fixture
+def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook standing in for reading a checkpoint off disk.
+
+    Neither half is let near a real file: writing one means embeddings, which means a model, and what
+    is being checked is what the interface does with the two answers rather than PhenoMe's reading.
+
+    Returns:
+        Callable[..., dict]: Called as loading(properties=...), returning a record of what PhenoMe
+            was asked to load.
+    """
+    def _stub(properties: list[dict] | None = None) -> dict:
+        record = {'loaded': []}
+
+        def _load(path: str) -> None:
+            record['loaded'].append(path)
+            phenome.pheno.results.properties = properties or []
+
+        monkeypatch.setattr(phenome.image_processing, 'load_results', _load)
+        monkeypatch.setattr(
+            phenome.image_processing, 'get_properties', lambda: pd.DataFrame({'area': [1.0, 2.0]})
+        )
+        return record
+
+    return _stub
+
+
+def test_a_loaded_checkpoint_is_the_one_the_runs_are_written_to(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    processed(phenome, 6)
+    record = loading()
+    checkpoint = tmp_path / 'previous.hdf5'
+
+    phenome.load_checkpoint(checkpoint)
+
+    assert record['loaded'] == [str(checkpoint)]
+    assert phenome.params.paths.checkpoint == checkpoint
+
+
+def test_a_loaded_checkpoint_gives_up_its_properties(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    """The whole point of loading one: a dataset processed before is not processed again."""
+    processed(phenome, 6)
+    loading(properties=[{'area': 1.0}, {'area': 2.0}])
+
+    phenome.load_checkpoint(tmp_path / 'previous.hdf5')
+
+    assert phenome.properties_df is not None
+    assert phenome.has_properties
+
+
+def test_a_checkpoint_without_properties_leaves_none_behind(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    """Embeddings alone is the ordinary half-done run, and the properties step has to stay open."""
+    processed(phenome, 6)
+    loading(properties=[])
+
+    phenome.load_checkpoint(tmp_path / 'previous.hdf5')
+
+    assert phenome.properties_df is None
+
+
+def test_a_written_checkpoint_is_read_back_whole(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """Against a real file rather than a stand-in, which is the only thing that can say the stubs are honest.
+
+    Everything above stubs the reading, so nothing else would catch PhenoMe resolving the paths a
+    checkpoint stores against the files currently found - which is what a load is.
+    """
+    path = written_checkpoint(loaded, properties=True)
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert loaded.params.paths.checkpoint == path
+
+    # The properties come back as a frame of their own, as though they had just been computed
+    assert loaded.has_properties
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_a_written_checkpoint_without_properties_reads_back_without_them(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """The half-done run, which has to read as one: its embeddings are there and its properties are not."""
+    loaded.load_checkpoint(written_checkpoint(loaded, properties=False))
+
+    assert loaded.has_processed_images
+    assert loaded.properties_df is None
+    assert not loaded.has_properties
+
+
+def test_a_written_checkpoint_agrees_with_the_run_that_would_resume_it(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """Written under the arguments the interface runs with, so an extraction has nothing to ask about."""
+    loaded.load_checkpoint(written_checkpoint(loaded))
+
+    assert loaded.inspect_checkpoint() is None
+
+
+def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
+    phenome: PhenoMeInterface, processed, loading, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is compared here: what the settings are is the run's question, and they may change first."""
+    processed(phenome, 6)
+    record = loading()
+    checkpoint = tmp_path / 'other.hdf5'
+
+    # Whatever reading it would find is beside the point, the load never asking
+    monkeypatch.setattr(
+        phenome_interface, 'inspect_checkpoint',
+        lambda *args: CheckpointMismatch(MODEL_MISMATCH, 'channel_mode differs')
+    )
+
+    phenome.load_checkpoint(checkpoint)
+
+    assert record['loaded'] == [str(checkpoint)]
+    assert phenome.params.paths.checkpoint == checkpoint
 
 
 def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
@@ -435,13 +566,13 @@ def test_loading_empties_the_pipeline(phenome: PhenoMeInterface, processed) -> N
     assert phenome.has_results is False
 
 
-def test_loading_puts_the_checkpoint_back(phenome: PhenoMeInterface, processed) -> None:
-    """A checkpoint answers only for the images it was filled from."""
+def test_loading_lets_go_of_the_checkpoint(phenome: PhenoMeInterface, processed) -> None:
+    """A checkpoint answers only for the images it was filled from, so another has to be come by."""
     analysed(phenome, processed)
 
     phenome.load_data_csv()
 
-    assert phenome.params.paths.checkpoint == DEFAULT_CHECKPOINT
+    assert phenome.params.paths.checkpoint is None
 
 
 def test_loading_drops_the_columns_and_values_the_previous_metadata_named(

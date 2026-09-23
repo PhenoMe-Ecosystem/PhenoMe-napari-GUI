@@ -155,6 +155,15 @@ class AnalysisPanel(QWidget):
         self._task_running = running
         self._refresh_analysis_buttons()
 
+    def refresh_buttons(self) -> None:
+        """ Bring the analysis buttons in line with what the pipeline now holds.
+
+        For what reaches the embeddings without running a task here: loading a checkpoint brings a
+        previous run's embeddings with it, which is a tab's worth of steps opening without anything
+        having been computed.
+        """
+        self._refresh_analysis_buttons()
+
     def _refresh_analysis_buttons(self) -> None:
         """ Enable the analysis buttons only once the images have been processed, and no task is running.
 

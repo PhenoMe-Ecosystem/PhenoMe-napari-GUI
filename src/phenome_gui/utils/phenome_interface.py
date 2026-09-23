@@ -1,4 +1,5 @@
 from logging import getLogger
+from pathlib import Path
 
 import pandas as pd
 from phenome import PhenoMe
@@ -10,7 +11,7 @@ from .analysis import PhenoMeAnalysis
 from .checkpoint import CheckpointMismatch, inspect_checkpoint
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
-from .params import DEFAULT_CHECKPOINT, Params
+from .params import Params
 
 logger = getLogger(__name__)
 
@@ -123,8 +124,9 @@ class PhenoMeInterface:
         self.projection_df = None
 
         # A checkpoint holds the results of the images it was filled from, and would be read back for
-        # the next dataset as though it answered for those images too
-        self.params.paths.checkpoint = DEFAULT_CHECKPOINT
+        # the next dataset as though it answered for those images too. Nothing is processed until
+        # another has been created or loaded against the images now loaded.
+        self.params.paths.checkpoint = None
 
         # Columns and values of the metadata just dropped, which name nothing in the next one
         self.params.explorer.color_by = None
@@ -242,6 +244,10 @@ class PhenoMeInterface:
         halfway through it. Asked here beforehand, the same disagreement can be put to the user while
         there is still a choice to make about it.
 
+        Asked at the run rather than when the checkpoint is come by, as what it compares can change
+        after the fact: the model and the channel mode both reach this comparison, and either can be
+        picked again between choosing a checkpoint and running against it.
+
         Returns:
             CheckpointMismatch | None: What the checkpoint holds that this run would not put there, or
                 None when it agrees, is empty, does not exist, or could not be read.
@@ -249,6 +255,50 @@ class PhenoMeInterface:
         image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
         return inspect_checkpoint(self.params.paths.checkpoint, self.processing_params(), image_paths)
+
+    def load_checkpoint(self, path: Path | str) -> None:
+        """ Read an existing checkpoint into the pipeline.
+
+        The embeddings and the properties it holds are the ones the rest of the plugin then works
+        from, so a dataset processed before is picked up where it was left rather than processed
+        again. PhenoMe resolves the paths the checkpoint stores against the files currently found,
+        which is why a dataset has to have been loaded first.
+
+        Nothing is compared here: PhenoMe.load_results() reads a checkpoint whatever settings it was
+        filled under, and the disagreement is the run's to find - by which time the settings may have
+        been picked again anyway.
+
+        Args:
+            path (Path | str): The checkpoint file to read.
+        Raises:
+            RuntimeError: No dataset has been loaded, so there are no files to resolve against.
+            OSError: The file could not be read, or is held open by another process.
+        """
+        self.image_processing.load_results(str(path))
+
+        # Read back rather than left to the next run: the frame is what every property-based step
+        # reads, and a checkpoint holding properties has to be as good as having just computed them.
+        self.properties_df = self.image_processing.get_properties() if self.has_stored_properties else None
+
+        # Adopted last, so a load that raised leaves nothing selected
+        self.params.paths.checkpoint = Path(path)
+
+        logger.info(
+            "Loaded the checkpoint at '%s': %d image(s), properties %s.",
+            path, self.pheno.results.n_images, 'included' if self.properties_df is not None else 'not yet computed'
+        )
+
+    @property
+    def has_stored_properties(self) -> bool:
+        """ Whether the pipeline holds properties, computed here or read from a checkpoint.
+
+        Asked of PhenoMe rather than of the frame the interface keeps, this being what says whether
+        there is a frame to be read back at all.
+
+        Returns:
+            bool: True when the loaded results carry properties.
+        """
+        return self.pheno.results.has_properties
 
     def process_images(self, progress_callback: ProgressCallback | None=None, force_reprocess: bool=False) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.

@@ -22,11 +22,6 @@ Device = Literal['cpu', 'cuda']
 EmbeddingMethod = Literal['t-SNE', 'PCA', 'UMAP']
 ChannelMode = Literal['split', 'combined']
 
-# Where the embeddings and the properties are written when no other file has been chosen. Named
-# rather than written into the field alone, as loading another dataset puts the path back to it: a
-# checkpoint holds the results of the images it was filled from, and answers for no others.
-DEFAULT_CHECKPOINT = Path('./checkpoint.hdf5')
-
 # The most processes the images may be read in. Held to a number the parameter form can offer and the
 # model can be given, so neither can be set to a count no machine would gain by.
 MAX_WORKERS = 8
@@ -55,13 +50,18 @@ class PathParams(ParamsBase):
 
     `template` is a filename pattern rather than a path, and is typed as such so it is never coerced
     into a Path.
+
+    `checkpoint` is None until one has been created or loaded, and goes back to None whenever another
+    dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
+    no others. Nothing is processed while it is None, which is the whole of the gate - the embeddings
+    and the properties are written to it, so a run without one would have nowhere to put them.
     """
 
     images: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
     masks: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_masks')
     metadata: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/metadata.csv')
     template: str = '.../(drug_name)/(time)/(filename).*'
-    checkpoint: Path = DEFAULT_CHECKPOINT
+    checkpoint: Path | None = None
 
 
 class ProcessParams(ParamsBase):

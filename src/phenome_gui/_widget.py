@@ -79,12 +79,28 @@ class PhenoMeWidget(QWidget):
         """
         self.loading_panel.data_loaded.connect(self.processing_panel.refresh_buttons)
         self.processing_panel.task_running_changed.connect(self.analysis_panel.set_task_running)
+
+        # A loaded checkpoint carries a previous run's embeddings, so the analysis steps can open
+        # without a task having run here at all
+        self.processing_panel.checkpoint_loaded.connect(self.analysis_panel.refresh_buttons)
+        self.processing_panel.checkpoint_loaded.connect(self._on_checkpoint_loaded)
         self.analysis_panel.clustering_finished.connect(self.loading_panel.refresh_table)
         self.analysis_panel.explorer_requested.connect(self._on_explorer_clicked)
 
         self.loading_panel.results_cleared.connect(self.processing_panel.clear_results)
         self.loading_panel.results_cleared.connect(self.analysis_panel.clear_results)
         self.loading_panel.results_cleared.connect(self._on_results_cleared)
+
+    def _on_checkpoint_loaded(self) -> None:
+        """ Bring the explorer up to date with what a loaded checkpoint brought with it.
+
+        The window is the widget's rather than any panel's, and it is shown alongside the widget
+        rather than reopened, so a checkpoint loaded while it is open would otherwise leave it
+        offering what the pipeline could answer for when it was last opened - no properties to colour
+        by, and a closed feature space. Only reached for once it has been built, on the first click.
+        """
+        if self._explorer_window is not None:
+            self._explorer_window.refresh_choices()
 
     def _on_results_cleared(self) -> None:
         """ Let go of what the widget itself holds of the previous dataset.

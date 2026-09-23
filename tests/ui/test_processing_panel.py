@@ -7,9 +7,14 @@ is a sentinel object, since all the panel ever asks is whether one is present.
 from pathlib import Path
 
 import pytest
-from qtpy.QtWidgets import QFormLayout, QMessageBox
+from qtpy.QtWidgets import QFileDialog, QFormLayout, QMessageBox
 
-from phenome_gui.ui.processing_panel import ProcessingPanel
+from phenome_gui.ui.model_window import ModelWindow
+from phenome_gui.ui.processing_panel import (
+    CHECKPOINT_TEXT,
+    NO_CHECKPOINT_TEXT,
+    ProcessingPanel,
+)
 from phenome_gui.utils.checkpoint import (
     DATASET_MISMATCH,
     MODEL_MISMATCH,
@@ -17,7 +22,6 @@ from phenome_gui.utils.checkpoint import (
 )
 from phenome_gui.utils.params import (
     CHANNEL_MODE_CHOICES,
-    DEFAULT_CHECKPOINT,
     MAX_WORKERS,
 )
 from phenome_gui.utils.progress import TaskStopped
@@ -30,10 +34,11 @@ def panel(widget) -> ProcessingPanel:
 
 
 @pytest.fixture
-def ready(panel: ProcessingPanel, widget, processed) -> ProcessingPanel:
-    """ The panel with data loaded, a model in place and images processed. """
+def ready(panel: ProcessingPanel, widget, processed, tmp_path: Path) -> ProcessingPanel:
+    """ The panel with data loaded, a checkpoint selected, a model in place and images processed. """
     widget.loading_panel._on_load_data_csv()
     panel._phenome.model = object()
+    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
     processed(panel._phenome, 6)
     panel.refresh_buttons()
     return panel
@@ -190,46 +195,72 @@ def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Misma
 
 
 # ----------------------------------------------------------------------------
-# The extract embeddings button, which waits on both data and a model
+# The extract embeddings button, which waits on the data, a checkpoint and a model
 # ----------------------------------------------------------------------------
 
 
-def test_extract_needs_both_data_and_a_model(panel: ProcessingPanel) -> None:
+def test_extract_needs_the_data_a_checkpoint_and_a_model(panel: ProcessingPanel) -> None:
     assert not panel._process_button.isEnabled()
-    assert panel._process_button.toolTip() == 'Please load data and load a model first.'
+    assert panel._process_button.toolTip() == (
+        'Please load data and create or load a checkpoint and load a model first.'
+    )
 
 
-def test_extract_still_waits_on_a_model_after_loading(panel: ProcessingPanel, widget) -> None:
+def test_extract_still_waits_on_the_rest_after_loading(panel: ProcessingPanel, widget) -> None:
     widget.loading_panel._on_load_data_csv()
 
     assert not panel._process_button.isEnabled()
-    assert panel._process_button.toolTip() == 'Please load a model first.'
+    assert panel._process_button.toolTip() == (
+        'Please create or load a checkpoint and load a model first.'
+    )
 
 
-def test_extract_still_waits_on_data_after_the_model(panel: ProcessingPanel) -> None:
+def test_extract_still_waits_on_data_after_the_model(panel: ProcessingPanel, tmp_path: Path) -> None:
     panel._phenome.model = object()
+    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
     panel.refresh_buttons()
 
     assert not panel._process_button.isEnabled()
     assert panel._process_button.toolTip() == 'Please load data first.'
 
 
-def test_extract_opens_once_both_are_there(ready: ProcessingPanel) -> None:
+def test_extract_still_waits_on_a_checkpoint(panel: ProcessingPanel, widget) -> None:
+    """The embeddings are written to it, so a run without one would have nowhere to put them."""
+    widget.loading_panel._on_load_data_csv()
+    panel._phenome.model = object()
+    panel.refresh_buttons()
+
+    assert not panel._process_button.isEnabled()
+    assert panel._process_button.toolTip() == 'Please create or load a checkpoint first.'
+
+
+def test_extract_opens_once_all_three_are_there(ready: ProcessingPanel) -> None:
     assert ready._process_button.isEnabled()
     assert ready._process_button.toolTip() == ''
 
 
 # ----------------------------------------------------------------------------
-# The properties button, which waits on the embeddings
+# The properties button, which waits on the embeddings and a checkpoint
 # ----------------------------------------------------------------------------
 
 
-def test_properties_wait_on_the_embeddings(panel: ProcessingPanel) -> None:
+def test_properties_wait_on_a_checkpoint(panel: ProcessingPanel) -> None:
+    assert not panel._props_button.isEnabled()
+    assert panel._props_button.toolTip() == 'Please create or load a checkpoint first.'
+
+
+def test_properties_wait_on_the_embeddings(panel: ProcessingPanel, tmp_path: Path) -> None:
+    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
+    panel.refresh_buttons()
+
     assert not panel._props_button.isEnabled()
     assert panel._props_button.toolTip() == 'Please extract embeddings first.'
 
 
-def test_properties_open_once_the_images_are_processed(panel: ProcessingPanel, processed) -> None:
+def test_properties_open_once_the_images_are_processed(
+    panel: ProcessingPanel, processed, tmp_path: Path
+) -> None:
+    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
     processed(panel._phenome, 6)
     panel.refresh_buttons()
 
@@ -296,10 +327,59 @@ def test_the_cuda_choice_follows_the_hardware(panel: ProcessingPanel) -> None:
     assert panel._cuda_radio.isEnabled() is panel._phenome.cuda_available
 
 
-def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel) -> None:
-    panel._model_selection_combo.setCurrentText('DinoV2 - Large')
+@pytest.fixture
+def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the model window with a pick, without showing it.
+
+    Its exec_ is modal and would hang the test, so it is answered outright. The window is built
+    either way, which is what keeps this a test of the panel driving a real one.
+
+    Returns:
+        Callable[[str | None], list]: Called as picking_model('DinoV2 - Large'), or with None for
+            the window being cancelled. Returns the list of loads the panel then started.
+    """
+    started = []
+    monkeypatch.setattr(panel, '_load_model', lambda: started.append(panel._phenome.params.process.model))
+
+    def _answer(model: str | None) -> list:
+        def _exec(window) -> int:
+            if model is None:
+                return 0
+            window._select(model)
+            return 1
+
+        monkeypatch.setattr(ModelWindow, 'exec_', _exec)
+        return started
+
+    return _answer
+
+
+def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel, picking_model) -> None:
+    picking_model('DinoV2 - Large')
+
+    panel._select_model_button.click()
 
     assert panel._phenome.params.process.model == 'DinoV2 - Large'
+
+
+def test_choosing_a_model_loads_it(panel: ProcessingPanel, picking_model) -> None:
+    """Picking and loading are the one gesture now: the window is what the download is started from."""
+    started = picking_model('DinoV2 - Large')
+
+    panel._select_model_button.click()
+
+    assert started == ['DinoV2 - Large']
+
+
+def test_a_cancelled_window_changes_nothing(panel: ProcessingPanel, picking_model) -> None:
+    """A model looked at and thought better of leaves the parameters as they were."""
+    before = panel._phenome.params.process.model
+    started = picking_model(None)
+
+    panel._select_model_button.click()
+
+    assert panel._phenome.params.process.model == before
+    assert started == []
 
 
 def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
@@ -308,8 +388,12 @@ def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
     assert panel._phenome.params.properties.preset == 'Complete'
 
 
-def test_the_checkpoint_path_writes_the_parameter(panel: ProcessingPanel, tmp_path) -> None:
-    panel._checkpoint_path_dialog.value = tmp_path / 'run.hdf5'
+def test_the_checkpoint_path_writes_the_parameter(
+    panel: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    naming(tmp_path / 'run.hdf5')
+
+    panel._on_new_checkpoint_pressed()
 
     assert panel._phenome.params.paths.checkpoint == tmp_path / 'run.hdf5'
 
@@ -490,15 +574,15 @@ def test_the_bar_settles_when_the_task_finishes(panel: ProcessingPanel) -> None:
 # ----------------------------------------------------------------------------
 
 
-def test_clearing_reads_the_checkpoint_back_from_the_parameters(ready: ProcessingPanel) -> None:
-    """The interface puts it back to its default, a checkpoint answering only for its own images."""
-    ready._checkpoint_path_dialog.value = 'previous.hdf5'
+def test_clearing_lets_go_of_the_checkpoint(ready: ProcessingPanel) -> None:
+    """The interface unselects it, a checkpoint answering only for its own images, and the label follows."""
+    ready._phenome.params.paths.checkpoint = Path('previous.hdf5')
     ready._phenome.clear_results()
 
     ready.clear_results()
 
-    assert Path(ready._checkpoint_path_dialog.value) == Path(DEFAULT_CHECKPOINT).resolve()
-    assert ready._phenome.params.paths.checkpoint == Path(DEFAULT_CHECKPOINT).resolve()
+    assert ready._phenome.params.paths.checkpoint is None
+    assert ready._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
 
 
 def test_clearing_settles_the_progress_bar(ready: ProcessingPanel) -> None:
@@ -512,13 +596,14 @@ def test_clearing_settles_the_progress_bar(ready: ProcessingPanel) -> None:
 
 
 def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel) -> None:
+    """The checkpoint went with the embeddings, and is the first of the two to be come by again."""
     assert ready._props_button.isEnabled()
 
     ready._phenome.clear_results()
     ready.clear_results()
 
     assert not ready._props_button.isEnabled()
-    assert ready._props_button.toolTip() == 'Please extract embeddings first.'
+    assert ready._props_button.toolTip() == 'Please create or load a checkpoint first.'
 
 
 def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
@@ -594,15 +679,14 @@ def test_a_failed_properties_run_keeps_the_changed_preset(ready: ProcessingPanel
 
 
 def test_a_failed_model_load_reopens_the_model_controls(panel: ProcessingPanel, reported) -> None:
-    """A failed download otherwise leaves the button and the combo shut with no way to try again."""
-    panel._load_model_button.setEnabled(False)
-    panel._model_selection_combo.setEnabled(False)
+    """A failed download otherwise leaves the one way to a model shut, with no way to try again."""
+    panel._select_model_button.setEnabled(False)
+    panel._select_model_button.setText('Downloading model...')
 
     panel._on_load_model_failed(RuntimeError('connection refused'))
 
-    assert panel._load_model_button.isEnabled()
-    assert panel._model_selection_combo.isEnabled()
-    assert panel._load_model_button.text() == 'Load Model'
+    assert panel._select_model_button.isEnabled()
+    assert panel._select_model_button.text() == 'Select Model...'
 
 
 # ----------------------------------------------------------------------------
@@ -620,7 +704,19 @@ def test_a_matching_checkpoint_is_not_asked_about(ready: ProcessingPanel, starte
     assert started.runs == [False]
 
 
+def test_a_complete_checkpoint_is_still_handed_to_phenome(
+    ready: ProcessingPanel, started, mismatched
+) -> None:
+    """PhenoMe loads rather than processes when it already holds every image, so the panel leaves it to."""
+    mismatched(None)
+
+    ready._on_process_clicked()
+
+    assert started.runs == [False]
+
+
 def test_a_mismatched_checkpoint_is_asked_about(ready: ProcessingPanel, started, mismatched) -> None:
+    """The settings it compares can be picked again after the checkpoint was come by."""
     mismatched(CheckpointMismatch(MODEL_MISMATCH, 'force_rgb differs'))
 
     ready._on_process_clicked()
@@ -654,8 +750,10 @@ def test_a_refused_overwrite_leaves_the_buttons_open(ready: ProcessingPanel, sta
     assert ready._process_button.text() == 'Extract Embeddings'
 
 
-def test_the_question_names_what_was_found(ready: ProcessingPanel, started, mismatched) -> None:
-    """It is answered by overwriting a checkpoint, so it has to say what is wrong with this one."""
+def test_the_overwrite_question_names_what_was_found(
+    ready: ProcessingPanel, started, mismatched
+) -> None:
+    """It is answered by deleting a checkpoint, so it has to say what is wrong with this one."""
     mismatched(CheckpointMismatch(DATASET_MISMATCH, 'It holds 3 image(s), none of them loaded.'))
 
     ready._on_process_clicked()
@@ -664,13 +762,26 @@ def test_the_question_names_what_was_found(ready: ProcessingPanel, started, mism
     assert 'It holds 3 image(s), none of them loaded.' in mismatched.last
 
 
-def test_the_question_reads_without_a_detail(ready: ProcessingPanel, started, mismatched) -> None:
+def test_the_overwrite_question_says_the_file_goes(
+    ready: ProcessingPanel, started, mismatched
+) -> None:
+    """PhenoMe removes the file rather than writing over it, properties and all."""
+    mismatched(CheckpointMismatch(MODEL_MISMATCH))
+
+    ready._on_process_clicked()
+
+    assert 'deletes the file' in mismatched.last
+
+
+def test_the_overwrite_question_reads_without_a_detail(
+    ready: ProcessingPanel, started, mismatched
+) -> None:
     """The parameter mismatch adds none, and must not leave an empty paragraph behind it."""
     mismatched(CheckpointMismatch(MODEL_MISMATCH))
 
     ready._on_process_clicked()
 
-    assert 'a different model than the one currently loaded' in mismatched.last
+    assert 'different processing settings' in mismatched.last
     assert '\n\n\n' not in mismatched.last
 
 
@@ -881,3 +992,378 @@ def test_a_stopped_run_is_unwound_out_of_phenome(
     assert reported.shown == 0
     assert ready._progress_bar.format() == 'Stopped'
     assert ready._process_button.isEnabled()
+
+
+# ----------------------------------------------------------------------------
+# Coming by a checkpoint, which is what everything else waits on
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def loaded(panel: ProcessingPanel, widget) -> ProcessingPanel:
+    """ The panel with a dataset loaded and no checkpoint come by yet. """
+    widget.loading_panel._on_load_data_csv()
+    return panel
+
+
+@pytest.fixture
+def picking(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the load dialog with a path, without showing it.
+
+    Returns:
+        Callable[[Path | str], None]: Called as picking(tmp_path / 'run.hdf5'), or with '' for the
+            dialog being closed without a name.
+    """
+    def _answer(file_path) -> None:
+        monkeypatch.setattr(
+            QFileDialog, 'getOpenFileName', lambda *args, **kwargs: (str(file_path), '')
+        )
+
+    return _answer
+
+
+@pytest.fixture
+def naming(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the save dialog with a name, without showing it.
+
+    Returns:
+        Callable[[Path | str], None]: Called as naming(tmp_path / 'new.hdf5'), or with '' for the
+            dialog being closed without a name.
+    """
+    def _answer(file_path) -> None:
+        monkeypatch.setattr(
+            QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(file_path), '')
+        )
+
+    return _answer
+
+
+@pytest.fixture
+def reading(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook standing in for the interface reading a checkpoint off disk.
+
+    Returns:
+        Callable[..., list]: Called as reading() or reading(raises=...), returning the list of paths
+            the interface was asked to load.
+    """
+    def _stub(raises: Exception | None = None) -> list:
+        asked = []
+
+        def _load(path):
+            asked.append(path)
+            if raises is not None:
+                raise raises
+            panel._phenome.params.paths.checkpoint = Path(path)
+
+        monkeypatch.setattr(panel._phenome, 'load_checkpoint', _load)
+        return asked
+
+    return _stub
+
+
+def test_the_checkpoint_controls_are_shown(panel: ProcessingPanel) -> None:
+    """Built but never laid out is built for nobody, whatever they are connected to."""
+    for widget in (
+        panel._new_checkpoint_button,
+        panel._load_checkpoint_button,
+        panel._current_checkpoint_label,
+    ):
+        assert widget.isVisibleTo(panel)
+
+
+def test_nothing_is_selected_to_begin_with(panel: ProcessingPanel) -> None:
+    assert panel._phenome.params.paths.checkpoint is None
+    assert panel._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
+
+
+def test_both_ways_to_a_checkpoint_wait_on_the_data(panel: ProcessingPanel) -> None:
+    """Both read the images currently found, so neither has anything to work against before a load."""
+    for button in (panel._new_checkpoint_button, panel._load_checkpoint_button):
+        assert not button.isEnabled()
+        assert button.toolTip() == 'Please load data first.'
+
+
+def test_loading_data_opens_both_ways_to_a_checkpoint(loaded: ProcessingPanel) -> None:
+    for button in (loaded._new_checkpoint_button, loaded._load_checkpoint_button):
+        assert button.isEnabled()
+        assert button.toolTip() == ''
+
+
+def test_a_free_path_is_taken_up_as_it_stands(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    """The ordinary way one is created: PhenoMe writes the file itself when the first run reaches it."""
+    checkpoint = tmp_path / 'new.hdf5'
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._phenome.params.paths.checkpoint == checkpoint
+    assert loaded._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='new.hdf5')
+
+
+def test_the_whole_path_is_a_hover_away(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    """The label names the file alone, where two runs kept apart by their directory would read alike."""
+    checkpoint = tmp_path / 'new.hdf5'
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._current_checkpoint_label.toolTip() == str(checkpoint)
+
+
+def test_a_name_given_without_an_extension_is_spelled_out(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    """Not every dialog applies the filter, and PhenoMe refuses to read back a file without one."""
+    naming(tmp_path / 'bare')
+
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._phenome.params.paths.checkpoint == tmp_path / 'bare.hdf5'
+
+
+def test_closing_the_save_dialog_selects_nothing(loaded: ProcessingPanel, naming) -> None:
+    naming('')
+
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._phenome.params.paths.checkpoint is None
+    assert loaded._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
+
+
+def test_a_created_checkpoint_opens_the_extraction(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    loaded._phenome.model = object()
+    loaded.refresh_buttons()
+    assert not loaded._process_button.isEnabled()
+
+    naming(tmp_path / 'new.hdf5')
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._process_button.isEnabled()
+
+
+def test_a_loaded_checkpoint_is_named_on_the_label(
+    loaded: ProcessingPanel, picking, reading, tmp_path: Path
+) -> None:
+    checkpoint = tmp_path / 'previous.hdf5'
+    reading()
+    picking(checkpoint)
+
+    loaded._load_checkpoint_button.click()
+
+    assert loaded._phenome.params.paths.checkpoint == checkpoint
+    assert loaded._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='previous.hdf5')
+
+
+def test_closing_the_load_dialog_reads_nothing(
+    loaded: ProcessingPanel, picking, reading
+) -> None:
+    asked = reading()
+    picking('')
+
+    loaded._load_checkpoint_button.click()
+
+    assert asked == []
+    assert loaded._phenome.params.paths.checkpoint is None
+
+
+def test_a_checkpoint_is_loaded_without_being_asked_about(
+    loaded: ProcessingPanel, picking, reading, mismatched, tmp_path: Path
+) -> None:
+    """Whatever it was filled under, it loads: the settings are the run's to compare, not the load's."""
+    checkpoint = tmp_path / 'other.hdf5'
+    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'))
+    asked = reading()
+    picking(checkpoint)
+
+    loaded._load_checkpoint_button.click()
+
+    assert asked == [checkpoint]
+    assert mismatched.asked == 0
+    assert loaded._phenome.params.paths.checkpoint == checkpoint
+
+
+def test_a_checkpoint_that_will_not_open_is_reported(
+    loaded: ProcessingPanel, picking, reading, reported, tmp_path: Path
+) -> None:
+    """A file that is not a checkpoint, or one another process holds: neither may reach a slot as a traceback."""
+    reading(raises=OSError('file is already open'))
+    picking(tmp_path / 'broken.hdf5')
+
+    loaded._load_checkpoint_button.click()
+
+    assert reported.shown == 1
+    assert 'file is already open' in reported.last
+    assert loaded._phenome.params.paths.checkpoint is None
+
+
+def test_a_loaded_checkpoint_is_announced(
+    loaded: ProcessingPanel, picking, reading, qtbot, tmp_path: Path
+) -> None:
+    """It can carry a previous run's embeddings, which nothing else would tell the analysis steps about."""
+    reading()
+    picking(tmp_path / 'previous.hdf5')
+
+    with qtbot.waitSignal(loaded.checkpoint_loaded, timeout=100):
+        loaded._load_checkpoint_button.click()
+
+
+def test_a_checkpoint_that_will_not_open_is_not_announced(
+    loaded: ProcessingPanel, picking, reading, reported, qtbot, tmp_path: Path
+) -> None:
+    """Nothing was loaded, so the steps running on a checkpoint's embeddings have nothing to hear."""
+    reading(raises=OSError('file is already open'))
+    picking(tmp_path / 'broken.hdf5')
+
+    with qtbot.assertNotEmitted(loaded.checkpoint_loaded):
+        loaded._load_checkpoint_button.click()
+
+
+# ----------------------------------------------------------------------------
+# Naming a path that already holds a checkpoint
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def answering(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the question put when the named file already exists.
+
+    Returns:
+        Callable[[QMessageBox.StandardButton], None]: Called with the answer to give.
+    """
+    def _answer(button) -> None:
+        monkeypatch.setattr(panel, '_ask_about_existing', lambda path: button)
+
+    return _answer
+
+
+def existing_checkpoint(tmp_path: Path) -> Path:
+    """ A file standing where a checkpoint would be, which is all the panel reads of it. """
+    path = tmp_path / 'already.hdf5'
+    path.write_bytes(b'')
+    return path
+
+
+def test_naming_an_existing_file_asks_what_was_meant(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    checkpoint = existing_checkpoint(tmp_path)
+    asked = []
+    loaded._ask_about_existing = lambda path: asked.append(path) or QMessageBox.StandardButton.Cancel
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert asked == [checkpoint]
+
+
+@pytest.fixture
+def question(monkeypatch: pytest.MonkeyPatch) -> list:
+    """ Catch the question itself rather than answering it, so what it offers can be read.
+
+    Returns:
+        list: Filled with the QMessageBox once one has been put, which is never shown.
+    """
+    put = []
+
+    def _capture(box) -> int:
+        put.append(box)
+        return 0
+
+    monkeypatch.setattr(QMessageBox, 'exec_', _capture)
+    return put
+
+
+def test_the_question_offers_the_three_answers(
+    loaded: ProcessingPanel, question: list, tmp_path: Path
+) -> None:
+    """Driving the real question rather than a stand-in for it, the three answers being its whole point."""
+    loaded._ask_about_existing(existing_checkpoint(tmp_path))
+
+    # As a set: Qt lays the buttons out by the role each was given rather than in the order they
+    # were added, and which side a platform puts its cancel on is Qt's business
+    offered = {button.text().replace('&', '') for button in question[0].buttons()}
+    assert offered == {'Load it', 'Overwrite', 'Cancel'}
+
+
+def test_the_question_defaults_to_doing_neither(
+    loaded: ProcessingPanel, question: list, tmp_path: Path
+) -> None:
+    """One of the three deletes a run that may have taken hours, so none is where a stray keypress lands."""
+    loaded._ask_about_existing(existing_checkpoint(tmp_path))
+
+    assert question[0].defaultButton().text().replace('&', '') == 'Cancel'
+
+
+def test_an_unanswered_question_does_neither(
+    loaded: ProcessingPanel, question: list, tmp_path: Path
+) -> None:
+    """Nothing was clicked, which is the cancel by another name rather than a licence to delete."""
+    checkpoint = existing_checkpoint(tmp_path)
+
+    answer = loaded._ask_about_existing(checkpoint)
+
+    assert answer == QMessageBox.StandardButton.Cancel
+    assert checkpoint.exists()
+
+
+def test_choosing_to_load_reads_what_it_holds(
+    loaded: ProcessingPanel, answering, naming, reading, tmp_path: Path
+) -> None:
+    checkpoint = existing_checkpoint(tmp_path)
+    asked = reading()
+    answering(QMessageBox.StandardButton.Open)
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert asked == [checkpoint]
+    assert checkpoint.exists()
+
+
+def test_choosing_to_overwrite_deletes_what_was_there(
+    loaded: ProcessingPanel, answering, naming, tmp_path: Path
+) -> None:
+    """PhenoMe resumes whatever it finds, so a file left in place would be read back as the old run."""
+    checkpoint = existing_checkpoint(tmp_path)
+    answering(QMessageBox.StandardButton.Discard)
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert not checkpoint.exists()
+    assert loaded._phenome.params.paths.checkpoint == checkpoint
+
+
+def test_cancelling_leaves_the_file_and_the_selection_alone(
+    loaded: ProcessingPanel, answering, naming, tmp_path: Path
+) -> None:
+    checkpoint = existing_checkpoint(tmp_path)
+    answering(QMessageBox.StandardButton.Cancel)
+    naming(checkpoint)
+
+    loaded._new_checkpoint_button.click()
+
+    assert checkpoint.exists()
+    assert loaded._phenome.params.paths.checkpoint is None
+
+
+def test_cancelling_leaves_the_checkpoint_in_hand_selected(
+    loaded: ProcessingPanel, answering, naming, tmp_path: Path
+) -> None:
+    """Reaching for another file and thinking better of it must not cost the one being written to."""
+    selected = tmp_path / 'chosen.hdf5'
+    naming(selected)
+    loaded._new_checkpoint_button.click()
+
+    answering(QMessageBox.StandardButton.Cancel)
+    naming(existing_checkpoint(tmp_path))
+    loaded._new_checkpoint_button.click()
+
+    assert loaded._phenome.params.paths.checkpoint == selected
+    assert loaded._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='chosen.hdf5')
