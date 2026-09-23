@@ -2,7 +2,7 @@
 
 Registered apart from the weights, the transformations and the processing arguments, and keyed the
 same way, so a model is registered once and reachable four ways. Keyed per model and written per
-family, as the weights are: the four DinoV2 variants differ in size alone, where what a description
+family, as the weights are: the four DINOv2variants differ in size alone, where what a description
 has to say - what the model is, what it takes and what is done to an image on the way in - is the
 same for all of them.
 
@@ -12,7 +12,7 @@ heading, a list of what the model expects and a link to its repository.
 
 
 def get_dinov2_details() -> str:
-    """ Describe the DinoV2 models, which the four registered variants share.
+    """ Describe the DINOv2 models, which the four registered variants share.
 
     Returns:
         str: An HTML fragment, for the pane beside the list a model is picked from.

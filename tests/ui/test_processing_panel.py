@@ -335,7 +335,7 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     either way, which is what keeps this a test of the panel driving a real one.
 
     Returns:
-        Callable[[str | None], list]: Called as picking_model('DinoV2 - Large'), or with None for
+        Callable[[str | None], list]: Called as picking_model('DINOv2 - Large'), or with None for
             the window being cancelled. Returns the list of loads the panel then started.
     """
     started = []
@@ -355,20 +355,20 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel, picking_model) -> None:
-    picking_model('DinoV2 - Large')
+    picking_model('DINOv2 - Large')
 
     panel._select_model_button.click()
 
-    assert panel._phenome.params.process.model == 'DinoV2 - Large'
+    assert panel._phenome.params.process.model == 'DINOv2 - Large'
 
 
 def test_choosing_a_model_loads_it(panel: ProcessingPanel, picking_model) -> None:
     """Picking and loading are the one gesture now: the window is what the download is started from."""
-    started = picking_model('DinoV2 - Large')
+    started = picking_model('DINOv2 - Large')
 
     panel._select_model_button.click()
 
-    assert started == ['DinoV2 - Large']
+    assert started == ['DINOv2 - Large']
 
 
 def test_a_cancelled_window_changes_nothing(panel: ProcessingPanel, picking_model) -> None:
@@ -608,12 +608,12 @@ def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel)
 
 def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
     """A downloaded network is not read off the images, so the label naming it stays true."""
-    ready._current_model_label.setText('DinoV2 - Small')
+    ready._current_model_label.setText('DINOv2 - Small')
 
     ready._phenome.clear_results()
     ready.clear_results()
 
-    assert ready._current_model_label.text() == 'DinoV2 - Small'
+    assert ready._current_model_label.text() == 'DINOv2 - Small'
     assert ready._phenome.model is not None
 
 

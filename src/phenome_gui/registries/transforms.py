@@ -16,7 +16,7 @@ def get_stedfm_transforms() -> "T.Compose":
         ])
 
 def get_dinov2_transforms() -> None:
-    """ Get the transforms to be used with a DinoV2 model.
+    """ Get the transforms to be used with a DINOv2 model.
 
     This seems very redundant but it's meant to load the default transforms while keeping the registry structure.
 

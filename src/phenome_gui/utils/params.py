@@ -84,7 +84,7 @@ class ProcessParams(ParamsBase):
     why the choice is offered rather than settled here.
     """
 
-    model: str = 'DinoV2 - Small'
+    model: str = 'DINOv2 - Small'
     device: Device = 'cpu'
     channel_mode: ChannelMode = 'split'
     batch_size: int = Field(default=32, ge=1)

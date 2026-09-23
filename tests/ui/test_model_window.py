@@ -11,7 +11,7 @@ from phenome_gui.ui import model_window as model_window_module
 from phenome_gui.ui.model_window import ModelWindow
 
 # A model other than the first, so opening on it cannot be confused with the fallback
-OTHER_MODEL = 'DinoV2 - Large'
+OTHER_MODEL = 'DINOv2 - Large'
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def window(qtbot):
     """ Return a hook building a window on a given model.
 
     Returns:
-        Callable[[str | None], ModelWindow]: Called as window('DinoV2 - Large'), or with nothing for
+        Callable[[str | None], ModelWindow]: Called as window('DINOv2 - Large'), or with nothing for
             the window opening on whatever it falls back to.
     """
     def _build(model: str | None = None) -> ModelWindow:
