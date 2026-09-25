@@ -386,85 +386,37 @@ class ProcessingPanel(QWidget):
         self._phenome.load_model()
 
     def _on_new_checkpoint_pressed(self) -> None:
-        """ Name the checkpoint the runs are to be written to, asking first when there is a file there already.
+        """ Name the checkpoint the runs are to be written to.
 
-        A save dialog, so the name it comes back with may well be a checkpoint that already holds a
-        run. Which of the two was meant is the user's to say: reading it is what the Load button
-        does, and replacing it throws away everything it holds. The dialog is told not to ask about
-        that itself, its own question being a narrower version of the one put here.
+        A save dialog, so it puts its own question when the name it is given is already a file:
+        answering it is agreeing to replace what is there, and the file goes. Nothing is asked here
+        on top of that - reading an existing checkpoint is what the Load button is for.
 
         A path with no file at it is taken up as it stands, that being the ordinary way a checkpoint
         is created: PhenoMe writes the file itself when the first run reaches it.
         """
         file_path, _ = QFileDialog.getSaveFileName(
-            self, 'New checkpoint', '', CHECKPOINT_FILTER,
-            options=QFileDialog.Option.DontConfirmOverwrite,
+            self, 'New checkpoint', '', CHECKPOINT_FILTER
         )
 
         if not file_path:
             return
 
-        path = Path(file_path)
+        named = Path(file_path)
 
         # Not every platform's dialog spells the filter's extension out onto the name, and a
         # checkpoint named without one is a file PhenoMe will refuse to read back later
-        if not path.suffix:
-            path = path.with_suffix(CHECKPOINT_SUFFIX)
+        path = named if named.suffix else named.with_suffix(CHECKPOINT_SUFFIX)
 
-        if not path.is_file():
-            self._select_checkpoint(path)
-            return
+        # Replaced rather than resumed: the dialog asked whether to replace it and was told yes,
+        # where PhenoMe resumes whatever it finds at a path. Only the name the dialog asked about may
+        # be removed - where the extension was filled in above, whatever now sits at that path is a
+        # file nobody was asked about, and it is left alone and resumed like any other.
+        if path == named and path.is_file():
+            logger.warning("Replacing the checkpoint at '%s', which is to be filled again.", path)
+            path.unlink()
 
-        answer = self._ask_about_existing(path)
-
-        if answer == QMessageBox.StandardButton.Cancel:
-            logger.info("Left the checkpoint at '%s' alone.", path)
-            return
-
-        if answer == QMessageBox.StandardButton.Open:
-            self._load_checkpoint(path)
-            return
-
-        # Deleted rather than written over: PhenoMe resumes whatever it finds at the path, so a file
-        # left in place would be read back as the run this one is replacing.
-        logger.warning("Deleting the checkpoint at '%s', which is to be filled again.", path)
-        path.unlink()
         self._select_checkpoint(path)
-
-    def _ask_about_existing(self, path: Path) -> QMessageBox.StandardButton:
-        """ Ask what was meant by naming a file that already holds a checkpoint.
-
-        Asked with the cancel as its default answer, the way dropping the loaded results is asked:
-        one of the three deletes a run that may have taken hours, so none of them is the one a
-        stray keypress lands on.
-
-        Args:
-            path (Path): The checkpoint file that is already there.
-        Returns:
-            QMessageBox.StandardButton: Open to read it, Discard to delete it, Cancel to do neither.
-        """
-        question = QMessageBox(self)
-        question.setIcon(QMessageBox.Icon.Question)
-        question.setWindowTitle('Checkpoint already exists')
-        question.setText(
-            f"A checkpoint already exists at {path}.\n\n"
-            'Load what it holds, or overwrite it and start again?'
-        )
-
-        # Named rather than left to Qt's own wording: 'Discard' reads as the throwing away it is
-        load = question.addButton('Load it', QMessageBox.ButtonRole.AcceptRole)
-        overwrite = question.addButton('Overwrite', QMessageBox.ButtonRole.DestructiveRole)
-        cancel = question.addButton(QMessageBox.StandardButton.Cancel)
-        question.setDefaultButton(cancel)
-
-        question.exec_()
-        clicked = question.clickedButton()
-
-        if clicked is load:
-            return QMessageBox.StandardButton.Open
-        if clicked is overwrite:
-            return QMessageBox.StandardButton.Discard
-        return QMessageBox.StandardButton.Cancel
 
     def _on_load_checkpoint_pressed(self) -> None:
         """ Read an existing checkpoint, picked from a dialog, and work on from where it was left.

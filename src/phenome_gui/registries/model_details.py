@@ -32,7 +32,6 @@ def get_dinov2_details() -> str:
     <b>Transforms applied at process:</b>
     <ul>
         <li>Duplicate to 3 channels if necessary</li>
-        <li>Resize to 224x224</li>
         <li>Standardization using ImageNET values</li>
     </ul>
     """

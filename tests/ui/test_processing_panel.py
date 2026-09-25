@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from qtpy.QtWidgets import QFileDialog, QFormLayout, QMessageBox
 
+from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.ui.model_window import ModelWindow
 from phenome_gui.ui.processing_panel import (
     CHECKPOINT_TEXT,
@@ -25,6 +26,11 @@ from phenome_gui.utils.params import (
     MAX_WORKERS,
 )
 from phenome_gui.utils.progress import TaskStopped
+
+# Two of the models the GUI offers, read off the registry: spelling them out here is what let these
+# tests drift from it when they were renamed.
+FIRST_MODEL = next(iter(MODEL_OPTIONS))
+ANOTHER_MODEL = list(MODEL_OPTIONS)[2]
 
 
 @pytest.fixture
@@ -335,7 +341,7 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     either way, which is what keeps this a test of the panel driving a real one.
 
     Returns:
-        Callable[[str | None], list]: Called as picking_model('DINOv2 - Large'), or with None for
+        Callable[[str | None], list]: Called as picking_model(ANOTHER_MODEL), or with None for
             the window being cancelled. Returns the list of loads the panel then started.
     """
     started = []
@@ -355,20 +361,20 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel, picking_model) -> None:
-    picking_model('DINOv2 - Large')
+    picking_model(ANOTHER_MODEL)
 
     panel._select_model_button.click()
 
-    assert panel._phenome.params.process.model == 'DINOv2 - Large'
+    assert panel._phenome.params.process.model == ANOTHER_MODEL
 
 
 def test_choosing_a_model_loads_it(panel: ProcessingPanel, picking_model) -> None:
     """Picking and loading are the one gesture now: the window is what the download is started from."""
-    started = picking_model('DINOv2 - Large')
+    started = picking_model(ANOTHER_MODEL)
 
     panel._select_model_button.click()
 
-    assert started == ['DINOv2 - Large']
+    assert started == [ANOTHER_MODEL]
 
 
 def test_a_cancelled_window_changes_nothing(panel: ProcessingPanel, picking_model) -> None:
@@ -608,12 +614,12 @@ def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel)
 
 def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
     """A downloaded network is not read off the images, so the label naming it stays true."""
-    ready._current_model_label.setText('DINOv2 - Small')
+    ready._current_model_label.setText(FIRST_MODEL)
 
     ready._phenome.clear_results()
     ready.clear_results()
 
-    assert ready._current_model_label.text() == 'DINOv2 - Small'
+    assert ready._current_model_label.text() == FIRST_MODEL
     assert ready._phenome.model is not None
 
 
@@ -1229,109 +1235,18 @@ def test_a_checkpoint_that_will_not_open_is_not_announced(
 # ----------------------------------------------------------------------------
 
 
-@pytest.fixture
-def answering(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
-    """ Return a hook answering the question put when the named file already exists.
-
-    Returns:
-        Callable[[QMessageBox.StandardButton], None]: Called with the answer to give.
-    """
-    def _answer(button) -> None:
-        monkeypatch.setattr(panel, '_ask_about_existing', lambda path: button)
-
-    return _answer
-
-
-def existing_checkpoint(tmp_path: Path) -> Path:
+def existing_checkpoint(tmp_path: Path, name: str = 'already.hdf5') -> Path:
     """ A file standing where a checkpoint would be, which is all the panel reads of it. """
-    path = tmp_path / 'already.hdf5'
+    path = tmp_path / name
     path.write_bytes(b'')
     return path
 
 
-def test_naming_an_existing_file_asks_what_was_meant(
+def test_naming_an_existing_file_replaces_it(
     loaded: ProcessingPanel, naming, tmp_path: Path
 ) -> None:
+    """The save dialog asked whether to replace it and was told yes, which is the whole question."""
     checkpoint = existing_checkpoint(tmp_path)
-    asked = []
-    loaded._ask_about_existing = lambda path: asked.append(path) or QMessageBox.StandardButton.Cancel
-    naming(checkpoint)
-
-    loaded._new_checkpoint_button.click()
-
-    assert asked == [checkpoint]
-
-
-@pytest.fixture
-def question(monkeypatch: pytest.MonkeyPatch) -> list:
-    """ Catch the question itself rather than answering it, so what it offers can be read.
-
-    Returns:
-        list: Filled with the QMessageBox once one has been put, which is never shown.
-    """
-    put = []
-
-    def _capture(box) -> int:
-        put.append(box)
-        return 0
-
-    monkeypatch.setattr(QMessageBox, 'exec_', _capture)
-    return put
-
-
-def test_the_question_offers_the_three_answers(
-    loaded: ProcessingPanel, question: list, tmp_path: Path
-) -> None:
-    """Driving the real question rather than a stand-in for it, the three answers being its whole point."""
-    loaded._ask_about_existing(existing_checkpoint(tmp_path))
-
-    # As a set: Qt lays the buttons out by the role each was given rather than in the order they
-    # were added, and which side a platform puts its cancel on is Qt's business
-    offered = {button.text().replace('&', '') for button in question[0].buttons()}
-    assert offered == {'Load it', 'Overwrite', 'Cancel'}
-
-
-def test_the_question_defaults_to_doing_neither(
-    loaded: ProcessingPanel, question: list, tmp_path: Path
-) -> None:
-    """One of the three deletes a run that may have taken hours, so none is where a stray keypress lands."""
-    loaded._ask_about_existing(existing_checkpoint(tmp_path))
-
-    assert question[0].defaultButton().text().replace('&', '') == 'Cancel'
-
-
-def test_an_unanswered_question_does_neither(
-    loaded: ProcessingPanel, question: list, tmp_path: Path
-) -> None:
-    """Nothing was clicked, which is the cancel by another name rather than a licence to delete."""
-    checkpoint = existing_checkpoint(tmp_path)
-
-    answer = loaded._ask_about_existing(checkpoint)
-
-    assert answer == QMessageBox.StandardButton.Cancel
-    assert checkpoint.exists()
-
-
-def test_choosing_to_load_reads_what_it_holds(
-    loaded: ProcessingPanel, answering, naming, reading, tmp_path: Path
-) -> None:
-    checkpoint = existing_checkpoint(tmp_path)
-    asked = reading()
-    answering(QMessageBox.StandardButton.Open)
-    naming(checkpoint)
-
-    loaded._new_checkpoint_button.click()
-
-    assert asked == [checkpoint]
-    assert checkpoint.exists()
-
-
-def test_choosing_to_overwrite_deletes_what_was_there(
-    loaded: ProcessingPanel, answering, naming, tmp_path: Path
-) -> None:
-    """PhenoMe resumes whatever it finds, so a file left in place would be read back as the old run."""
-    checkpoint = existing_checkpoint(tmp_path)
-    answering(QMessageBox.StandardButton.Discard)
     naming(checkpoint)
 
     loaded._new_checkpoint_button.click()
@@ -1340,12 +1255,36 @@ def test_choosing_to_overwrite_deletes_what_was_there(
     assert loaded._phenome.params.paths.checkpoint == checkpoint
 
 
-def test_cancelling_leaves_the_file_and_the_selection_alone(
-    loaded: ProcessingPanel, answering, naming, tmp_path: Path
+def test_naming_a_checkpoint_asks_nothing_of_its_own(
+    loaded: ProcessingPanel, naming, mismatched, tmp_path: Path
 ) -> None:
+    """The dialog's own question is the only one: reading an existing one is the Load button's job."""
+    naming(existing_checkpoint(tmp_path))
+
+    loaded._new_checkpoint_button.click()
+
+    assert mismatched.asked == 0
+
+
+def test_a_completed_name_leaves_the_file_it_lands_on_alone(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    """The dialog asked about 'already', where the extension put us on 'already.hdf5' - another file."""
     checkpoint = existing_checkpoint(tmp_path)
-    answering(QMessageBox.StandardButton.Cancel)
-    naming(checkpoint)
+    naming(tmp_path / 'already')
+
+    loaded._new_checkpoint_button.click()
+
+    assert checkpoint.exists()
+    assert loaded._phenome.params.paths.checkpoint == checkpoint
+
+
+def test_cancelling_leaves_the_file_and_the_selection_alone(
+    loaded: ProcessingPanel, naming, tmp_path: Path
+) -> None:
+    """Closing the dialog is refusing the replacement along with everything else."""
+    checkpoint = existing_checkpoint(tmp_path)
+    naming('')
 
     loaded._new_checkpoint_button.click()
 
@@ -1354,15 +1293,14 @@ def test_cancelling_leaves_the_file_and_the_selection_alone(
 
 
 def test_cancelling_leaves_the_checkpoint_in_hand_selected(
-    loaded: ProcessingPanel, answering, naming, tmp_path: Path
+    loaded: ProcessingPanel, naming, tmp_path: Path
 ) -> None:
     """Reaching for another file and thinking better of it must not cost the one being written to."""
     selected = tmp_path / 'chosen.hdf5'
     naming(selected)
     loaded._new_checkpoint_button.click()
 
-    answering(QMessageBox.StandardButton.Cancel)
-    naming(existing_checkpoint(tmp_path))
+    naming('')
     loaded._new_checkpoint_button.click()
 
     assert loaded._phenome.params.paths.checkpoint == selected

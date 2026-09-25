@@ -10,8 +10,9 @@ from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.ui import model_window as model_window_module
 from phenome_gui.ui.model_window import ModelWindow
 
-# A model other than the first, so opening on it cannot be confused with the fallback
-OTHER_MODEL = 'DINOv2 - Large'
+# A model other than the first, so opening on it cannot be confused with the fallback. Read off the
+# registry rather than spelled out, which is what let these tests drift from it when it was renamed.
+OTHER_MODEL = list(MODEL_OPTIONS)[2]
 
 
 @pytest.fixture
