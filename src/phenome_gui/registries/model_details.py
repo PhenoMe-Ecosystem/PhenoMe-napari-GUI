@@ -1,16 +1,3 @@
-"""What each model is, for the window the model is picked from.
-
-Registered apart from the weights, the transformations and the processing arguments, and keyed the
-same way, so a model is registered once and reachable four ways. Keyed per model and written per
-family, as the weights are: the four DINOv2variants differ in size alone, where what a description
-has to say - what the model is, what it takes and what is done to an image on the way in - is the
-same for all of them.
-
-The text is HTML rather than plain, the pane it lands in rendering it: a description carries a
-heading, a list of what the model expects and a link to its repository.
-"""
-
-
 def get_dinov2_details() -> str:
     """ Describe the DINOv2 models, which the four registered variants share.
 
