@@ -16,6 +16,8 @@ from typing import Any  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
+from phenome.core.pipeline_results import PhenoMeResults  # noqa: E402
+from phenome.io import CheckpointManager  # noqa: E402
 from qtpy.QtWidgets import QMainWindow, QMessageBox  # noqa: E402
 from skimage.io import imsave  # noqa: E402
 
@@ -37,7 +39,7 @@ def dataset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     skimage.io.imread when a row is selected.
 
     Returns:
-        dict[str, Path]: The images directory, the masks directory and the metadata file.
+        The images directory, the masks directory and the metadata file.
     """
     root = tmp_path_factory.mktemp('dataset')
     images_dir = root / 'images'
@@ -64,7 +66,7 @@ def path_dataset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     """ The same images laid out so the metadata can be read off the paths instead of a .csv.
 
     Returns:
-        dict[str, Path]: The images directory, the masks directory and the matching template.
+        The images directory, the masks directory and the matching template.
     """
     root = tmp_path_factory.mktemp('path_dataset')
     rng = np.random.default_rng(seed=1)
@@ -128,7 +130,7 @@ def confirmation(monkeypatch: pytest.MonkeyPatch) -> Confirmation:
     window nobody can answer.
 
     Returns:
-        Confirmation: The stand-in, whose `accepted` a test sets to answer No.
+        The stand-in, whose `accepted` a test sets to answer No.
     """
     stand_in = Confirmation()
     monkeypatch.setattr(QMessageBox, 'question', stand_in)
@@ -149,13 +151,18 @@ class StubResults:
         # Path of each processed image, which is what a projected point is resolved back to
         self.img_path: list[str] = []
 
+    @property
+    def has_properties(self) -> bool:
+        """ Whether the results carry properties, as PhenoMe reads its own. """
+        return any(self.properties)
+
 
 @pytest.fixture
 def processed():
     """ Return a hook making an interface report a given number of processed images.
 
     Returns:
-        Callable[[PhenoMeInterface, int], StubResults]: Called as processed(interface, n_images).
+        Called as processed(interface, n_images).
     """
     def _apply(interface: PhenoMeInterface, n_images: int = 6) -> StubResults:
         results = StubResults(n_images)
@@ -163,6 +170,59 @@ def processed():
         return results
 
     return _apply
+
+
+# The properties a written checkpoint carries, one dict per image. Two of them, so a test can tell a
+# frame of properties from a frame of one.
+CHECKPOINT_PROPERTIES = ('area', 'intensity_mean')
+
+# Width of the embeddings written. Nothing reads their values, only that they are there and how many.
+EMBEDDING_DIM = 8
+
+
+@pytest.fixture
+def written_checkpoint(tmp_path: Path):
+    """ Return a hook writing a real checkpoint for the dataset an interface currently holds.
+
+    Writing one takes no model: CheckpointManager.write_results_to_hdf5 takes a results object, and
+    embeddings are an array like any other. Written rather than stubbed wherever what is being
+    checked is the reading itself - PhenoMe resolves the paths a checkpoint stores against the files
+    currently found, which no stand-in can answer for.
+
+    The dataset has to have been loaded first, the paths and the metadata being read off it.
+
+    Returns:
+        Called as written_checkpoint(interface, properties=False), returning
+        the path it was written to.
+    """
+    def _write(interface: PhenoMeInterface, properties: bool = True, name: str = 'previous.hdf5') -> Path:
+        metadata_df = interface.metadata_df
+        paths = list(metadata_df['file_path'])
+
+        # The metadata as PhenoMe holds it, which is what the load matches its own files against: a
+        # checkpoint whose keys do not answer for them is read as holding none of them.
+        keys = [column for column in metadata_df.columns if column not in ('file_path', 'mask_path')]
+        metadata = [{key: row[key] for key in keys} for _, row in metadata_df.iterrows()]
+
+        results = PhenoMeResults(
+            img_path=paths,
+            metadata=metadata,
+            properties=[
+                {name: float(row) for name in CHECKPOINT_PROPERTIES} for row in range(len(paths))
+            ] if properties else [],
+            embeddings=np.random.default_rng(0).random((len(paths), EMBEDDING_DIM)).astype('float32'),
+        )
+
+        path = tmp_path / name
+
+        # The arguments the checkpoint is written under are the ones the interface would run with, so
+        # it agrees with the run and the extraction has nothing to ask about
+        CheckpointManager.write_results_to_hdf5(
+            results, str(path), processing_params=interface.processing_params()
+        )
+        return path
+
+    return _write
 
 
 class FakeLayers(list):
@@ -234,8 +294,8 @@ def in_main_window(qtbot):
     on its own would therefore pass whether its table comes back or not.
 
     Returns:
-        Callable[[Callable[[QMainWindow], QWidget]], QWidget]: Called as
-            in_main_window(lambda parent: SomePanel(..., parent)), returning the built panel.
+        Called as
+        in_main_window(lambda parent: SomePanel(..., parent)), returning the built panel.
     """
     # The windows outlive the calls that built them: qtbot holds only a weak reference, and a
     # collected window takes the panel down with it.
@@ -326,7 +386,7 @@ def reduction(monkeypatch: pytest.MonkeyPatch):
     to project anyway.
 
     Returns:
-        Callable[[pd.DataFrame | None, str], ReductionSpy]: Called as reduction(frame).
+        Called as reduction(frame).
     """
     def _replace(frame: pd.DataFrame | None = None, data_type: str = 'Embeddings') -> ReductionSpy:
         stand_in = ReductionSpy(frame, data_type)
@@ -382,7 +442,7 @@ def sync_worker():
     is exercised under the flag it would really be given.
 
     Returns:
-        Callable[[QWidget, str, Callable], None]: Called as sync_worker(panel, '_prototypes_worker', fn).
+        Called as sync_worker(panel, '_prototypes_worker', fn).
     """
     def _replace(panel, worker_name: str, function) -> None:
         def _factory(*args, **kwargs) -> _SyncWorker:
@@ -401,7 +461,7 @@ def dialog_result(monkeypatch: pytest.MonkeyPatch):
     which is what tells the caller whether to keep the edit.
 
     Returns:
-        Callable[[type, bool], None]: Called as dialog_result(DialogClass, accepted=True, _spin=3).
+        Called as dialog_result(DialogClass, accepted=True, _spin=3).
     """
     def _drive(dialog_class: type, accepted: bool, **edits) -> None:
         def _exec(dialog) -> int:

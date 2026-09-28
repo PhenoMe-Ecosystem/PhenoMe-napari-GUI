@@ -6,18 +6,24 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from phenome_gui.utils import phenome_interface
+from phenome_gui.utils.checkpoint import (
+    MODEL_MISMATCH,
+    CheckpointMismatch,
+)
 from phenome_gui.utils.params import (
-    DEFAULT_CHECKPOINT,
-    DIMS_CHOICES,
+    CHANNEL_MODE_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     MAX_WORKERS,
     Params,
 )
 from phenome_gui.utils.phenome_interface import (
-    DIMS_COMPONENTS,
     DR_METHODS,
+    PROJECTION_COMPONENTS,
     PhenoMeInterface,
 )
+
+from .conftest import CHECKPOINT_PROPERTIES
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -105,7 +111,7 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
     look as it does once a model has been loaded: one that brings no arguments of its own.
 
     Returns:
-        dict: Filled with the keyword arguments handed down, once an extraction has been asked for.
+        Filled with the keyword arguments handed down, once an extraction has been asked for.
     """
     phenome.model = object()
     phenome.process_options = {}
@@ -136,6 +142,223 @@ def test_the_batch_size_still_reaches_phenome(phenome: PhenoMeInterface, extract
     phenome.process_images()
 
     assert extraction['batch_size'] == 64
+
+
+@pytest.mark.parametrize('mode', CHANNEL_MODE_CHOICES)
+def test_the_channel_mode_reaches_phenome(phenome: PhenoMeInterface, extraction: dict, mode: str) -> None:
+    """A mode picked in the form and never handed down would leave every run on PhenoMe's default."""
+    phenome.params.process.channel_mode = mode
+
+    phenome.process_images()
+
+    assert extraction['channel_mode'] == mode
+
+
+def test_the_form_has_the_last_word_on_the_channel_mode(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """A model may name the same argument, and what was picked is what runs - handed down once."""
+    phenome.process_options = {'channel_mode': 'split', 'force_rgb': False}
+    phenome.params.process.channel_mode = 'combined'
+
+    phenome.process_images()
+
+    assert extraction['channel_mode'] == 'combined'
+
+    # The rest of the model's arguments are still the model's, the form settling only its own
+    assert extraction['force_rgb'] is False
+
+
+def test_a_model_keeps_the_arguments_the_form_does_not_set(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    phenome.process_options = {'force_rgb': False}
+
+    phenome.process_images()
+
+    assert extraction['force_rgb'] is False
+    assert extraction['channel_mode'] == 'split'
+
+
+# ----------------------------------------------------------------------------
+# What a checkpoint is compared against, which has to be what the run really uses
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('mode', CHANNEL_MODE_CHOICES)
+def test_the_checkpoint_is_compared_against_the_picked_channel_mode(
+    phenome: PhenoMeInterface, mode: str
+) -> None:
+    """The first key PhenoMe refuses to resume across, so a run under the other one has to be caught."""
+    phenome.params.process.channel_mode = mode
+
+    assert phenome.processing_params()['channel_mode'] == mode
+
+
+def test_the_defaults_fill_in_what_neither_the_form_nor_the_model_sets(
+    phenome: PhenoMeInterface
+) -> None:
+    """PhenoMe fills these in itself, so a checkpoint is compared against them rather than against nothing."""
+    params = phenome.processing_params()
+
+    assert params['resize_size'] == 224
+    assert params['force_rgb'] is True
+
+
+def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """Comparing a checkpoint against arguments the run does not use is comparing against nothing."""
+    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.channel_mode = 'combined'
+    compared = phenome.processing_params()
+
+    phenome.process_images()
+
+    assert all(compared[key] == extraction[key] for key in phenome.process_arguments())
+
+
+@pytest.fixture
+def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook standing in for reading a checkpoint off disk.
+
+    Neither half is let near a real file: writing one means embeddings, which means a model, and what
+    is being checked is what the interface does with the two answers rather than PhenoMe's reading.
+
+    Returns:
+        Called as loading(properties=...), returning a record of what PhenoMe
+        was asked to load.
+    """
+    def _stub(properties: list[dict] | None = None) -> dict:
+        record = {'loaded': []}
+
+        def _load(path: str) -> None:
+            record['loaded'].append(path)
+            phenome.pheno.results.properties = properties or []
+
+        monkeypatch.setattr(phenome.image_processing, 'load_results', _load)
+        monkeypatch.setattr(
+            phenome.image_processing, 'get_properties', lambda: pd.DataFrame({'area': [1.0, 2.0]})
+        )
+        return record
+
+    return _stub
+
+
+def test_a_loaded_checkpoint_is_the_one_the_runs_are_written_to(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    processed(phenome, 6)
+    record = loading()
+    checkpoint = tmp_path / 'previous.hdf5'
+
+    phenome.load_checkpoint(checkpoint)
+
+    assert record['loaded'] == [str(checkpoint)]
+    assert phenome.params.paths.checkpoint == checkpoint
+
+
+def test_a_loaded_checkpoint_gives_up_its_properties(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    """The whole point of loading one: a dataset processed before is not processed again."""
+    processed(phenome, 6)
+    loading(properties=[{'area': 1.0}, {'area': 2.0}])
+
+    phenome.load_checkpoint(tmp_path / 'previous.hdf5')
+
+    assert phenome.properties_df is not None
+    assert phenome.has_properties
+
+
+def test_a_checkpoint_without_properties_leaves_none_behind(
+    phenome: PhenoMeInterface, processed, loading, tmp_path: Path
+) -> None:
+    """Embeddings alone is the ordinary half-done run, and the properties step has to stay open."""
+    processed(phenome, 6)
+    loading(properties=[])
+
+    phenome.load_checkpoint(tmp_path / 'previous.hdf5')
+
+    assert phenome.properties_df is None
+
+
+def test_a_written_checkpoint_is_read_back_whole(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """Against a real file rather than a stand-in, which is the only thing that can say the stubs are honest.
+
+    Everything above stubs the reading, so nothing else would catch PhenoMe resolving the paths a
+    checkpoint stores against the files currently found - which is what a load is.
+    """
+    path = written_checkpoint(loaded, properties=True)
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert loaded.params.paths.checkpoint == path
+
+    # The properties come back as a frame of their own, as though they had just been computed
+    assert loaded.has_properties
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_a_written_checkpoint_without_properties_reads_back_without_them(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """The half-done run, which has to read as one: its embeddings are there and its properties are not."""
+    loaded.load_checkpoint(written_checkpoint(loaded, properties=False))
+
+    assert loaded.has_processed_images
+    assert loaded.properties_df is None
+    assert not loaded.has_properties
+
+
+def test_a_written_checkpoint_agrees_with_the_run_that_would_resume_it(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """Written under the arguments the interface runs with, so an extraction has nothing to ask about."""
+    loaded.load_checkpoint(written_checkpoint(loaded))
+
+    assert loaded.inspect_checkpoint() is None
+
+
+def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
+    phenome: PhenoMeInterface, processed, loading, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is compared here: what the settings are is the run's question, and they may change first."""
+    processed(phenome, 6)
+    record = loading()
+    checkpoint = tmp_path / 'other.hdf5'
+
+    # Whatever reading it would find is beside the point, the load never asking
+    monkeypatch.setattr(
+        phenome_interface, 'inspect_checkpoint',
+        lambda *args: CheckpointMismatch(MODEL_MISMATCH, 'channel_mode differs')
+    )
+
+    phenome.load_checkpoint(checkpoint)
+
+    assert record['loaded'] == [str(checkpoint)]
+    assert phenome.params.paths.checkpoint == checkpoint
+
+
+def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What makes the overwrite prompt fire on a mode change rather than resuming the other run's embeddings."""
+    read_with = {}
+
+    def _capture(path, processing_params, image_paths):
+        read_with.update(processing_params)
+
+    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', _capture)
+    phenome.params.process.channel_mode = 'combined'
+
+    phenome.inspect_checkpoint()
+
+    assert read_with['channel_mode'] == 'combined'
 
 
 # ----------------------------------------------------------------------------
@@ -280,10 +503,10 @@ def analysed(interface: PhenoMeInterface, processed) -> PhenoMeInterface:
     """ Leave a result of every kind on an interface, as a full session would.
 
     Args:
-        interface (PhenoMeInterface): The interface to fill, whose paths are already pointed at a dataset.
+        interface: The interface to fill, whose paths are already pointed at a dataset.
         processed: The fixture making the pipeline report processed images.
     Returns:
-        PhenoMeInterface: The same interface, now holding results and parameters naming them.
+        The same interface, now holding results and parameters naming them.
     """
     processed(interface, 6)
     for attribute in RESULT_FRAMES:
@@ -343,13 +566,13 @@ def test_loading_empties_the_pipeline(phenome: PhenoMeInterface, processed) -> N
     assert phenome.has_results is False
 
 
-def test_loading_puts_the_checkpoint_back(phenome: PhenoMeInterface, processed) -> None:
-    """A checkpoint answers only for the images it was filled from."""
+def test_loading_lets_go_of_the_checkpoint(phenome: PhenoMeInterface, processed) -> None:
+    """A checkpoint answers only for the images it was filled from, so another has to be come by."""
     analysed(phenome, processed)
 
     phenome.load_data_csv()
 
-    assert phenome.params.paths.checkpoint == DEFAULT_CHECKPOINT
+    assert phenome.params.paths.checkpoint is None
 
 
 def test_loading_drops_the_columns_and_values_the_previous_metadata_named(
@@ -605,15 +828,14 @@ def test_results_are_stored_and_returned(
 # ----------------------------------------------------------------------------
 
 
-def coordinates(n_components: int = 2) -> pd.DataFrame:
-    """ A frame shaped like the one the reduction returns. """
-    return pd.DataFrame({f'Component {i + 1}': [0.0, 1.0] for i in range(n_components)})
+def coordinates() -> pd.DataFrame:
+    """ A frame shaped like the one the reduction returns, two components as the canvas draws. """
+    return pd.DataFrame({f'Component {i + 1}': [0.0, 1.0] for i in range(PROJECTION_COMPONENTS)})
 
 
 def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, reduction) -> None:
-    stand_in = reduction(coordinates(3))
+    stand_in = reduction(coordinates())
     loaded.params.explorer.method = 't-SNE'
-    loaded.params.explorer.dims = '3D'
     loaded.params.explorer.source = 'properties'
 
     loaded.compute_projection()
@@ -621,7 +843,7 @@ def test_the_projection_translates_its_parameters(loaded: PhenoMeInterface, redu
     assert stand_in.pipelines[-1] is loaded.pheno
     assert stand_in.last == {
         'method': 'tsne',
-        'n_components': 3,
+        'n_components': PROJECTION_COMPONENTS,
         'source': 'properties',
         'filters': None,
         'exclude': None,
@@ -666,22 +888,20 @@ def test_every_method_goes_down_under_its_phenome_name(
     assert stand_in.last['method'] == phenome_name
 
 
-@pytest.mark.parametrize(('dims', 'n_components'), [('2D', 2), ('3D', 3)])
-def test_the_canvas_is_read_as_a_number_of_components(
-    loaded: PhenoMeInterface, reduction, dims: str, n_components: int
+def test_the_projection_always_asks_for_the_two_the_canvas_draws(
+    loaded: PhenoMeInterface, reduction
 ) -> None:
-    stand_in = reduction(coordinates(n_components))
-    loaded.params.explorer.dims = dims
+    """The canvas draws a flat cloud, so the count is fixed rather than picked in the explorer."""
+    stand_in = reduction(coordinates())
 
     loaded.compute_projection()
 
-    assert stand_in.last['n_components'] == n_components
+    assert stand_in.last['n_components'] == 2
 
 
 def test_the_translations_cover_every_choice() -> None:
     """A choice added to the parameter model without a translation would raise on the first compute."""
     assert set(DR_METHODS) == set(EMBEDDING_METHOD_CHOICES)
-    assert set(DIMS_COMPONENTS) == set(DIMS_CHOICES)
 
 
 def test_the_projection_is_stored_and_returned(loaded: PhenoMeInterface, reduction) -> None:

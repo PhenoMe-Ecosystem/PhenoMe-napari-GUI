@@ -16,7 +16,7 @@ class ImageViewer:
         """ Store the napari viewer to display the layers into.
 
         Args:
-            viewer (napari.viewer.Viewer): The napari viewer the widget is docked in.
+            viewer: The napari viewer the widget is docked in.
         Returns:
             None
         """
@@ -36,10 +36,10 @@ class ImageViewer:
         The layers already present in the viewer are cleared beforehand.
 
         Args:
-            image_paths (list[str]): Paths of the images to read and display.
-            mask_paths (list[str]): Paths of the corresponding masks, added as label layers. None to display the images alone.
-            row_data (list[dict]): Metadata attached to each layer, one dict per image. None to attach no metadata.
-            names (list[str]): Name given to each image layer, the mask layers being suffixed with ' - Mask'. None to name every layer 'Image'.
+            image_paths: Paths of the images to read and display.
+            mask_paths: Paths of the corresponding masks, added as label layers. None to display the images alone.
+            row_data: Metadata attached to each layer, one dict per image. None to attach no metadata.
+            names: Name given to each image layer, the mask layers being suffixed with ' - Mask'. None to name every layer 'Image'.
         """
         self.clear()
 

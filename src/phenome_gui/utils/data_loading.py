@@ -27,7 +27,7 @@ class DataLoading:
             metadata_csv: Path to the .csv file holding the metadata.
             masks_folder: Path to the folder containing the masks. None when no masks are present.
         Returns:
-            pd.DataFrame: The metadata of the files found, empty when no file matched.
+            The metadata of the files found, empty when no file matched.
         """
         metadata_df = pd.read_csv(metadata_csv)
         metadata_fn = make_dataframe_metadata_fn(metadata_df)
@@ -44,7 +44,7 @@ class DataLoading:
             template: Path template to parse the metadata from the file paths.
             masks_folder: Path to the folder containing the masks. None when no masks are present.
         Returns:
-            pd.DataFrame: The metadata of the files found, empty when no file matched.
+            The metadata of the files found, empty when no file matched.
         """
         metadata_fn = get_metadata_from_path(template)
         logger.info("Loading data with path template: images_folder=%s, template=%s, masks_folder=%s", images_folder, template, masks_folder)

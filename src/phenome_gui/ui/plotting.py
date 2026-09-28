@@ -5,10 +5,12 @@ them by, and knows nothing about where either came from.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
+import pyqtgraph.exporters as exporters
 from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import QFont, QPainterPath, QPolygonF
@@ -109,6 +111,13 @@ SELECTION_COLOUR = "#EEFF00"
 SELECTION_ALPHA = 110
 SELECTION_SIZE = MARKER_SIZE + 2
 
+# The file types the plot can be written as, each keyed by the extension it is written under. Named
+# here rather than picked apart in the writing, so a format added to the canvas is added in one place.
+EXPORT_FORMATS = {
+    'svg': exporters.SVGExporter,
+    'png': exporters.ImageExporter,
+}
+
 
 def is_continuous(values: pd.Series, name: str) -> bool:
     """ Whether a column is a measurement to draw along a ramp rather than labels to group by.
@@ -117,10 +126,10 @@ def is_continuous(values: pd.Series, name: str) -> bool:
     offering a range where the plot draws a ramp, and a list of values where it draws groups.
 
     Args:
-        values (pd.Series): The column's values, whose type is what decides in the general case.
-        name (str): The column's name, which is what settles the numeric columns holding labels.
+        values: The column's values, whose type is what decides in the general case.
+        name: The column's name, which is what settles the numeric columns holding labels.
     Returns:
-        bool: True for a column to colour along a ramp, False for one to draw as groups.
+        True for a column to colour along a ramp, False for one to draw as groups.
     """
     if name.lower() in CATEGORICAL_COLUMNS:
         return False
@@ -146,10 +155,10 @@ def resolve_column(projection_df: pd.DataFrame, name: str | None) -> str | None:
     find a column the same way it does.
 
     Args:
-        projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
-        name (str): Key to look for. None or empty resolves to nothing, no key having been picked.
+        projection_df: The projected coordinates and the columns alongside them.
+        name: Key to look for. None or empty resolves to nothing, no key having been picked.
     Returns:
-        str: The matching column of the projection, or None when it carries no such column.
+        The matching column of the projection, or None when it carries no such column.
     """
     if not name:
         return None
@@ -173,9 +182,9 @@ def metadata_columns(projection_df: pd.DataFrame) -> list[str]:
     neither has room for the dozens of properties a projection can carry.
 
     Args:
-        projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
+        projection_df: The projected coordinates and the columns alongside them.
     Returns:
-        list[str]: The metadata columns, in the order the projection carries them.
+        The metadata columns, in the order the projection carries them.
     """
     placed = {IMAGE_COLUMN, INDEX_COLUMN}
 
@@ -194,7 +203,7 @@ def format_value(value) -> str:
     Args:
         value: The value held for one image, of whatever type its column has.
     Returns:
-        str: The value as text, a measurement kept to a few figures and a missing one named.
+        The value as text, a measurement kept to a few figures and a missing one named.
     """
     if pd.isna(value):
         return MISSING_LABEL
@@ -219,8 +228,8 @@ def group_order(value) -> tuple[int, float, str]:
     Args:
         value: The label of one group, of whatever type the column holding it has.
     Returns:
-        tuple: Key ordering the numbers first, the rest of the labels after them, and the missing
-            ones last.
+        Key ordering the numbers first, the rest of the labels after them, and the missing
+        ones last.
     """
     # The canvas has already gathered the missing values under the label by the time it groups by
     # them, where the field a highlight is picked from reads the column as PhenoMe left it
@@ -396,7 +405,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Build the canvas, empty until a projection is drawn on it.
 
         Args:
-            parent (QWidget): The widget the canvas is nested in.
+            parent: The widget the canvas is nested in.
         """
         super().__init__(parent)
         self.setBackground(SURFACE)
@@ -449,14 +458,12 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Draw a projection, replacing whatever was on the canvas before.
 
         Args:
-            projection_df (pd.DataFrame): The projected coordinates, one row per image, as PhenoMe
+            projection_df: The projected coordinates, one row per image, as PhenoMe
                 returns them. None or empty leaves the canvas cleared, which is what an empty or
                 failed run comes back as.
-            color_by (str): Metadata column or property the points are coloured by. Labels are drawn
+            color_by: Metadata column or property the points are coloured by. Labels are drawn
                 as groups and measurements along a ramp. None, or a column the projection does not
                 carry, draws them as a single unnamed group.
-
-        TODO: 3D projections!
         """
         previous, selected = self._points, self._selected
         self._clear()
@@ -466,8 +473,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         components = [column for column in projection_df.columns if column.startswith(COMPONENT_PREFIX)]
 
-        # PhenoMe returns as many components as were asked for, where the canvas can only draw two of
-        # them. A 3D projection is left undrawn rather than shown as the flat slice it is not.
+        # The canvas draws a flat cloud and the projection is always computed with two components, so
+        # anything else is a frame this canvas did not ask for and cannot place: left undrawn rather
+        # than shown as the slice of itself the first two columns would make.
         if len(components) != 2:
             logger.info("A %d-dimensional projection cannot be drawn on this canvas.", len(components))
             return
@@ -564,7 +572,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Wait for one of the two shapes to be drawn over the plot.
 
         Args:
-            shape (str): Which of them to wait for, BOX_SELECTION or LASSO_SELECTION.
+            shape: Which of them to wait for, BOX_SELECTION or LASSO_SELECTION.
         """
         self._viewbox.selecting = shape
         self._viewbox.setCursor(Qt.CursorShape.CrossCursor)
@@ -578,7 +586,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Pick out the points a drawn box covers, and announce which images they are.
 
         Args:
-            rect (QRectF): The box that was drawn, in the plot's own coordinates.
+            rect: The box that was drawn, in the plot's own coordinates.
         """
         self._viewbox.unsetCursor()
 
@@ -591,7 +599,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Pick out the points a drawn lasso encloses, and announce which images they are.
 
         Args:
-            polygon (QPolygonF): The path the pointer took, in the plot's own coordinates.
+            polygon: The path the pointer took, in the plot's own coordinates.
         """
         self._viewbox.unsetCursor()
 
@@ -604,11 +612,11 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Pick out the points enclosed by a drawn path, washing them over on the plot.
 
         Args:
-            polygon (QPolygonF): The path the points are picked from, in the plot's own coordinates.
+            polygon: The path the points are picked from, in the plot's own coordinates.
                 Closed as it is read, so a loop left ajar still holds what it went round.
         Returns:
-            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
-                rows of the projection stand in on a frame carrying no such column.
+            The image each picked point stands for, as PhenoMe indexes its results. The
+            rows of the projection stand in on a frame carrying no such column.
         """
         if self._points is None or self._points.empty:
             return []
@@ -633,10 +641,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Pick out the points falling inside a box, washing them over on the plot.
 
         Args:
-            rect (QRectF): The box the points are picked from, in the plot's own coordinates.
+            rect: The box the points are picked from, in the plot's own coordinates.
         Returns:
-            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
-                rows of the projection stand in on a frame carrying no such column.
+            The image each picked point stands for, as PhenoMe indexes its results. The
+            rows of the projection stand in on a frame carrying no such column.
         """
         if self._points is None or self._points.empty:
             return []
@@ -663,13 +671,13 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         fades the plot by, read the right way up.
 
         Args:
-            field (str): Metadata column or property the criterion is read on. None, or a column the
+            field: Metadata column or property the criterion is read on. None, or a column the
                 projection does not carry, picks nothing out.
             criterion: Either two numbers, read as the ends of a range the value has to fall between,
                 or a single value the point has to hold. None picks nothing out.
         Returns:
-            list[int]: The image each picked point stands for, as PhenoMe indexes its results. The
-                rows of the projection stand in on a frame carrying no such column.
+            The image each picked point stands for, as PhenoMe indexes its results. The
+            rows of the projection stand in on a frame carrying no such column.
         """
         if self._points is None or self._points.empty:
             return []
@@ -685,8 +693,8 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ The images the current selection stands for.
 
         Returns:
-            list[int]: The index PhenoMe holds each selected image at, or the rows of the projection
-                when it carries no index of its own. Empty when nothing is selected.
+            The index PhenoMe holds each selected image at, or the rows of the projection
+            when it carries no index of its own. Empty when nothing is selected.
         """
         if self._points is None or self._selected is None:
             return []
@@ -714,7 +722,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         read against the cloud it was picked from rather than on an empty plot.
 
         Args:
-            field (str): Metadata column or property the criterion is read on. None, or a column the
+            field: Metadata column or property the criterion is read on. None, or a column the
                 projection does not carry, leaves every point as it is.
             criterion: Either two numbers, read as the ends of a range the value has to fall between,
                 or a single value the point has to hold. None leaves every point as it is.
@@ -736,11 +744,11 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         selecting, which picks out the rows that do: one criterion, one answer, two uses.
 
         Args:
-            field (str): Column the criterion is read on.
+            field: Column the criterion is read on.
             criterion: The range or the value the points are held to.
         Returns:
-            pd.Series: True for each row answering the criterion, or None when there is no criterion
-                to hold them to and nothing to say.
+            True for each row answering the criterion, or None when there is no criterion
+            to hold them to and nothing to say.
         """
         column = resolve_column(self._points, field)
         if column is None or criterion is None:
@@ -767,10 +775,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         be in the order the labels themselves are in.
 
         Args:
-            projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
-            x_column (str): Column holding the first component.
-            y_column (str): Column holding the second component.
-            column (str): Column the points are grouped by.
+            projection_df: The projected coordinates and the columns alongside them.
+            x_column: Column holding the first component.
+            y_column: Column holding the second component.
+            column: Column the points are grouped by.
         """
         # PhenoMe leaves the metadata of an image it knows nothing about empty, and the clustering
         # leaves its noise points unlabelled, neither of which should read as a group called 'nan'.
@@ -812,10 +820,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         there is no group to name and nothing for a legend to say.
 
         Args:
-            projection_df (pd.DataFrame): The projected coordinates and the columns alongside them.
-            x_column (str): Column holding the first component.
-            y_column (str): Column holding the second component.
-            column (str): Column the points are coloured by.
+            projection_df: The projected coordinates and the columns alongside them.
+            x_column: Column holding the first component.
+            y_column: Column holding the second component.
+            column: Column the points are coloured by.
         """
         values = projection_df[column].astype(float)
         low, high = float(values.min()), float(values.max())
@@ -946,10 +954,10 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         from one projection to the next and again at every zoom.
 
         Args:
-            position (QPointF): Where the pointer is, in the plot's own coordinates.
+            position: Where the pointer is, in the plot's own coordinates.
         Returns:
-            int: Row of the drawn projection the position falls on, or None when the canvas is empty
-                or nothing is within reach.
+            Row of the drawn projection the position falls on, or None when the canvas is empty
+            or nothing is within reach.
         """
         if self._points is None or self._points.empty:
             return None
@@ -975,7 +983,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         would otherwise be answered with wherever the pointer was last seen.
 
         Args:
-            event (MouseClickEvent): The click as the canvas reports it, holding where it landed and
+            event: The click as the canvas reports it, holding where it landed and
                 which button was pressed. Only the left one picks a point out, the right one
                 belonging to the view's own menu.
         """
@@ -999,7 +1007,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         the ones landing outside the plot are turned away before any point is looked for.
 
         Args:
-            position (QPointF): Where the pointer is, in the scene's coordinates, as the canvas
+            position: Where the pointer is, in the scene's coordinates, as the canvas
                 reports every move over itself.
         """
         row = None
@@ -1029,7 +1037,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         under a crowded patch would otherwise be ringed underneath it.
 
         Args:
-            row (int): Row of the drawn projection to ring. None takes the ring off and rings nothing.
+            row: Row of the drawn projection to ring. None takes the ring off and rings nothing.
         """
         if self._highlight is not None:
             self._plot.removeItem(self._highlight)
@@ -1057,9 +1065,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         whenever it is what the colouring reads.
 
         Args:
-            row (int): Row of the drawn projection to describe.
+            row: Row of the drawn projection to describe.
         Returns:
-            str: The image's name and values, one per line.
+            The image's name and values, one per line.
         """
         point = self._points.iloc[row]
         lines = []
@@ -1082,7 +1090,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ The metadata columns of the drawn projection.
 
         Returns:
-            list[str]: The metadata columns, in the order the projection carries them.
+            The metadata columns, in the order the projection carries them.
         """
         return metadata_columns(self._points)
 
@@ -1091,9 +1099,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         Args:
             colour: The colour the point would be drawn in, as a name or as a QColor.
-            dimmed (bool): True to fade it back, False to leave it as it is.
+            dimmed: True to fade it back, False to leave it as it is.
         Returns:
-            QBrush: The colour, at full opacity or at the dimmed one.
+            The colour, at full opacity or at the dimmed one.
         """
         brush = pg.mkBrush(colour)
         if dimmed:
@@ -1115,7 +1123,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             rows: Mask picking the rows being drawn out of the frame, for a set holding some of them.
                 None for a set holding all of them.
         Returns:
-            list: A brush for each point, or None while nothing is highlighted and they can share one.
+            A brush for each point, or None while nothing is highlighted and they can share one.
         """
         if self._dimmed is None:
             return None
@@ -1129,14 +1137,14 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
         """ Draw one group of points.
 
         Args:
-            x (pd.Series): Coordinates along the first component.
-            y (pd.Series): Coordinates along the second component.
-            colour (str): Colour the group is drawn in, and the colour its legend entry is drawn in.
-            brushes (list): A brush per point, for a group the highlight has split. None to leave
+            x: Coordinates along the first component.
+            y: Coordinates along the second component.
+            colour: Colour the group is drawn in, and the colour its legend entry is drawn in.
+            brushes: A brush per point, for a group the highlight has split. None to leave
                 every point on the group's own colour.
-            name (str): Name of the group, which is what puts it in the legend. None to leave it out.
+            name: Name of the group, which is what puts it in the legend. None to leave it out.
         Returns:
-            pg.ScatterPlotItem: The series drawn, which is what a legend entry is made from.
+            The series drawn, which is what a legend entry is made from.
         """
         series = pg.ScatterPlotItem(
             x=x.to_numpy(),
@@ -1155,3 +1163,29 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         self._plot.addItem(series)
         return series
+
+    def export_plot(self, path: str | Path, extension: str) -> None:
+        """ Write the plot as it is currently drawn to a file.
+
+        What is written is the plot item rather than the canvas, which is the same picture: the
+        legend and the colorbar are parented to the view box, so both go down with the points, and
+        the background they are drawn on goes with them.
+
+        Args:
+            path: Where the file is written, the caller having named it.
+            extension: The file type to write, 'svg' or 'png'. Read without its case or a
+                leading dot, so a name's own suffix can be handed straight over.
+        Raises:
+            ValueError: The extension names a file type the canvas cannot write.
+        """
+        key = extension.lower().lstrip('.')
+
+        if key not in EXPORT_FORMATS:
+            offered = ', '.join(f"'{name}'" for name in EXPORT_FORMATS)
+            raise ValueError(f"Unrecognized file type '{extension}'; must be one of {offered}.")
+
+        self.setBackground(None)
+        EXPORT_FORMATS[key](self._plot).export(str(path))
+        logger.info("Wrote the plot to '%s'.", path)
+        self.setBackground(SURFACE)
+

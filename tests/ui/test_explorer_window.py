@@ -11,13 +11,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QFileDialog
 
 from phenome_gui._widget import PhenoMeWidget
 from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
 from phenome_gui.ui.plotting import BOX_SELECTION, LASSO_SELECTION
 from phenome_gui.utils.params import (
-    DIMS_CHOICES,
     EMBEDDING_METHOD_CHOICES,
     SOURCE_CHOICES,
 )
@@ -35,7 +35,7 @@ def make_explorer(widget: PhenoMeWidget, qtbot):
     a test asking what it opens on has to set them first.
 
     Returns:
-        Callable[[], InteractiveExplorerWindow]: Called as make_explorer().
+        Called as make_explorer().
     """
     def _build() -> InteractiveExplorerWindow:
         window = InteractiveExplorerWindow(widget._phenome, widget._image_viewer, widget)
@@ -77,7 +77,6 @@ def explorer_params(window: InteractiveExplorerWindow):
     ('combo', 'choices'),
     [
         pytest.param('_method_combo', EMBEDDING_METHOD_CHOICES, id='method'),
-        pytest.param('_dims_combo', DIMS_CHOICES, id='dims'),
         pytest.param('_source_combo', SOURCE_CHOICES, id='source'),
     ],
 )
@@ -90,13 +89,11 @@ def test_the_combos_offer_the_values_the_model_accepts(
 
 def test_the_combos_open_on_the_stored_parameters(widget: PhenoMeWidget, make_explorer) -> None:
     widget._phenome.params.explorer.method = 'PCA'
-    widget._phenome.params.explorer.dims = '3D'
     widget._phenome.params.explorer.source = 'properties'
 
     explorer = make_explorer()
 
     assert explorer._method_combo.currentText() == 'PCA'
-    assert explorer._dims_combo.currentText() == '3D'
     assert explorer._source_combo.currentText() == 'properties'
 
 
@@ -109,7 +106,6 @@ def test_the_combos_open_on_the_stored_parameters(widget: PhenoMeWidget, make_ex
     ('combo', 'field', 'value'),
     [
         pytest.param('_method_combo', 'method', 'UMAP', id='method'),
-        pytest.param('_dims_combo', 'dims', '3D', id='dims'),
         pytest.param('_source_combo', 'source', 'combined', id='source'),
     ],
 )
@@ -247,7 +243,7 @@ def computing(loaded_explorer: InteractiveExplorerWindow, reduction, sync_worker
     test may run a real reduction.
 
     Returns:
-        Callable[[pd.DataFrame | None], ReductionSpy]: Called as computing(frame).
+        Called as computing(frame).
     """
     def _stub(frame: pd.DataFrame | None = None):
         stand_in = reduction(coordinates() if frame is None else frame)
@@ -257,16 +253,17 @@ def computing(loaded_explorer: InteractiveExplorerWindow, reduction, sync_worker
     return _stub
 
 
-def coordinates(n_components: int = 2, groups: list[str] | None = None) -> pd.DataFrame:
+def coordinates(groups: list[str] | None = None) -> pd.DataFrame:
     """ A frame shaped like the one the reduction returns, metadata columns included.
 
+    Two coordinate columns, the projection being computed for the flat canvas and no other.
+
     Args:
-        n_components: Number of coordinate columns, as the number of dimensions asked for.
         groups: Value of the capitalised metadata columns for each row. None for the dataset's own.
     """
     groups = groups or ['ctrl', 'ctrl', 'drugA']
     frame = pd.DataFrame(
-        {f'Component {i + 1}': [float(row) for row in range(len(groups))] for i in range(n_components)}
+        {f'Component {i + 1}': [float(row) for row in range(len(groups))] for i in range(2)}
     )
 
     # PhenoMe capitalises the metadata columns it copies into the projection, and hands their values
@@ -295,18 +292,18 @@ def test_computing_reports_the_parameters_it_runs_with(
     assert "method='UMAP'" in caplog.text
 
 
-def test_computing_projects_with_the_chosen_method_and_dims(
+def test_computing_projects_with_the_chosen_method(
     loaded_explorer: InteractiveExplorerWindow, computing
 ) -> None:
-    stand_in = computing(coordinates(3))
+    """The count is not among them, the canvas drawing a flat cloud and nothing else."""
+    stand_in = computing()
     loaded_explorer._method_combo.setCurrentText('UMAP')
-    loaded_explorer._dims_combo.setCurrentText('3D')
 
     loaded_explorer._compute_button.click()
 
     assert stand_in.last == {
         'method': 'umap',
-        'n_components': 3,
+        'n_components': 2,
         'source': 'embeddings',
         'filters': None,
         'exclude': None,
@@ -457,8 +454,8 @@ def criteria_form(monkeypatch: pytest.MonkeyPatch):
     what a user would leave behind.
 
     Returns:
-        Callable[..., list]: Called as criteria_form(FilterWindow, 'drug_name', 'ctrl'), returning
-            the forms opened so far.
+        Called as criteria_form(FilterWindow, 'drug_name', 'ctrl'), returning
+        the forms opened so far.
     """
     opened = []
 
@@ -617,7 +614,7 @@ def measured(loaded_explorer: InteractiveExplorerWindow, computing, processed):
     on offer are the colouring's, which reads the computed property keys rather than the frame.
 
     Returns:
-        Callable[[list[float]], None]: Called as measured([120.0, 512.0]).
+        Called as measured([120.0, 512.0]).
     """
     def _draw(areas: list[float]) -> None:
         results = processed(loaded_explorer._phenome, len(areas))
@@ -1180,7 +1177,7 @@ def clickable(loaded_explorer: InteractiveExplorerWindow, computing, processed):
     to hold the paths for a clicked point to lead anywhere.
 
     Returns:
-        Callable[[list[int]], list[str]]: Called as clickable([4, 0, 2]), returning the image paths.
+        Called as clickable([4, 0, 2]), returning the image paths.
     """
     def _draw(indices: list[int]) -> list[str]:
         paths = list(loaded_explorer._phenome.metadata_df['file_path'])
@@ -1345,3 +1342,135 @@ def test_clearing_an_untouched_window_raises_nothing(explorer: InteractiveExplor
 
     assert drawn(explorer) == {}
     assert explorer._selected_indices == []
+
+
+# ----------------------------------------------------------------------------
+# Writing the drawn plot out
+# ----------------------------------------------------------------------------
+
+# The first bytes of a PNG file, which is what says the image exporter wrote it
+PNG_MAGIC = b'\x89PNG'
+
+
+@pytest.fixture
+def saving_to(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the save dialog with a path and a picked format, without showing it.
+
+    Returns:
+        Called as saving_to(tmp_path / 'plot.svg'), the filter
+        defaulting to none being picked, or with '' for the dialog being closed without a name.
+    """
+    def _answer(file_path, selected_filter: str = '') -> None:
+        monkeypatch.setattr(
+            QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(file_path), selected_filter)
+        )
+
+    return _answer
+
+
+def test_the_export_is_shown_in_the_window(explorer: InteractiveExplorerWindow) -> None:
+    """A button built but never laid out is one nobody can press, whatever it is connected to."""
+    assert explorer._export_graph_button.isVisibleTo(explorer)
+
+
+def test_there_is_nothing_to_export_until_a_projection_is_drawn(
+    explorer: InteractiveExplorerWindow
+) -> None:
+    assert not explorer._export_graph_button.isEnabled()
+    assert explorer._export_graph_button.toolTip() == 'Please compute a projection first.'
+
+
+def test_a_projection_opens_the_export(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    computing()
+
+    loaded_explorer._compute_button.click()
+
+    assert loaded_explorer._export_graph_button.isEnabled()
+
+
+def test_a_load_closes_the_export_back_down(explored: InteractiveExplorerWindow) -> None:
+    """The plot was drawn from images that are no longer loaded, and there is nothing left to write."""
+    assert explored._export_graph_button.isEnabled()
+
+    reloaded(explored)
+
+    assert not explored._export_graph_button.isEnabled()
+    assert explored._export_graph_button.toolTip() == 'Please compute a projection first.'
+
+
+@pytest.fixture
+def exporting(loaded_explorer: InteractiveExplorerWindow, computing) -> InteractiveExplorerWindow:
+    """ A window with a projection drawn on it, the export being open. """
+    computing()
+    loaded_explorer._compute_button.click()
+    return loaded_explorer
+
+
+def test_the_plot_is_written_to_the_picked_path(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path
+) -> None:
+    written = tmp_path / 'picked.svg'
+    saving_to(written, 'SVG Files (*.svg)')
+
+    exporting._export_graph_button.click()
+
+    assert '<svg' in written.read_text()
+
+
+def test_the_picked_format_is_what_is_written(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path
+) -> None:
+    """The dialog names the formats as filters, which is what the canvas is asked for."""
+    written = tmp_path / 'picked.png'
+    saving_to(written, 'PNG Images (*.png)')
+
+    exporting._export_graph_button.click()
+
+    assert written.read_bytes().startswith(PNG_MAGIC)
+
+
+def test_a_name_alone_says_what_was_meant(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path
+) -> None:
+    """The dialog hands back no filter when none was picked, leaving the name to say it."""
+    written = tmp_path / 'named.png'
+    saving_to(written)
+
+    exporting._export_graph_button.click()
+
+    assert written.read_bytes().startswith(PNG_MAGIC)
+
+
+def test_a_name_given_without_an_extension_is_spelled_out(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path
+) -> None:
+    """A file nothing will open is of no use, the format having been picked in the dialog."""
+    saving_to(tmp_path / 'bare', 'SVG Files (*.svg)')
+
+    exporting._export_graph_button.click()
+
+    assert '<svg' in (tmp_path / 'bare.svg').read_text()
+
+
+def test_closing_the_dialog_writes_nothing(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path
+) -> None:
+    saving_to('')
+
+    exporting._export_graph_button.click()
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_file_type_that_cannot_be_written_is_reported(
+    exporting: InteractiveExplorerWindow, saving_to, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Typed over the filter, and raised by the canvas: a Qt slot has to say so rather than throw."""
+    written = tmp_path / 'picked.jpg'
+    saving_to(written)
+
+    with caplog.at_level(logging.ERROR, logger='main_logger'):
+        exporting._export_graph_button.click()
+
+    assert 'Could not export the plot' in caplog.text
+    assert not written.exists()

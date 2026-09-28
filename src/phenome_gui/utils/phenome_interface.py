@@ -1,4 +1,5 @@
 from logging import getLogger
+from pathlib import Path
 
 import pandas as pd
 from phenome import PhenoMe
@@ -10,15 +11,15 @@ from .analysis import PhenoMeAnalysis
 from .checkpoint import CheckpointMismatch, inspect_checkpoint
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
-from .params import DEFAULT_CHECKPOINT, Params
+from .params import Params
 
 logger = getLogger(__name__)
 
 # What PhenoMe.process_images() defaults the arguments the GUI never sets to. A checkpoint is validated
 # against these alongside the ones a model brings, so they are written out here rather than left
 # implicit: reading a checkpoint before a run means comparing it against what the run will really use.
+# The channel mode is not among them, being the form's to set.
 PROCESS_DEFAULTS = {
-    'channel_mode': 'split',
     'channels': None,
     'resize_size': 224,
     'pad_size': None,
@@ -30,8 +31,8 @@ PROCESS_DEFAULTS = {
 # Keyed by the EmbeddingMethod choices, so every method the form can offer has a translation.
 DR_METHODS = {'t-SNE': 'tsne', 'PCA': 'pca', 'UMAP': 'umap'}
 
-# The GUI picks a canvas to draw on, which PhenoMe reads as a number of components to reduce to.
-DIMS_COMPONENTS = {'2D': 2, '3D': 3}
+# The canvas draws a flat cloud, so the images are always reduced to the two components it plots.
+PROJECTION_COMPONENTS = 2
 
 # Columns naming one image rather than describing it, which colour every point differently and say
 # nothing by it. Dropped only from a dataset large enough for their uniqueness to mean something, the
@@ -59,7 +60,7 @@ class PhenoMeInterface:
         """ Initialize the PhenoMe pipeline, the parameters and the per-tab components.
 
         Args:
-            seed (int): Random seed passed to the PhenoMe pipeline, for reproducibility.
+            seed: Random seed passed to the PhenoMe pipeline, for reproducibility.
         """
         self.pheno = PhenoMe(seed=seed)
         self.params = Params()
@@ -90,7 +91,7 @@ class PhenoMeInterface:
         loading one costs. Read before a load, to know whether there is anything to lose by it.
 
         Returns:
-            bool: True once a step has run on the loaded images.
+            True once a step has run on the loaded images.
         """
         return self.has_processed_images or any(
             frame is not None for frame in (
@@ -123,8 +124,9 @@ class PhenoMeInterface:
         self.projection_df = None
 
         # A checkpoint holds the results of the images it was filled from, and would be read back for
-        # the next dataset as though it answered for those images too
-        self.params.paths.checkpoint = DEFAULT_CHECKPOINT
+        # the next dataset as though it answered for those images too. Nothing is processed until
+        # another has been created or loaded against the images now loaded.
+        self.params.paths.checkpoint = None
 
         # Columns and values of the metadata just dropped, which name nothing in the next one
         self.params.explorer.color_by = None
@@ -154,7 +156,7 @@ class PhenoMeInterface:
         outlive the images they were computed from.
 
         Returns:
-            pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
+            The metadata of the files found, also stored in self.metadata_df.
         """
         self.clear_results()
 
@@ -171,7 +173,7 @@ class PhenoMeInterface:
         outlive the images they were computed from.
 
         Returns:
-            pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
+            The metadata of the files found, also stored in self.metadata_df.
         """
         self.clear_results()
 
@@ -209,17 +211,31 @@ class PhenoMeInterface:
         else:
             logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
 
+    def process_arguments(self) -> dict:
+        """ The arguments a run is made with: the model's own, under what the form settles.
+
+        The form has the last word, so what was picked in it is what runs. Gathered here rather than
+        spelled out at the call below, which is also what keeps a model naming the same argument from
+        being handed down twice.
+
+        Returns:
+            The arguments handed to PhenoMe on top of the ones the run itself names.
+        """
+        return {**(self.process_options or {}), 'channel_mode': self.params.process.channel_mode}
+
     def processing_params(self) -> dict:
         """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.
 
-        The model's own arguments over PhenoMe's defaults, which is how process_images() below hands
-        them down: what the form does not set, PhenoMe fills in itself. Read before a run to compare a
-        checkpoint against it, so the comparison is made against what the run will really use.
+        The arguments the run is really made with over PhenoMe's defaults, which is how
+        process_images() below hands them down: what neither the form nor the model sets, PhenoMe
+        fills in itself. Read before a run to compare a checkpoint against it, so the comparison is
+        made against what the run will really use - the channel mode included, which is the first
+        thing PhenoMe refuses to resume a checkpoint across.
 
         Returns:
-            dict: The processing parameters, whether or not a model has been loaded.
+            The processing parameters, whether or not a model has been loaded.
         """
-        return {**PROCESS_DEFAULTS, **(self.process_options or {})}
+        return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
     def inspect_checkpoint(self) -> CheckpointMismatch | None:
         """ Read the checkpoint an embedding run would be written to, before the run is started.
@@ -228,20 +244,66 @@ class PhenoMeInterface:
         halfway through it. Asked here beforehand, the same disagreement can be put to the user while
         there is still a choice to make about it.
 
+        Asked at the run rather than when the checkpoint is come by, as what it compares can change
+        after the fact: the model and the channel mode both reach this comparison, and either can be
+        picked again between choosing a checkpoint and running against it.
+
         Returns:
-            CheckpointMismatch | None: What the checkpoint holds that this run would not put there, or
-                None when it agrees, is empty, does not exist, or could not be read.
+            What the checkpoint holds that this run would not put there, or
+            None when it agrees, is empty, does not exist, or could not be read.
         """
         image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
         return inspect_checkpoint(self.params.paths.checkpoint, self.processing_params(), image_paths)
 
+    def load_checkpoint(self, path: Path | str) -> None:
+        """ Read an existing checkpoint into the pipeline.
+
+        The embeddings and the properties it holds are the ones the rest of the plugin then works
+        from, so a dataset processed before is picked up where it was left rather than processed
+        again. PhenoMe resolves the paths the checkpoint stores against the files currently found,
+        which is why a dataset has to have been loaded first.
+
+        Nothing is compared here: PhenoMe.load_results() reads a checkpoint whatever settings it was
+        filled under, and the disagreement is the run's to find - by which time the settings may have
+        been picked again anyway.
+
+        Args:
+            path: The checkpoint file to read.
+        Raises:
+            RuntimeError: No dataset has been loaded, so there are no files to resolve against.
+            OSError: The file could not be read, or is held open by another process.
+        """
+        self.image_processing.load_results(str(path))
+
+        # Read back rather than left to the next run: the frame is what every property-based step
+        # reads, and a checkpoint holding properties has to be as good as having just computed them.
+        self.properties_df = self.image_processing.get_properties() if self.has_stored_properties else None
+
+        # Adopted last, so a load that raised leaves nothing selected
+        self.params.paths.checkpoint = Path(path)
+
+        logger.info(
+            "Loaded the checkpoint at '%s': %d image(s), properties %s.",
+            path, self.pheno.results.n_images, 'included' if self.properties_df is not None else 'not yet computed'
+        )
+
+    @property
+    def has_stored_properties(self) -> bool:
+        """ Whether the pipeline holds properties, computed here or read from a checkpoint.
+
+        Asked of PhenoMe rather than of the frame the interface keeps, this being what says whether
+        there is a frame to be read back at all.
+
+        Returns:
+            True when the loaded results carry properties.
+        """
+        return self.pheno.results.has_properties
+
     def process_images(self, progress_callback: ProgressCallback | None=None, force_reprocess: bool=False) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
         Uses the params to feed arguments.
-
-        TODO: Include the remaining advanced parameters from the form.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
@@ -253,15 +315,16 @@ class PhenoMeInterface:
         checkpoint_path = self.params.paths.checkpoint
 
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
-        # under are what its embeddings can be read against, and they are the registry's rather than
-        # anything the form shows.
+        # under are what its embeddings can be read against, and they are the registry's and the
+        # form's rather than only what the form shows.
         num_workers = self.params.process.num_workers
+        arguments = self.process_arguments()
         logger.info(
             "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
             self.params.process.model,
             self.params.process.batch_size,
             f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
-            str(self.process_options) if self.process_options else 'with no arguments of its own'
+            str(arguments)
         )
 
         self.image_processing.process_images(
@@ -272,7 +335,7 @@ class PhenoMeInterface:
             num_workers=num_workers,
             custom_transformations=self.transforms,
             force_reprocess=force_reprocess,
-            **self.process_options
+            **arguments
         )
 
     @property
@@ -283,7 +346,7 @@ class PhenoMeInterface:
         the processing step separately.
 
         Returns:
-            bool: True once the pipeline holds processed images.
+            True once the pipeline holds processed images.
         """
         return self.pheno.results.n_images > 0
 
@@ -300,7 +363,7 @@ class PhenoMeInterface:
                 PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
                 properties are cleared, the embeddings in the same file being left where they are.
         Returns:
-            pd.DataFrame: One row per image, holding the image path and the computed properties.
+            One row per image, holding the image path and the computed properties.
         """
         checkpoint_path = self.params.paths.checkpoint
 
@@ -327,7 +390,7 @@ class PhenoMeInterface:
         metadata table and makes them available as a grouping key like any other metadata column.
 
         Returns:
-            pd.DataFrame: One row per image, holding the image path and its cluster label.
+            One row per image, holding the image path and its cluster label.
         """
         clustering = self.params.clustering
 
@@ -371,7 +434,7 @@ class PhenoMeInterface:
         names it 'cluster_col' here and 'group_by' there, so the name is translated on the way down.
 
         Returns:
-            pd.DataFrame: One row per prototype, holding the grouping key, the image path and its rank in the group.
+            One row per prototype, holding the grouping key, the image path and its rank in the group.
         """
         prototypes = self.params.prototypes
 
@@ -390,7 +453,7 @@ class PhenoMeInterface:
         outliers come back is decided by the method and the threshold together.
 
         Returns:
-            pd.DataFrame: One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
+            One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
         """
         outliers = self.params.outliers
 
@@ -405,21 +468,21 @@ class PhenoMeInterface:
     def compute_projection(self) -> pd.DataFrame:
         """ Project the images down for the explorer plot. Stores the coordinates in self.projection_df.
 
-        Uses the params to feed arguments. Both the algorithm and the number of dimensions are named
-        for the GUI rather than for PhenoMe - the papers' spelling for the one, a kind of canvas for
-        the other - so both are translated on the way down. The filter and the exclusion go down as
-        they are, PhenoMe naming the first in the plural and reading an unset one and an empty one
-        the same way.
+        Uses the params to feed arguments. The algorithm is named for the GUI rather than for PhenoMe
+        - the papers' spelling rather than a plain key - so it is translated on the way down. The
+        number of components is not a parameter at all, the canvas drawing a flat cloud and nothing
+        else. The filter and the exclusion go down as they are, PhenoMe naming the first in the
+        plural and reading an unset one and an empty one the same way.
 
         Returns:
-            pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None
-                when there was nothing to project.
+            One row per image, holding its coordinates, name, index and metadata. None
+            when there was nothing to project.
         """
         explorer = self.params.explorer
 
         self.projection_df = self.phenome_analysis.run_dimensionality_reduction(
             method=DR_METHODS[explorer.method],
-            n_components=DIMS_COMPONENTS[explorer.dims],
+            n_components=PROJECTION_COMPONENTS,
             source=explorer.source,
             filters=explorer.filter,
             exclude=explorer.exclude
@@ -438,7 +501,7 @@ class PhenoMeInterface:
         metadata source chosen in the loading tab.
 
         Returns:
-            list[str]: The groupable column names, empty when no data has been loaded yet.
+            The groupable column names, empty when no data has been loaded yet.
         """
         if self.metadata_df is None or self.metadata_df.empty:
             return []
@@ -460,7 +523,7 @@ class PhenoMeInterface:
         telling, a handful of images being too few to tell an identifier from a grouping key.
 
         Returns:
-            list[str]: The columns to offer, empty when no data has been loaded yet.
+            The columns to offer, empty when no data has been loaded yet.
         """
         columns = [column for column in self.get_metadata_columns() if self._is_informative(column)]
 
@@ -473,10 +536,10 @@ class PhenoMeInterface:
         """ Whether a metadata column says enough about the images to be worth colouring by.
 
         Args:
-            column (str): Name of the column, which is read alongside its values: only the columns
+            column: Name of the column, which is read alongside its values: only the columns
                 named after an identifier are held to the uniqueness test.
         Returns:
-            bool: False for a column holding one value throughout, or one naming each image.
+            False for a column holding one value throughout, or one naming each image.
         """
         values = self.metadata_df[column]
         distinct = values.nunique(dropna=True)
@@ -493,9 +556,9 @@ class PhenoMeInterface:
         """ Return the content of a metadata row, in the form expected by the image viewer.
 
         Args:
-            row (int): Positional index of the row in the metadata dataframe.
+            row: Positional index of the row in the metadata dataframe.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         row_data = self.metadata_df.iloc[row]
 
@@ -515,9 +578,9 @@ class PhenoMeInterface:
         the returned images are indexed against the PhenoMe results rather than against the metadata.
 
         Args:
-            image_path (str): Path of the image, as returned by the prototype or outlier step.
+            image_path: Path of the image, as returned by the prototype or outlier step.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         if self.metadata_df is None or self.metadata_df.empty:
             return [image_path], None, [{}]
@@ -541,9 +604,9 @@ class PhenoMeInterface:
         metadata from the path, the way a retrieved image has them looked up.
 
         Args:
-            row (int): Positional index of the row in the projection dataframe.
+            row: Positional index of the row in the projection dataframe.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         return self.get_image_data_at(int(self.projection_df.iloc[row][PROJECTION_INDEX_COLUMN]))
 
@@ -555,9 +618,9 @@ class PhenoMeInterface:
         is looked up here and the mask and the metadata from the path.
 
         Args:
-            index (int): Place of the image in the PhenoMe results.
+            index: Place of the image in the PhenoMe results.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         image_path = self.pheno.results.img_path[index]
 
@@ -571,7 +634,7 @@ class PhenoMeInterface:
         """ Get the metadata dataframe in its current state.
 
         Returns:
-            pd.Dataframe: The metadata dataframe
+            The metadata dataframe
         """
 
         return self.metadata_df
@@ -581,7 +644,7 @@ class PhenoMeInterface:
         """ Whether the properties have been computed, which the property-based analysis sources need.
 
         Returns:
-            bool: True if properties have been calculated
+            True if properties have been calculated
         """
         properties_available = self.properties_df is not None
         logger.info('Properties are available: %s', properties_available)

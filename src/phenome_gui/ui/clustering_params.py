@@ -33,9 +33,9 @@ class ClusterParamsWindow(QDialog):
         """ Build the form and fill it with the given parameters.
 
         Args:
-            parent (QWidget): The widget the dialog is parented to, so it closes with it.
-            params (ClusteringParams): The current clustering parameters. Copied, never modified in place.
-            properties_available (bool): Whether the properties have been computed, which the source choices need.
+            parent: The widget the dialog is parented to, so it closes with it.
+            params: The current clustering parameters. Copied, never modified in place.
+            properties_available: Whether the properties have been computed, which the source choices need.
         """
         super().__init__(parent)
         self.setWindowTitle("Clustering Options")
@@ -148,6 +148,6 @@ class ClusterParamsWindow(QDialog):
         """ Return the edited parameters.
 
         Returns:
-            ClusteringParams: The local copy of the clustering parameters, holding the values currently shown in the form.
+            The local copy of the clustering parameters, holding the values currently shown in the form.
         """
         return self.params

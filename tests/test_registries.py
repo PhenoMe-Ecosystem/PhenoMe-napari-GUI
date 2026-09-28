@@ -1,8 +1,9 @@
 """Tests for the registries naming what each model is loaded, prepared and processed with.
 
-A model is three things at once: the weights, the transformations its images are prepared with, and
-the arguments its embeddings are extracted under. The three are registered apart and looked up by the
-same key, so what these tests mostly hold is that the three agree on which keys exist.
+A model is four things at once: the weights, the transformations its images are prepared with, the
+arguments its embeddings are extracted under, and what the window picking it says about it. The four
+are registered apart and looked up by the same key, so what these tests mostly hold is that the four
+agree on which keys exist.
 
 No test loads real weights: the loaders reach for the network and a few hundred megabytes, so the
 model half is stood in for wherever a whole model would otherwise be built.
@@ -12,6 +13,10 @@ import numpy as np
 import pytest
 import torchvision.transforms as T
 
+from phenome_gui.registries.model_details import (
+    DETAILS_LOADERS,
+    get_model_details,
+)
 from phenome_gui.registries.models import (
     MODEL_LOADERS,
     MODEL_OPTIONS,
@@ -31,6 +36,9 @@ from phenome_gui.registries.transforms import (
 # The models the GUI offers, under the names the registries know them by
 MODEL_KEYS = sorted(MODEL_OPTIONS.values())
 
+# The one model at four sizes, which several registries answer for with a single loader
+DINOV2_KEYS = sorted(key for key in MODEL_KEYS if key.startswith('dinov2'))
+
 
 def described(transforms) -> str:
     """ A set of transformations as text, two of them never comparing equal to one another.
@@ -42,11 +50,15 @@ def described(transforms) -> str:
 
 
 # ----------------------------------------------------------------------------
-# The three registries, keyed alike
+# The four registries, keyed alike
 # ----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize('registry', [MODEL_LOADERS, TRANSFORMS_LOADERS, OPTIONS_LOADERS], ids=['models', 'transforms', 'options'])
+@pytest.mark.parametrize(
+    'registry',
+    [MODEL_LOADERS, TRANSFORMS_LOADERS, OPTIONS_LOADERS, DETAILS_LOADERS],
+    ids=['models', 'transforms', 'options', 'details'],
+)
 def test_every_model_the_gui_offers_is_registered(registry: dict) -> None:
     """A model offered in the form and missing from a registry raises the moment it is picked."""
     assert sorted(registry) == MODEL_KEYS
@@ -54,7 +66,12 @@ def test_every_model_the_gui_offers_is_registered(registry: dict) -> None:
 
 def test_nothing_is_registered_that_cannot_be_picked() -> None:
     """A key in the registries and not in the form is a model nobody can reach."""
-    assert sorted(MODEL_LOADERS) == sorted(TRANSFORMS_LOADERS) == sorted(OPTIONS_LOADERS)
+    assert (
+        sorted(MODEL_LOADERS)
+        == sorted(TRANSFORMS_LOADERS)
+        == sorted(OPTIONS_LOADERS)
+        == sorted(DETAILS_LOADERS)
+    )
 
 
 @pytest.mark.parametrize('model_key', MODEL_KEYS)
@@ -146,7 +163,7 @@ def loaded_without_weights(monkeypatch: pytest.MonkeyPatch):
     registries themselves, which is what these tests are about.
 
     Returns:
-        Callable[[], list[dict]]: Called as loaded_without_weights(), returning the calls made.
+        Called as loaded_without_weights(), returning the calls made.
     """
     def _replace() -> list[dict]:
         calls = []
@@ -198,3 +215,40 @@ def test_the_refusal_says_what_there_is_instead(loaded_without_weights) -> None:
 
     with pytest.raises(ValueError, match='dinov2_vits14_reg'):
         get_model('vit-enormous')
+
+
+# ----------------------------------------------------------------------------
+# What the window says about a model
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('model_key', MODEL_KEYS)
+def test_every_model_is_described(model_key: str) -> None:
+    """The pane is the only place a model says what it is, so one left blank is a model picked on its name."""
+    assert get_model_details(model_key).strip()
+
+
+@pytest.mark.parametrize('model_key', MODEL_KEYS)
+def test_a_description_is_html(model_key: str) -> None:
+    """Rendered rather than printed by the pane, which is what lets one carry a list and a link."""
+    details = get_model_details(model_key)
+
+    assert isinstance(details, str)
+    assert '<' in details
+
+
+def test_the_dinov2_variants_share_one_description() -> None:
+    """They are the one model at four sizes, and are loaded through one loader for the same reason."""
+    loaders = {DETAILS_LOADERS[key] for key in DINOV2_KEYS}
+
+    assert len(loaders) == 1
+
+
+def test_a_model_of_another_kind_is_described_apart() -> None:
+    """Sharing is for variants of a model, not for models: STED-FM answers for itself."""
+    assert DETAILS_LOADERS['sted-fm'] not in {DETAILS_LOADERS[key] for key in DINOV2_KEYS}
+
+
+def test_a_model_with_no_description_is_answered_for() -> None:
+    """Unlike get_model(), which raises: a missing description must not keep a model from being picked."""
+    assert get_model_details('not-a-model') == ''

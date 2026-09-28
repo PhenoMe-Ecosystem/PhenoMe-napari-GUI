@@ -51,9 +51,9 @@ class AnalysisPanel(QWidget):
         """ Build the panel and its widgets.
 
         Args:
-            phenome (PhenoMeInterface): The interface every call to PhenoMe goes through.
-            image_viewer (ImageViewer): The viewer the selected image is displayed in.
-            parent (QWidget): The widget the panel is nested in.
+            phenome: The interface every call to PhenoMe goes through.
+            image_viewer: The viewer the selected image is displayed in.
+            parent: The widget the panel is nested in.
         """
         super().__init__(parent)
         self._phenome = phenome
@@ -150,9 +150,18 @@ class AnalysisPanel(QWidget):
         """ Take note that a processing task has started or finished, and lock the buttons accordingly.
 
         Args:
-            running (bool): True when a task has just been started, False once it has finished.
+            running: True when a task has just been started, False once it has finished.
         """
         self._task_running = running
+        self._refresh_analysis_buttons()
+
+    def refresh_buttons(self) -> None:
+        """ Bring the analysis buttons in line with what the pipeline now holds.
+
+        For what reaches the embeddings without running a task here: loading a checkpoint brings a
+        previous run's embeddings with it, which is a tab's worth of steps opening without anything
+        having been computed.
+        """
         self._refresh_analysis_buttons()
 
     def _refresh_analysis_buttons(self) -> None:
@@ -282,7 +291,7 @@ class AnalysisPanel(QWidget):
         """ Report a clustering that raised.
 
         Args:
-            error (Exception): The exception the clustering raised, as the worker caught it.
+            error: The exception the clustering raised, as the worker caught it.
         """
         self._report_failure('cluster the images', error)
 
@@ -290,7 +299,7 @@ class AnalysisPanel(QWidget):
         """ Report a prototype search that raised.
 
         Args:
-            error (Exception): The exception the search raised, as the worker caught it.
+            error: The exception the search raised, as the worker caught it.
         """
         self._report_failure('find the prototype images', error)
 
@@ -298,7 +307,7 @@ class AnalysisPanel(QWidget):
         """ Report an outlier detection that raised.
 
         Args:
-            error (Exception): The exception the detection raised, as the worker caught it.
+            error: The exception the detection raised, as the worker caught it.
         """
         self._report_failure('detect the outlier images', error)
 
@@ -311,8 +320,8 @@ class AnalysisPanel(QWidget):
         message is given here.
 
         Args:
-            attempted (str): What was being attempted, read into the message.
-            error (Exception): The exception the step raised, as the worker caught it.
+            attempted: What was being attempted, read into the message.
+            error: The exception the step raised, as the worker caught it.
         """
         logger.error('Could not %s: %s', attempted, error)
         QMessageBox.critical(self, 'Analysis failed', f'Could not {attempted}.\n\n{error}')
@@ -325,9 +334,9 @@ class AnalysisPanel(QWidget):
         rows are not reordered, so a table row still addresses the same row of the kept frame.
 
         Args:
-            images_df (pd.DataFrame): The retrieved images. None or empty clears the table, which is a
+            images_df: The retrieved images. None or empty clears the table, which is a
                 normal outcome for the outlier step when nothing is past the threshold.
-            group_by (str | None): The grouping key the step was given, used to find the group
+            group_by: The grouping key the step was given, used to find the group
                 column. None when the step ran without one.
         """
         self._images_df = images_df

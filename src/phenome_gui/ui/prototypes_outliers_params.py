@@ -118,7 +118,7 @@ class PrototypesParamsWindow(QDialog):
         """ Return the edited parameters.
 
         Returns:
-            PrototypesParams: The local copy of the prototype parameters, holding the values currently shown in the form.
+            The local copy of the prototype parameters, holding the values currently shown in the form.
         """
         return self.params
 
@@ -242,6 +242,6 @@ class OutliersParamsWindow(QDialog):
         """ Return the edited parameters.
 
         Returns:
-            OutliersParams: The local copy of the outlier parameters, holding the values currently shown in the form.
+            The local copy of the outlier parameters, holding the values currently shown in the form.
         """
         return self.params

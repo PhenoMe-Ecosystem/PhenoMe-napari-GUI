@@ -48,8 +48,8 @@ class ThrottledProgress:
         """ Wrap a progress callback.
 
         Args:
-            callback (ProgressCallback): The hook to forward to, called as (current, total, desc).
-            reports (int): How many reports to let through over a stage, at most. One is the fewest
+            callback: The hook to forward to, called as (current, total, desc).
+            reports: How many reports to let through over a stage, at most. One is the fewest
                 that makes sense, being the first report alone.
         """
         self._callback = callback
@@ -61,9 +61,9 @@ class ThrottledProgress:
         """ Take a report from PhenoMe, and forward it if enough has happened since the last one.
 
         Args:
-            current (int): Units completed so far. Batches for embedding extraction, images for properties.
-            total (int): Expected total number of units. PhenoMe documents 0 as "unknown".
-            desc (str): Short stage label, e.g. "Processing batches".
+            current: Units completed so far. Batches for embedding extraction, images for properties.
+            total: Expected total number of units. PhenoMe documents 0 as "unknown".
+            desc: Short stage label, e.g. "Processing batches".
         """
         # A new label, or a count starting over, is a stage of its own: it has its own total to pace
         # against, and its first report is what tells the bar the stage has begun.
@@ -85,9 +85,9 @@ class ThrottledProgress:
         """ Forward one report, and remember the count it was made at.
 
         Args:
-            current (int): Units completed so far.
-            total (int): Expected total number of units.
-            desc (str): Short stage label.
+            current: Units completed so far.
+            total: Expected total number of units.
+            desc: Short stage label.
         """
         self._last_reported = current
         self._callback(current, total, desc)
@@ -110,8 +110,8 @@ class StoppableProgress:
         """ Wrap a progress callback, to be called until the event is set.
 
         Args:
-            callback (ProgressCallback): The hook to forward to, called as (current, total, desc).
-            stop_event (threading.Event): Set from the thread asking the task to stop, and read here
+            callback: The hook to forward to, called as (current, total, desc).
+            stop_event: Set from the thread asking the task to stop, and read here
                 from the thread running it.
         """
         self._callback = callback
@@ -121,9 +121,9 @@ class StoppableProgress:
         """ Take a report from PhenoMe, and forward it unless the task has been asked to stop.
 
         Args:
-            current (int): Units completed so far. Batches for embedding extraction, images for properties.
-            total (int): Expected total number of units. PhenoMe documents 0 as "unknown".
-            desc (str): Short stage label, e.g. "Processing batches".
+            current: Units completed so far. Batches for embedding extraction, images for properties.
+            total: Expected total number of units. PhenoMe documents 0 as "unknown".
+            desc: Short stage label, e.g. "Processing batches".
 
         Raises:
             TaskStopped: When the task has been asked to stop, which unwinds it out of PhenoMe.

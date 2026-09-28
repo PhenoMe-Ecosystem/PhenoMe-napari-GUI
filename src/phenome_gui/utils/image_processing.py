@@ -52,6 +52,35 @@ class ImageProcessing:
                                   custom_transformations=custom_transformations,
                                   **kwargs)
 
+    def load_results(self, checkpoint_path: str) -> None:
+        """ Load an existing checkpoint's results into the PhenoMe pipeline.
+
+        The metadata and the properties are read straight away, the embeddings left on disk and read
+        as they are needed: a checkpoint is opened to pick a dataset up where it was left, and its
+        embeddings may be more than fits in memory.
+
+        PhenoMe resolves the paths the checkpoint stores against the files it currently holds, so
+        find_files() must have been called first - it raises rather than guessing otherwise.
+
+        Args:
+            checkpoint_path: Path of the .hdf5 file to read.
+        """
+        self.pheno.load_results(checkpoint_path, lazy_checkpoint=True)
+
+    def get_properties(self) -> pd.DataFrame:
+        """ The properties the pipeline currently holds, as a frame.
+
+        Reaches for a private PhenoMe method, which compute_properties() itself returns the result of:
+        it is the only way to the frame for properties that were read from a checkpoint rather than
+        just computed, and any other reading of them would be a second, differently shaped answer to
+        the same question. Kept here beside the other PhenoMe calls rather than in the interface, so
+        there is one place to change should PhenoMe offer it publicly.
+
+        Returns:
+            One row per image, holding the image path and its properties.
+        """
+        return self.pheno._build_properties_dataframe()
+
     def compute_properties(self, property_preset: str, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, **kwargs) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Also saves them in-place in the PhenoMe object.
 
@@ -63,7 +92,7 @@ class ImageProcessing:
                 tqdm bar when set. If None, PhenoMe keeps its default tqdm bar.
             **kwargs: Any arguments included in the PhenoMe compute_properties() method.
         Returns:
-            pd.DataFrame: One row per image, holding the image path and the computed properties.
+            One row per image, holding the image path and the computed properties.
         """
         return self.pheno.compute_properties(property_preset=property_preset,
                                              checkpoint_path=checkpoint_path,

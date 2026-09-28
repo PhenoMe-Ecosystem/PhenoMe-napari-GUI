@@ -31,9 +31,9 @@ class TableDock(QDockWidget):
         """ Build the dock, docked and without a close button.
 
         Args:
-            title (str): The name shown on the title bar, and on the window once it floats. It
+            title: The name shown on the title bar, and on the window once it floats. It
                 tells the two docked tables apart, so it says which table this one holds.
-            parent (QMainWindow): The area the dock is added to, and returns to when closed.
+            parent: The area the dock is added to, and returns to when closed.
         """
         super().__init__(title, parent)
         self.setFeatures(_DOCKED_FEATURES)
@@ -43,7 +43,7 @@ class TableDock(QDockWidget):
         """ Offer the close button only while the dock is out on its own.
 
         Args:
-            top_level (bool): Whether the dock has just become a window of its own.
+            top_level: Whether the dock has just become a window of its own.
         """
         self.setFeatures(_FLOATING_FEATURES if top_level else _DOCKED_FEATURES)
 
@@ -56,7 +56,7 @@ class TableDock(QDockWidget):
         of the event loop, where the hide cannot undo it.
 
         Args:
-            event (QCloseEvent): The close being asked for, which is always let through.
+            event: The close being asked for, which is always let through.
         """
         was_floating = self.isFloating()
         super().closeEvent(event)
@@ -84,8 +84,8 @@ class TableDockArea(QMainWindow):
         """ Build the area and the dock it holds.
 
         Args:
-            title (str): The name shown on the title bar of the dock, and on its window.
-            parent (QWidget): The widget the area is nested in, whose layout holds its slot.
+            title: The name shown on the title bar of the dock, and on its window.
+            parent: The widget the area is nested in, whose layout holds its slot.
         """
         super().__init__(parent)
 
@@ -100,6 +100,6 @@ class TableDockArea(QMainWindow):
         """ Show the given widget in the dock.
 
         Args:
-            widget (QWidget): The widget the dock is to hold, a table so far.
+            widget: The widget the dock is to hold, a table so far.
         """
         self.dock.setWidget(widget)
