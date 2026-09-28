@@ -33,7 +33,7 @@ class PhenoMeAnalysis:
             dbscan_eps: Maximum distance between two neighbouring samples, for DBSCAN only.
             dbscan_min_samples: Minimum number of samples in a neighbourhood, for DBSCAN only.
         Returns:
-            pd.DataFrame: One row per image, holding the image path and its cluster label.
+            One row per image, holding the image path and its cluster label.
         """
         return self.pheno.compute_clustering(
             source=source,
@@ -52,7 +52,7 @@ class PhenoMeAnalysis:
             n_prototypes: Number of prototypes to return for each group.
             source: Feature space to compare the images in: 'embeddings', 'properties' or 'combined'.
         Returns:
-            pd.DataFrame: One row per prototype, holding the grouping key, the image path and its rank in the group.
+            One row per prototype, holding the grouping key, the image path and its rank in the group.
         """
         # PhenoMe plots one matplotlib figure per group by default, which must not happen from the worker
         # thread this runs on. The caller displays the returned images instead.
@@ -76,7 +76,7 @@ class PhenoMeAnalysis:
             threshold: Threshold multiplier, read against the method used.
             source: Feature space to measure the distances in: 'embeddings', 'properties' or 'combined'.
         Returns:
-            pd.DataFrame: One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
+            One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
         """
         # As for the prototypes, PhenoMe plots one matplotlib figure per group by default, which must not
         # happen from the worker thread this runs on. The caller displays the returned images instead.
@@ -114,8 +114,8 @@ class PhenoMeAnalysis:
                 applied after them. PhenoMe drops an image answering any one of these fields, where
                 it keeps only the images answering every filtered one.
         Returns:
-            pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None when
-                there was nothing to project.
+            One row per image, holding its coordinates, name, index and metadata. None when
+            there was nothing to project.
         """
         coordinates, data_type, _ = run_dimensionality_reduction(
             self.pheno,

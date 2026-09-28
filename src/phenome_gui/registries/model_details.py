@@ -2,7 +2,7 @@ def get_dinov2_details() -> str:
     """ Describe the DINOv2 models, which the four registered variants share.
 
     Returns:
-        str: An HTML fragment, for the pane beside the list a model is picked from.
+        An HTML fragment, for the pane beside the list a model is picked from.
     """
     details = """
     <b>DINOv2</b><br>
@@ -30,7 +30,7 @@ def get_stedfm_details() -> str:
     """ Describe the STED-FM ViT-S model.
 
     Returns:
-        str: An HTML fragment, for the pane beside the list a model is picked from.
+        An HTML fragment, for the pane beside the list a model is picked from.
     """
     details = """
     <b>STED-FM</b><br>
@@ -73,7 +73,7 @@ def get_model_details(model_name: str) -> str:
     Args:
         model_name: The name of the model as it appears in DETAILS_LOADERS.
     Returns:
-        str: An HTML fragment describing the model, empty for one with no description yet.
+        An HTML fragment describing the model, empty for one with no description yet.
     """
     details_loader = DETAILS_LOADERS.get(model_name)
 

@@ -20,8 +20,8 @@ def window(qtbot):
     """ Return a hook building a window on a given model.
 
     Returns:
-        Callable[[str | None], ModelWindow]: Called as window('DINOv2 - Large'), or with nothing for
-            the window opening on whatever it falls back to.
+        Called as window('DINOv2 - Large'), or with nothing for
+        the window opening on whatever it falls back to.
     """
     def _build(model: str | None = None) -> ModelWindow:
         built = ModelWindow(None, model)
@@ -39,8 +39,8 @@ def described(monkeypatch: pytest.MonkeyPatch):
     the right model's description rather than the registry's own lookup.
 
     Returns:
-        Callable[[dict], None]: Called as described({'dinov2_vitl14_reg': '<p>Large</p>'}), keyed the
-            way the registries are.
+        Called as described({'dinov2_vitl14_reg': '<p>Large</p>'}), keyed the
+        way the registries are.
     """
     def _describe(details: dict) -> None:
         monkeypatch.setattr(

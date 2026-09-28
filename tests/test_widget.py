@@ -145,7 +145,7 @@ def with_checkpoint(widget: PhenoMeWidget, written_checkpoint):
     to one another off what PhenoMe actually holds after a load, which a stand-in would decide.
 
     Returns:
-        Callable[..., Path]: Called as with_checkpoint(properties=False), returning its path.
+        Called as with_checkpoint(properties=False), returning its path.
     """
     def _load(properties: bool = True):
         widget.loading_panel._on_load_data_csv()
@@ -185,7 +185,7 @@ def cluster_form(monkeypatch: pytest.MonkeyPatch):
     either way, and what it was built offering is the whole of what these tests read.
 
     Returns:
-        Callable[[PhenoMeWidget], ClusterParamsWindow]: Called as cluster_form(widget).
+        Called as cluster_form(widget).
     """
     monkeypatch.setattr(ClusterParamsWindow, 'exec_', lambda self: 0)
 

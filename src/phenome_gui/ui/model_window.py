@@ -37,8 +37,8 @@ class ModelWindow(QDialog):
         """ Build the window and open it on a model.
 
         Args:
-            parent (QWidget): The widget the dialog is parented to, so it closes with it.
-            model (str): The model to highlight when it opens, as the GUI names it. None, or one no
+            parent: The widget the dialog is parented to, so it closes with it.
+            model: The model to highlight when it opens, as the GUI names it. None, or one no
                 longer offered, opens on the first of them: a window with nothing picked would offer
                 a Load Model button meaning nothing.
         """
@@ -84,7 +84,7 @@ class ModelWindow(QDialog):
         the mapping and no searching of the widget is needed.
 
         Args:
-            model (str): The model to highlight, as the GUI names it. None or unknown falls back.
+            model: The model to highlight, as the GUI names it. None or unknown falls back.
         """
         offered = list(MODEL_OPTIONS)
         row = offered.index(model) if model in offered else 0
@@ -95,7 +95,7 @@ class ModelWindow(QDialog):
         """ Show what is known about the model just highlighted.
 
         Args:
-            model (str): The highlighted model, as the GUI names it.
+            model: The highlighted model, as the GUI names it.
         """
         self._details.setHtml(get_model_details(MODEL_OPTIONS.get(model, '')))
 
@@ -103,6 +103,6 @@ class ModelWindow(QDialog):
         """ The model currently highlighted, for the caller to load once the window is accepted.
 
         Returns:
-            str: The model as the GUI names it, which is what the process parameters hold.
+            The model as the GUI names it, which is what the process parameters hold.
         """
         return self._model_list.currentItem().text()

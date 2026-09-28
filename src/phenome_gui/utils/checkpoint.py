@@ -37,8 +37,8 @@ class CheckpointMismatch:
     """ A checkpoint holding something other than what the run about to be made would put there.
 
     Attributes:
-        reason (str): MODEL_MISMATCH or DATASET_MISMATCH, naming which of the two was found.
-        detail (str): One line naming what differs, to be shown alongside the question. Left empty by
+        reason: MODEL_MISMATCH or DATASET_MISMATCH, naming which of the two was found.
+        detail: One line naming what differs, to be shown alongside the question. Left empty by
             the parameter mismatch, which PhenoMe writes out key by key to the log itself: the reason
             is the whole of what the question needs.
     """
@@ -55,15 +55,15 @@ def inspect_checkpoint(
     """ Read an existing checkpoint, and say whether the run about to be made belongs in it.
 
     Args:
-        checkpoint_path (Path | str | None): The checkpoint the run would be written to. A path to no
+        checkpoint_path: The checkpoint the run would be written to. A path to no
             file is a run that starts fresh, and has nothing to disagree with.
-        processing_params (dict): The arguments the run would be made under, as PhenoMe stores them.
+        processing_params: The arguments the run would be made under, as PhenoMe stores them.
             Compared by PhenoMe's own comparator rather than key by key, which is what the checkpoint
             will be validated with when the run starts.
-        image_paths (list[str]): The images the run would process.
+        image_paths: The images the run would process.
     Returns:
-        CheckpointMismatch | None: What was found, or None when the checkpoint agrees with the run,
-            holds nothing yet, or could not be read.
+        What was found, or None when the checkpoint agrees with the run,
+        holds nothing yet, or could not be read.
     """
     if checkpoint_path is None or not isfile(checkpoint_path):
         return None
@@ -106,10 +106,10 @@ def _is_another_dataset(committed_paths: set[str], image_paths: list[str]) -> bo
     a checkpoint sharing no image with the dataset loaded was filled from another one.
 
     Args:
-        committed_paths (set[str]): The images the checkpoint holds, as PhenoMe resolved them.
-        image_paths (list[str]): The images currently loaded.
+        committed_paths: The images the checkpoint holds, as PhenoMe resolved them.
+        image_paths: The images currently loaded.
     Returns:
-        bool: True only when both are known and no image is in both.
+        True only when both are known and no image is in both.
     """
     if not committed_paths or not image_paths:
         return False

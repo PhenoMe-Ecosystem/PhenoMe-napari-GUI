@@ -39,7 +39,7 @@ def dataset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     skimage.io.imread when a row is selected.
 
     Returns:
-        dict[str, Path]: The images directory, the masks directory and the metadata file.
+        The images directory, the masks directory and the metadata file.
     """
     root = tmp_path_factory.mktemp('dataset')
     images_dir = root / 'images'
@@ -66,7 +66,7 @@ def path_dataset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     """ The same images laid out so the metadata can be read off the paths instead of a .csv.
 
     Returns:
-        dict[str, Path]: The images directory, the masks directory and the matching template.
+        The images directory, the masks directory and the matching template.
     """
     root = tmp_path_factory.mktemp('path_dataset')
     rng = np.random.default_rng(seed=1)
@@ -130,7 +130,7 @@ def confirmation(monkeypatch: pytest.MonkeyPatch) -> Confirmation:
     window nobody can answer.
 
     Returns:
-        Confirmation: The stand-in, whose `accepted` a test sets to answer No.
+        The stand-in, whose `accepted` a test sets to answer No.
     """
     stand_in = Confirmation()
     monkeypatch.setattr(QMessageBox, 'question', stand_in)
@@ -162,7 +162,7 @@ def processed():
     """ Return a hook making an interface report a given number of processed images.
 
     Returns:
-        Callable[[PhenoMeInterface, int], StubResults]: Called as processed(interface, n_images).
+        Called as processed(interface, n_images).
     """
     def _apply(interface: PhenoMeInterface, n_images: int = 6) -> StubResults:
         results = StubResults(n_images)
@@ -192,8 +192,8 @@ def written_checkpoint(tmp_path: Path):
     The dataset has to have been loaded first, the paths and the metadata being read off it.
 
     Returns:
-        Callable[..., Path]: Called as written_checkpoint(interface, properties=False), returning
-            the path it was written to.
+        Called as written_checkpoint(interface, properties=False), returning
+        the path it was written to.
     """
     def _write(interface: PhenoMeInterface, properties: bool = True, name: str = 'previous.hdf5') -> Path:
         metadata_df = interface.metadata_df
@@ -294,8 +294,8 @@ def in_main_window(qtbot):
     on its own would therefore pass whether its table comes back or not.
 
     Returns:
-        Callable[[Callable[[QMainWindow], QWidget]], QWidget]: Called as
-            in_main_window(lambda parent: SomePanel(..., parent)), returning the built panel.
+        Called as
+        in_main_window(lambda parent: SomePanel(..., parent)), returning the built panel.
     """
     # The windows outlive the calls that built them: qtbot holds only a weak reference, and a
     # collected window takes the panel down with it.
@@ -386,7 +386,7 @@ def reduction(monkeypatch: pytest.MonkeyPatch):
     to project anyway.
 
     Returns:
-        Callable[[pd.DataFrame | None, str], ReductionSpy]: Called as reduction(frame).
+        Called as reduction(frame).
     """
     def _replace(frame: pd.DataFrame | None = None, data_type: str = 'Embeddings') -> ReductionSpy:
         stand_in = ReductionSpy(frame, data_type)
@@ -442,7 +442,7 @@ def sync_worker():
     is exercised under the flag it would really be given.
 
     Returns:
-        Callable[[QWidget, str, Callable], None]: Called as sync_worker(panel, '_prototypes_worker', fn).
+        Called as sync_worker(panel, '_prototypes_worker', fn).
     """
     def _replace(panel, worker_name: str, function) -> None:
         def _factory(*args, **kwargs) -> _SyncWorker:
@@ -461,7 +461,7 @@ def dialog_result(monkeypatch: pytest.MonkeyPatch):
     which is what tells the caller whether to keep the edit.
 
     Returns:
-        Callable[[type, bool], None]: Called as dialog_result(DialogClass, accepted=True, _spin=3).
+        Called as dialog_result(DialogClass, accepted=True, _spin=3).
     """
     def _drive(dialog_class: type, accepted: bool, **edits) -> None:
         def _exec(dialog) -> int:

@@ -35,7 +35,7 @@ def make_explorer(widget: PhenoMeWidget, qtbot):
     a test asking what it opens on has to set them first.
 
     Returns:
-        Callable[[], InteractiveExplorerWindow]: Called as make_explorer().
+        Called as make_explorer().
     """
     def _build() -> InteractiveExplorerWindow:
         window = InteractiveExplorerWindow(widget._phenome, widget._image_viewer, widget)
@@ -243,7 +243,7 @@ def computing(loaded_explorer: InteractiveExplorerWindow, reduction, sync_worker
     test may run a real reduction.
 
     Returns:
-        Callable[[pd.DataFrame | None], ReductionSpy]: Called as computing(frame).
+        Called as computing(frame).
     """
     def _stub(frame: pd.DataFrame | None = None):
         stand_in = reduction(coordinates() if frame is None else frame)
@@ -454,8 +454,8 @@ def criteria_form(monkeypatch: pytest.MonkeyPatch):
     what a user would leave behind.
 
     Returns:
-        Callable[..., list]: Called as criteria_form(FilterWindow, 'drug_name', 'ctrl'), returning
-            the forms opened so far.
+        Called as criteria_form(FilterWindow, 'drug_name', 'ctrl'), returning
+        the forms opened so far.
     """
     opened = []
 
@@ -614,7 +614,7 @@ def measured(loaded_explorer: InteractiveExplorerWindow, computing, processed):
     on offer are the colouring's, which reads the computed property keys rather than the frame.
 
     Returns:
-        Callable[[list[float]], None]: Called as measured([120.0, 512.0]).
+        Called as measured([120.0, 512.0]).
     """
     def _draw(areas: list[float]) -> None:
         results = processed(loaded_explorer._phenome, len(areas))
@@ -1177,7 +1177,7 @@ def clickable(loaded_explorer: InteractiveExplorerWindow, computing, processed):
     to hold the paths for a clicked point to lead anywhere.
 
     Returns:
-        Callable[[list[int]], list[str]]: Called as clickable([4, 0, 2]), returning the image paths.
+        Called as clickable([4, 0, 2]), returning the image paths.
     """
     def _draw(indices: list[int]) -> list[str]:
         paths = list(loaded_explorer._phenome.metadata_df['file_path'])
@@ -1357,8 +1357,8 @@ def saving_to(monkeypatch: pytest.MonkeyPatch):
     """ Return a hook answering the save dialog with a path and a picked format, without showing it.
 
     Returns:
-        Callable[[Path | str, str], None]: Called as saving_to(tmp_path / 'plot.svg'), the filter
-            defaulting to none being picked, or with '' for the dialog being closed without a name.
+        Called as saving_to(tmp_path / 'plot.svg'), the filter
+        defaulting to none being picked, or with '' for the dialog being closed without a name.
     """
     def _answer(file_path, selected_filter: str = '') -> None:
         monkeypatch.setattr(

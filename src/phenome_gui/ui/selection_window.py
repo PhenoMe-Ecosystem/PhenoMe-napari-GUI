@@ -41,7 +41,7 @@ class SelectionWindow(QDialog):
         """ Build the window and its table, empty until a selection is shown in it.
 
         Args:
-            parent (QWidget): The widget the dialog is parented to, so it closes with it.
+            parent: The widget the dialog is parented to, so it closes with it.
         """
         super().__init__(parent)
 
@@ -88,7 +88,7 @@ class SelectionWindow(QDialog):
         """ List the selected points, replacing whatever the table held before.
 
         Args:
-            points_df (pd.DataFrame): The rows of the projection that were selected. None or empty
+            points_df: The rows of the projection that were selected. None or empty
                 empties the table, which is what a cleared selection comes back as.
         """
         model = self._points_table.model()

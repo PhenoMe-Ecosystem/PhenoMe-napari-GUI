@@ -32,7 +32,7 @@ class PhenoMeWidget(QWidget):
         """ Build the widget, its interface to PhenoMe and its three panels.
 
         Args:
-            viewer (napari.viewer.Viewer): The napari viewer the widget is docked in.
+            viewer: The napari viewer the widget is docked in.
         """
         super().__init__()
         self._viewer = viewer

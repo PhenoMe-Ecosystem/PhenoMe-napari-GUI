@@ -57,9 +57,9 @@ class PathParams(ParamsBase):
     and the properties are written to it, so a run without one would have nowhere to put them.
     """
 
-    images: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
-    masks: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_masks')
-    metadata: Path = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/metadata.csv')
+    images: Path = Path('')
+    masks: Path = Path('')
+    metadata: Path = Path('')
     template: str = '.../(drug_name)/(time)/(filename).*'
     checkpoint: Path | None = None
 

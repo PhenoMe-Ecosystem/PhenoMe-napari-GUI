@@ -163,7 +163,7 @@ def loaded_without_weights(monkeypatch: pytest.MonkeyPatch):
     registries themselves, which is what these tests are about.
 
     Returns:
-        Callable[[], list[dict]]: Called as loaded_without_weights(), returning the calls made.
+        Called as loaded_without_weights(), returning the calls made.
     """
     def _replace() -> list[dict]:
         calls = []

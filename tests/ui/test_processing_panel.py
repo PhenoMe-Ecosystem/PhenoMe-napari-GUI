@@ -76,7 +76,7 @@ def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
     """ Catch the message a failed task shows, rather than opening a window nobody can close.
 
     Returns:
-        Reported: The stand-in, holding what was said.
+        The stand-in, holding what was said.
     """
     stand_in = Reported()
     monkeypatch.setattr(QMessageBox, 'critical', stand_in)
@@ -97,9 +97,9 @@ class Started:
         """ Stand in for the worker factory, taking the flag the panel passes it.
 
         Args:
-            force (bool): force_reprocess for the extraction, force_update for the properties.
+            force: force_reprocess for the extraction, force_update for the properties.
         Returns:
-            Started: Itself, standing in for the worker it would have built.
+            Itself, standing in for the worker it would have built.
         """
         self._pending = force
         return self
@@ -131,7 +131,7 @@ def started(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Started:
     """ Stand in for both task workers, so a click records a run instead of making one.
 
     Returns:
-        Started: The stand-in, holding the flag each started run was given.
+        The stand-in, holding the flag each started run was given.
     """
     stand_in = Started()
     monkeypatch.setattr(panel, '_process_images_worker', stand_in)
@@ -151,8 +151,8 @@ class Mismatched:
         """ Have the checkpoint report a mismatch, and have the user answer it a given way.
 
         Args:
-            mismatch (CheckpointMismatch | None): What reading the checkpoint is to report.
-            accepted (bool): Whether the question about it is to be answered yes.
+            mismatch: What reading the checkpoint is to report.
+            accepted: Whether the question about it is to be answered yes.
         """
         self._mismatch = mismatch
         self.accepted = accepted
@@ -161,7 +161,7 @@ class Mismatched:
         """ Stand in for reading the checkpoint, which no test lets reach a real file.
 
         Returns:
-            CheckpointMismatch | None: Whatever the test asked to be found.
+            Whatever the test asked to be found.
         """
         return self._mismatch
 
@@ -175,7 +175,7 @@ class Mismatched:
             *args: The buttons offered, of no interest here.
             **kwargs: As above.
         Returns:
-            QMessageBox.StandardButton: Yes or No, as the test set it.
+            Yes or No, as the test set it.
         """
         self.asked += 1
         self.last = text
@@ -190,7 +190,7 @@ def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Misma
     relative one, and a test left to resolve it would read whatever sits in the working directory.
 
     Returns:
-        Mismatched: The stand-in, called as mismatched(what_is_found, accepted=...).
+        The stand-in, called as mismatched(what_is_found, accepted=...).
     """
     stand_in = Mismatched()
     stand_in(None)
@@ -341,8 +341,8 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     either way, which is what keeps this a test of the panel driving a real one.
 
     Returns:
-        Callable[[str | None], list]: Called as picking_model(ANOTHER_MODEL), or with None for
-            the window being cancelled. Returns the list of loads the panel then started.
+        Called as picking_model(ANOTHER_MODEL), or with None for
+        the window being cancelled. Returns the list of loads the panel then started.
     """
     started = []
     monkeypatch.setattr(panel, '_load_model', lambda: started.append(panel._phenome.params.process.model))
@@ -422,11 +422,11 @@ def drive_advanced_form(
     leaving every other dialog alone.
 
     Args:
-        panel (ProcessingPanel): The panel whose form is driven.
-        batch_size (int): The batch size to type into the form.
-        accepted (bool): Whether the form is confirmed or cancelled.
-        num_workers (int | None): The worker count to type in, or None to leave the field as loaded.
-        channel_mode (str | None): The channel mode to pick, or None to leave the field as loaded.
+        panel: The panel whose form is driven.
+        batch_size: The batch size to type into the form.
+        accepted: Whether the form is confirmed or cancelled.
+        num_workers: The worker count to type in, or None to leave the field as loaded.
+        channel_mode: The channel mode to pick, or None to leave the field as loaded.
     """
     panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
 
@@ -1017,8 +1017,8 @@ def picking(monkeypatch: pytest.MonkeyPatch):
     """ Return a hook answering the load dialog with a path, without showing it.
 
     Returns:
-        Callable[[Path | str], None]: Called as picking(tmp_path / 'run.hdf5'), or with '' for the
-            dialog being closed without a name.
+        Called as picking(tmp_path / 'run.hdf5'), or with '' for the
+        dialog being closed without a name.
     """
     def _answer(file_path) -> None:
         monkeypatch.setattr(
@@ -1033,8 +1033,8 @@ def naming(monkeypatch: pytest.MonkeyPatch):
     """ Return a hook answering the save dialog with a name, without showing it.
 
     Returns:
-        Callable[[Path | str], None]: Called as naming(tmp_path / 'new.hdf5'), or with '' for the
-            dialog being closed without a name.
+        Called as naming(tmp_path / 'new.hdf5'), or with '' for the
+        dialog being closed without a name.
     """
     def _answer(file_path) -> None:
         monkeypatch.setattr(
@@ -1049,8 +1049,8 @@ def reading(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     """ Return a hook standing in for the interface reading a checkpoint off disk.
 
     Returns:
-        Callable[..., list]: Called as reading() or reading(raises=...), returning the list of paths
-            the interface was asked to load.
+        Called as reading() or reading(raises=...), returning the list of paths
+        the interface was asked to load.
     """
     def _stub(raises: Exception | None = None) -> list:
         asked = []

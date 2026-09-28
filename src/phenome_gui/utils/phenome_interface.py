@@ -60,7 +60,7 @@ class PhenoMeInterface:
         """ Initialize the PhenoMe pipeline, the parameters and the per-tab components.
 
         Args:
-            seed (int): Random seed passed to the PhenoMe pipeline, for reproducibility.
+            seed: Random seed passed to the PhenoMe pipeline, for reproducibility.
         """
         self.pheno = PhenoMe(seed=seed)
         self.params = Params()
@@ -91,7 +91,7 @@ class PhenoMeInterface:
         loading one costs. Read before a load, to know whether there is anything to lose by it.
 
         Returns:
-            bool: True once a step has run on the loaded images.
+            True once a step has run on the loaded images.
         """
         return self.has_processed_images or any(
             frame is not None for frame in (
@@ -156,7 +156,7 @@ class PhenoMeInterface:
         outlive the images they were computed from.
 
         Returns:
-            pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
+            The metadata of the files found, also stored in self.metadata_df.
         """
         self.clear_results()
 
@@ -173,7 +173,7 @@ class PhenoMeInterface:
         outlive the images they were computed from.
 
         Returns:
-            pd.DataFrame: The metadata of the files found, also stored in self.metadata_df.
+            The metadata of the files found, also stored in self.metadata_df.
         """
         self.clear_results()
 
@@ -219,7 +219,7 @@ class PhenoMeInterface:
         being handed down twice.
 
         Returns:
-            dict: The arguments handed to PhenoMe on top of the ones the run itself names.
+            The arguments handed to PhenoMe on top of the ones the run itself names.
         """
         return {**(self.process_options or {}), 'channel_mode': self.params.process.channel_mode}
 
@@ -233,7 +233,7 @@ class PhenoMeInterface:
         thing PhenoMe refuses to resume a checkpoint across.
 
         Returns:
-            dict: The processing parameters, whether or not a model has been loaded.
+            The processing parameters, whether or not a model has been loaded.
         """
         return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
@@ -249,8 +249,8 @@ class PhenoMeInterface:
         picked again between choosing a checkpoint and running against it.
 
         Returns:
-            CheckpointMismatch | None: What the checkpoint holds that this run would not put there, or
-                None when it agrees, is empty, does not exist, or could not be read.
+            What the checkpoint holds that this run would not put there, or
+            None when it agrees, is empty, does not exist, or could not be read.
         """
         image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
@@ -269,7 +269,7 @@ class PhenoMeInterface:
         been picked again anyway.
 
         Args:
-            path (Path | str): The checkpoint file to read.
+            path: The checkpoint file to read.
         Raises:
             RuntimeError: No dataset has been loaded, so there are no files to resolve against.
             OSError: The file could not be read, or is held open by another process.
@@ -296,7 +296,7 @@ class PhenoMeInterface:
         there is a frame to be read back at all.
 
         Returns:
-            bool: True when the loaded results carry properties.
+            True when the loaded results carry properties.
         """
         return self.pheno.results.has_properties
 
@@ -346,7 +346,7 @@ class PhenoMeInterface:
         the processing step separately.
 
         Returns:
-            bool: True once the pipeline holds processed images.
+            True once the pipeline holds processed images.
         """
         return self.pheno.results.n_images > 0
 
@@ -363,7 +363,7 @@ class PhenoMeInterface:
                 PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
                 properties are cleared, the embeddings in the same file being left where they are.
         Returns:
-            pd.DataFrame: One row per image, holding the image path and the computed properties.
+            One row per image, holding the image path and the computed properties.
         """
         checkpoint_path = self.params.paths.checkpoint
 
@@ -390,7 +390,7 @@ class PhenoMeInterface:
         metadata table and makes them available as a grouping key like any other metadata column.
 
         Returns:
-            pd.DataFrame: One row per image, holding the image path and its cluster label.
+            One row per image, holding the image path and its cluster label.
         """
         clustering = self.params.clustering
 
@@ -434,7 +434,7 @@ class PhenoMeInterface:
         names it 'cluster_col' here and 'group_by' there, so the name is translated on the way down.
 
         Returns:
-            pd.DataFrame: One row per prototype, holding the grouping key, the image path and its rank in the group.
+            One row per prototype, holding the grouping key, the image path and its rank in the group.
         """
         prototypes = self.params.prototypes
 
@@ -453,7 +453,7 @@ class PhenoMeInterface:
         outliers come back is decided by the method and the threshold together.
 
         Returns:
-            pd.DataFrame: One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
+            One row per outlier, holding the grouping key, the image path and its distance to the group centroid.
         """
         outliers = self.params.outliers
 
@@ -475,8 +475,8 @@ class PhenoMeInterface:
         plural and reading an unset one and an empty one the same way.
 
         Returns:
-            pd.DataFrame: One row per image, holding its coordinates, name, index and metadata. None
-                when there was nothing to project.
+            One row per image, holding its coordinates, name, index and metadata. None
+            when there was nothing to project.
         """
         explorer = self.params.explorer
 
@@ -501,7 +501,7 @@ class PhenoMeInterface:
         metadata source chosen in the loading tab.
 
         Returns:
-            list[str]: The groupable column names, empty when no data has been loaded yet.
+            The groupable column names, empty when no data has been loaded yet.
         """
         if self.metadata_df is None or self.metadata_df.empty:
             return []
@@ -523,7 +523,7 @@ class PhenoMeInterface:
         telling, a handful of images being too few to tell an identifier from a grouping key.
 
         Returns:
-            list[str]: The columns to offer, empty when no data has been loaded yet.
+            The columns to offer, empty when no data has been loaded yet.
         """
         columns = [column for column in self.get_metadata_columns() if self._is_informative(column)]
 
@@ -536,10 +536,10 @@ class PhenoMeInterface:
         """ Whether a metadata column says enough about the images to be worth colouring by.
 
         Args:
-            column (str): Name of the column, which is read alongside its values: only the columns
+            column: Name of the column, which is read alongside its values: only the columns
                 named after an identifier are held to the uniqueness test.
         Returns:
-            bool: False for a column holding one value throughout, or one naming each image.
+            False for a column holding one value throughout, or one naming each image.
         """
         values = self.metadata_df[column]
         distinct = values.nunique(dropna=True)
@@ -556,9 +556,9 @@ class PhenoMeInterface:
         """ Return the content of a metadata row, in the form expected by the image viewer.
 
         Args:
-            row (int): Positional index of the row in the metadata dataframe.
+            row: Positional index of the row in the metadata dataframe.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         row_data = self.metadata_df.iloc[row]
 
@@ -578,9 +578,9 @@ class PhenoMeInterface:
         the returned images are indexed against the PhenoMe results rather than against the metadata.
 
         Args:
-            image_path (str): Path of the image, as returned by the prototype or outlier step.
+            image_path: Path of the image, as returned by the prototype or outlier step.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         if self.metadata_df is None or self.metadata_df.empty:
             return [image_path], None, [{}]
@@ -604,9 +604,9 @@ class PhenoMeInterface:
         metadata from the path, the way a retrieved image has them looked up.
 
         Args:
-            row (int): Positional index of the row in the projection dataframe.
+            row: Positional index of the row in the projection dataframe.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         return self.get_image_data_at(int(self.projection_df.iloc[row][PROJECTION_INDEX_COLUMN]))
 
@@ -618,9 +618,9 @@ class PhenoMeInterface:
         is looked up here and the mask and the metadata from the path.
 
         Args:
-            index (int): Place of the image in the PhenoMe results.
+            index: Place of the image in the PhenoMe results.
         Returns:
-            tuple: The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
+            The image paths, the mask paths (None when the dataset has no masks) and the row data as a list of dicts.
         """
         image_path = self.pheno.results.img_path[index]
 
@@ -634,7 +634,7 @@ class PhenoMeInterface:
         """ Get the metadata dataframe in its current state.
 
         Returns:
-            pd.Dataframe: The metadata dataframe
+            The metadata dataframe
         """
 
         return self.metadata_df
@@ -644,7 +644,7 @@ class PhenoMeInterface:
         """ Whether the properties have been computed, which the property-based analysis sources need.
 
         Returns:
-            bool: True if properties have been calculated
+            True if properties have been calculated
         """
         properties_available = self.properties_df is not None
         logger.info('Properties are available: %s', properties_available)

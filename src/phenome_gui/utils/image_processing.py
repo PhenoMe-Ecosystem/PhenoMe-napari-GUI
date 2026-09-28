@@ -77,7 +77,7 @@ class ImageProcessing:
         there is one place to change should PhenoMe offer it publicly.
 
         Returns:
-            pd.DataFrame: One row per image, holding the image path and its properties.
+            One row per image, holding the image path and its properties.
         """
         return self.pheno._build_properties_dataframe()
 
@@ -92,7 +92,7 @@ class ImageProcessing:
                 tqdm bar when set. If None, PhenoMe keeps its default tqdm bar.
             **kwargs: Any arguments included in the PhenoMe compute_properties() method.
         Returns:
-            pd.DataFrame: One row per image, holding the image path and the computed properties.
+            One row per image, holding the image path and the computed properties.
         """
         return self.pheno.compute_properties(property_preset=property_preset,
                                              checkpoint_path=checkpoint_path,

@@ -69,8 +69,8 @@ class ProcessingPanel(QWidget):
         """ Build the panel and its widgets.
 
         Args:
-            phenome (PhenoMeInterface): The interface every call to PhenoMe goes through.
-            parent (QWidget): The widget the panel is nested in.
+            phenome: The interface every call to PhenoMe goes through.
+            parent: The widget the panel is nested in.
         """
         super().__init__(parent)
         self._phenome = phenome
@@ -258,7 +258,7 @@ class ProcessingPanel(QWidget):
         naming whichever model was loaded before it, and no way to try again.
 
         Args:
-            error (Exception): The exception the load raised, as the worker caught it.
+            error: The exception the load raised, as the worker caught it.
         """
         self._select_model_button.setText('Select Model...')
         self._select_model_button.setEnabled(True)
@@ -278,7 +278,7 @@ class ProcessingPanel(QWidget):
         have to lock themselves for the duration too.
 
         Args:
-            running (bool): True when a task has just been started, False once it has finished.
+            running: True when a task has just been started, False once it has finished.
         """
         self._processing_task_running = running
         self.refresh_buttons()
@@ -444,7 +444,7 @@ class ProcessingPanel(QWidget):
         are needed, so what is read here is the metadata and the properties alone.
 
         Args:
-            path (Path): The checkpoint file to read.
+            path: The checkpoint file to read.
         """
         try:
             self._phenome.load_checkpoint(path)
@@ -471,7 +471,7 @@ class ProcessingPanel(QWidget):
         """ Take up a checkpoint to be written to, whether or not there is a file there yet.
 
         Args:
-            path (Path): The checkpoint the runs are to be written to.
+            path: The checkpoint the runs are to be written to.
         """
         self._phenome.params.paths.checkpoint = path
         logger.info("Writing this run to the checkpoint at '%s'.", path)
@@ -532,7 +532,7 @@ class ProcessingPanel(QWidget):
         caller, which also reads them back when the form is confirmed.
 
         Returns:
-            QDialog: The parameter form, parented to the panel so it closes with it.
+            The parameter form, parented to the panel so it closes with it.
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Processing parameters")
@@ -624,9 +624,9 @@ class ProcessingPanel(QWidget):
         dropping the loaded results is asked.
 
         Args:
-            mismatch (CheckpointMismatch): What the checkpoint holds that this run would not put there.
+            mismatch: What the checkpoint holds that this run would not put there.
         Returns:
-            bool: True when the checkpoint may be deleted and the run made from scratch.
+            True when the checkpoint may be deleted and the run made from scratch.
         """
         checkpoint = self._phenome.params.paths.checkpoint
         filled_with = (
@@ -702,7 +702,7 @@ class ProcessingPanel(QWidget):
         again.
 
         Args:
-            error (Exception): The exception the extraction raised, as the worker caught it.
+            error: The exception the extraction raised, as the worker caught it.
         """
         self._process_button.setText('Extract Embeddings')
         self._set_processing_task_running(False)
@@ -724,7 +724,7 @@ class ProcessingPanel(QWidget):
         """ Take the progress bar out of the busy state a task that did not run to its end left it spinning in.
 
         Args:
-            status (str): What the bar is to read, naming how the task ended.
+            status: What the bar is to read, naming how the task ended.
         """
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
@@ -740,7 +740,7 @@ class ProcessingPanel(QWidget):
         take it and only a hundredth of them reaching the bar.
 
         Args:
-            force_reprocess (bool): Whether to delete the checkpoint and process every image again,
+            force_reprocess: Whether to delete the checkpoint and process every image again,
                 which is only ever passed for a checkpoint the user has been asked about.
         """
         self._phenome.process_images(
@@ -833,7 +833,7 @@ class ProcessingPanel(QWidget):
         meant to carry on from.
 
         Args:
-            error (Exception): The exception the calculation raised, as the worker caught it.
+            error: The exception the calculation raised, as the worker caught it.
         """
         self._props_button.setText('Calculate Properties')
         self._set_processing_task_running(False)
@@ -861,7 +861,7 @@ class ProcessingPanel(QWidget):
         its own pace.
 
         Args:
-            force_update (bool): Whether to drop the properties the checkpoint holds and compute them
+            force_update: Whether to drop the properties the checkpoint holds and compute them
                 again, which a preset changed since the last run needs. The embeddings in the same
                 file are left where they are.
         """

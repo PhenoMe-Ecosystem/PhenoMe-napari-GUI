@@ -376,7 +376,7 @@ def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
     """ Catch the message a failed step shows, rather than opening a window nobody can close.
 
     Returns:
-        Reported: The stand-in, holding what was said.
+        The stand-in, holding what was said.
     """
     stand_in = Reported()
     monkeypatch.setattr(QMessageBox, 'critical', stand_in)

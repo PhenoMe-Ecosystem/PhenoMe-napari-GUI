@@ -76,9 +76,9 @@ class InteractiveExplorerWindow(QDialog):
         """ Build the window and its widgets.
 
         Args:
-            phenome (PhenoMeInterface): The interface every call to PhenoMe goes through.
-            image_viewer (ImageViewer): The viewer the selected image is displayed in.
-            parent (QWidget): The widget the window is parented to, so it closes with it.
+            phenome: The interface every call to PhenoMe goes through.
+            image_viewer: The viewer the selected image is displayed in.
+            parent: The widget the window is parented to, so it closes with it.
         """
         super().__init__(parent)
         self.setWindowTitle("Interactive Explorer")
@@ -389,7 +389,7 @@ class InteractiveExplorerWindow(QDialog):
         """ List the values of a field of labels, each of them once.
 
         Args:
-            values (pd.Series): The column's values, of which only the distinct ones are listed.
+            values: The column's values, of which only the distinct ones are listed.
         """
         # Listed the way the canvas lists its legend, which is what a value is picked against
         ordered = sorted(values.unique(), key=group_order)
@@ -421,7 +421,7 @@ class InteractiveExplorerWindow(QDialog):
         it is moved, rather than as picking whichever slice it happened to open on.
 
         Args:
-            values (pd.Series): The column's values, whose smallest and largest are the two ends.
+            values: The column's values, whose smallest and largest are the two ends.
         """
         low, high = float(values.min()), float(values.max())
 
@@ -575,7 +575,7 @@ class InteractiveExplorerWindow(QDialog):
         into this signal, leaving the button shut for good if nobody listens.
 
         Args:
-            error (Exception): The exception the projection raised, as the worker caught it.
+            error: The exception the projection raised, as the worker caught it.
         """
         self._compute_button.setEnabled(True)
         logger.error("Could not compute the projection: %s", error)
@@ -588,7 +588,7 @@ class InteractiveExplorerWindow(QDialog):
         around the cloud leaves nothing piled up behind it.
 
         Args:
-            row (int): Row of the drawn projection the clicked point stands for.
+            row: Row of the drawn projection the clicked point stands for.
         """
         image_paths, mask_paths, metadata = self._phenome.get_projection_image_data(row)
         name = Path(image_paths[0]).name
@@ -604,7 +604,7 @@ class InteractiveExplorerWindow(QDialog):
         viewer being cleared as each is shown.
 
         Args:
-            index (int): Place of the image in the PhenoMe results, as the table's row carries it.
+            index: Place of the image in the PhenoMe results, as the table's row carries it.
         """
         image_paths, mask_paths, metadata = self._phenome.get_image_data_at(index)
         name = Path(image_paths[0]).name
@@ -678,7 +678,7 @@ class InteractiveExplorerWindow(QDialog):
         the window's to keep, the canvas holding no metadata to fill a table with.
 
         Args:
-            indices (list[int]): The index PhenoMe holds each selected image at.
+            indices: The index PhenoMe holds each selected image at.
         """
         self._selected_indices = indices
 
@@ -701,8 +701,8 @@ class InteractiveExplorerWindow(QDialog):
         """ The rows of the projection the selected images were drawn from.
 
         Returns:
-            pd.DataFrame: One row per selected image, or None when nothing is selected or there is no
-                projection to read them from.
+            One row per selected image, or None when nothing is selected or there is no
+            projection to read them from.
         """
         projection_df = self._phenome.projection_df
         if projection_df is None or not self._selected_indices:

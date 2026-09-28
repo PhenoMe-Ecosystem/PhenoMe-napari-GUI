@@ -50,9 +50,9 @@ class LoadingPanel(QWidget):
         """ Build the panel and its widgets.
 
         Args:
-            phenome (PhenoMeInterface): The interface every call to PhenoMe goes through.
-            image_viewer (ImageViewer): The viewer the selected image is displayed in.
-            parent (QWidget): The widget the panel is nested in.
+            phenome: The interface every call to PhenoMe goes through.
+            image_viewer: The viewer the selected image is displayed in.
+            parent: The widget the panel is nested in.
         """
         super().__init__(parent)
         self._phenome = phenome
@@ -248,7 +248,7 @@ class LoadingPanel(QWidget):
         nothing to lose, so the usual first load goes straight through.
 
         Returns:
-            bool: True when the load may go ahead.
+            True when the load may go ahead.
         """
         if not self._phenome.has_results:
             return True
@@ -276,7 +276,7 @@ class LoadingPanel(QWidget):
         """ Update the metadata table in the GUI with the given metadata dataframe.
 
         Args:
-            metadata_df (pd.DataFrame): The metadata dataframe to display in the table.
+            metadata_df: The metadata dataframe to display in the table.
         Raises:
             ValueError: If the dataframe is None or empty, the table being cleared beforehand.
         """

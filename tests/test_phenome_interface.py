@@ -111,7 +111,7 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
     look as it does once a model has been loaded: one that brings no arguments of its own.
 
     Returns:
-        dict: Filled with the keyword arguments handed down, once an extraction has been asked for.
+        Filled with the keyword arguments handed down, once an extraction has been asked for.
     """
     phenome.model = object()
     phenome.process_options = {}
@@ -226,8 +226,8 @@ def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
     is being checked is what the interface does with the two answers rather than PhenoMe's reading.
 
     Returns:
-        Callable[..., dict]: Called as loading(properties=...), returning a record of what PhenoMe
-            was asked to load.
+        Called as loading(properties=...), returning a record of what PhenoMe
+        was asked to load.
     """
     def _stub(properties: list[dict] | None = None) -> dict:
         record = {'loaded': []}
@@ -503,10 +503,10 @@ def analysed(interface: PhenoMeInterface, processed) -> PhenoMeInterface:
     """ Leave a result of every kind on an interface, as a full session would.
 
     Args:
-        interface (PhenoMeInterface): The interface to fill, whose paths are already pointed at a dataset.
+        interface: The interface to fill, whose paths are already pointed at a dataset.
         processed: The fixture making the pipeline report processed images.
     Returns:
-        PhenoMeInterface: The same interface, now holding results and parameters naming them.
+        The same interface, now holding results and parameters naming them.
     """
     processed(interface, 6)
     for attribute in RESULT_FRAMES:

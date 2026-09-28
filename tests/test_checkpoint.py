@@ -25,8 +25,8 @@ class StubCheckpoint:
         """ Build a checkpoint holding given images, and disagreeing on given parameters.
 
         Args:
-            mismatches (list | None): The (key, stored, current) triples its validation returns.
-            paths (list[str] | None): The images it holds as committed.
+            mismatches: The (key, stored, current) triples its validation returns.
+            paths: The images it holds as committed.
         """
         self._mismatches = mismatches or []
         self._paths = paths or []
@@ -37,10 +37,10 @@ class StubCheckpoint:
         """ Return the parameters this checkpoint disagrees with, as PhenoMe's comparator does.
 
         Args:
-            current_params (dict): The parameters of the run. Kept rather than read, the comparison
+            current_params: The parameters of the run. Kept rather than read, the comparison
                 being PhenoMe's: what matters here is that the run's own arguments reach it.
         Returns:
-            list: The mismatches it was built with.
+            The mismatches it was built with.
         """
         self.validated_against = current_params
         return self._mismatches
@@ -68,7 +68,7 @@ def existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     checkpoint behind it.
 
     Returns:
-        Callable[..., StubCheckpoint]: Called as existing(mismatches=..., paths=...), returning the stub.
+        Called as existing(mismatches=..., paths=...), returning the stub.
     """
     def _place(**kwargs) -> StubCheckpoint:
         path = tmp_path / 'checkpoint.hdf5'

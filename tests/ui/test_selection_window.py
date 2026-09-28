@@ -63,8 +63,8 @@ def saving_to(monkeypatch: pytest.MonkeyPatch):
     """ Return a hook answering the save dialog with a path, without showing it.
 
     Returns:
-        Callable[[Path | str], None]: Called as saving_to(tmp_path / 'picked.csv'), or with '' for
-            the dialog being closed without a name.
+        Called as saving_to(tmp_path / 'picked.csv'), or with '' for
+        the dialog being closed without a name.
     """
     def _answer(file_path) -> None:
         monkeypatch.setattr(

@@ -25,11 +25,11 @@ def run(forwarded: list, total: int, **kwargs) -> ThrottledProgress:
     """ Report every unit of a run of `total` units, the way PhenoMe does.
 
     Args:
-        forwarded (list): The list the reports let through are collected in.
-        total (int): Number of units the run reports over.
+        forwarded: The list the reports let through are collected in.
+        total: Number of units the run reports over.
         **kwargs: Passed on to the throttle, to set the number of reports it allows.
     Returns:
-        ThrottledProgress: The throttle the run was made through, for a further stage to go through it.
+        The throttle the run was made through, for a further stage to go through it.
     """
     throttle = ThrottledProgress(lambda *report: forwarded.append(report), **kwargs)
     for current in range(1, total + 1):

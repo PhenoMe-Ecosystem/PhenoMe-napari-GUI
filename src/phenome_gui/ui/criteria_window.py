@@ -50,12 +50,12 @@ class _CriteriaWindow(QDialog):
         """ Build the form and fill it with the values of the first field.
 
         Args:
-            parent (QWidget): The widget the dialog is parented to, so it closes with it.
-            columns (list[str]): Fields the images can be picked on, which are the metadata columns
+            parent: The widget the dialog is parented to, so it closes with it.
+            columns: Fields the images can be picked on, which are the metadata columns
                 and the cluster labels among them. Empty until data has been loaded.
-            metadata_df (pd.DataFrame): The metadata the values of each field are read from. None
+            metadata_df: The metadata the values of each field are read from. None
                 leaves every field empty, as does a field the frame does not carry.
-            criteria (dict[str, list]): Values already picked, per field, as the metadata holds them.
+            criteria: Values already picked, per field, as the metadata holds them.
                 Copied, never modified in place.
         """
         super().__init__(parent)
@@ -124,11 +124,11 @@ class _CriteriaWindow(QDialog):
         """ Stack a list under its title and over the button acting on it.
 
         Args:
-            title (str): Name shown above the list.
-            values (QListWidget): The list itself.
-            button (QPushButton): The button moving the list's selection into the other list.
+            title: Name shown above the list.
+            values: The list itself.
+            button: The button moving the list's selection into the other list.
         Returns:
-            QVBoxLayout: The three of them, stacked.
+            The three of them, stacked.
         """
         column = QVBoxLayout()
         column.addWidget(QLabel(title))
@@ -144,8 +144,8 @@ class _CriteriaWindow(QDialog):
         the text.
 
         Returns:
-            list: The distinct values of the field, as the metadata holds them, empty when there is
-                no field or no data.
+            The distinct values of the field, as the metadata holds them, empty when there is
+            no field or no data.
         """
         field = self._field_combo.currentText()
         if not field or self._metadata_df is None or field not in self._metadata_df.columns:
@@ -186,7 +186,7 @@ class _CriteriaWindow(QDialog):
         """ List one value, keeping it alongside the text it is shown as.
 
         Args:
-            values (QListWidget): The list to add the value to.
+            values: The list to add the value to.
             value: The value itself, as the metadata holds it.
         """
         item = QListWidgetItem(str(value))
@@ -223,8 +223,8 @@ class _CriteriaWindow(QDialog):
         """ Move the values selected in a list into the other one.
 
         Args:
-            source (QListWidget): The list the selection is taken from.
-            pick (bool): True when the selection is being picked, False when it is being let go of.
+            source: The list the selection is taken from.
+            pick: True when the selection is being picked, False when it is being let go of.
         """
         selected = [item.data(Qt.ItemDataRole.UserRole) for item in source.selectedItems()]
         if not selected:
@@ -249,7 +249,7 @@ class _CriteriaWindow(QDialog):
         holds them, which is how PhenoMe has to be given them.
 
         Returns:
-            dict[str, list]: The picked values, per field.
+            The picked values, per field.
         """
         return {field: list(values) for field, values in self._criteria.items() if values}
 
