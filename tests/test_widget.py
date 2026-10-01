@@ -1,6 +1,7 @@
 """Tests for PhenoMeWidget, which owns the shared objects and wires the panels to each other."""
 
 import os
+import threading
 
 import pandas as pd
 import pytest
@@ -141,6 +142,41 @@ def test_a_dataset_of_images_alone_reaches_the_processing_panel(widget: PhenoMeW
     assert widget.processing_panel._process_button.toolTip() == (
         'Please create or load a checkpoint and load a model first.'
     )
+
+
+@pytest.mark.real_load_worker
+def test_a_load_holds_off_the_other_steps(widget: PhenoMeWidget, qtbot, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On the real worker thread: the pipeline is emptied there, under steps that would run against it."""
+    release = threading.Event()
+    real_load = widget._phenome.load_data_csv
+
+    def _held():
+        release.wait(timeout=5)
+        return real_load()
+
+    monkeypatch.setattr(widget._phenome, 'load_data_csv', _held)
+    widget._on_explorer_clicked()
+
+    widget.loading_panel._csv_load_data_btn.click()
+
+    try:
+        assert not widget.processing_panel.isEnabled()
+        assert not widget.analysis_panel.isEnabled()
+        assert not widget._explorer_window.isEnabled()
+    finally:
+        release.set()
+
+    qtbot.waitUntil(lambda: widget.processing_panel.isEnabled(), timeout=5000)
+    assert widget.analysis_panel.isEnabled()
+    assert widget._explorer_window.isEnabled()
+
+
+def test_a_load_gives_the_steps_back_as_they_were(widget: PhenoMeWidget) -> None:
+    """Locked as panels, so each button keeps its own state underneath: Extract still waits on a model."""
+    widget.loading_panel._csv_load_data_btn.click()
+
+    assert widget.processing_panel.isEnabled()
+    assert not widget.processing_panel._process_button.isEnabled()
 
 
 # ----------------------------------------------------------------------------

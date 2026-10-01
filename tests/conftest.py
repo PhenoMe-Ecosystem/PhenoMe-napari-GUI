@@ -439,6 +439,24 @@ class _SyncWorker:
             self.returned.emit()
 
 
+@pytest.fixture(autouse=True)
+def inline_loads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ Run every dataset load inline rather than on a worker thread.
+
+    The loading tab loads on a worker so the window keeps painting, which leaves most tests asserting
+    on a table not yet filled. Patched on the class, so it covers every way a panel is built. A test
+    marked real_load_worker keeps the real thread, for what only a real thread can show.
+    """
+    if request.node.get_closest_marker('real_load_worker'):
+        return
+
+    from phenome_gui.ui.loading_panel import LoadingPanel
+
+    monkeypatch.setattr(
+        LoadingPanel, '_load_data_worker', lambda self, load: _SyncWorker(load)
+    )
+
+
 @pytest.fixture
 def sync_worker():
     """ Return a hook replacing a panel's worker factory with one that runs inline.

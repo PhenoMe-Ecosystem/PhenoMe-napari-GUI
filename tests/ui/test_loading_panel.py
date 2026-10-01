@@ -1,12 +1,15 @@
 """Tests for the data loading panel."""
 
+import threading
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from qtpy.QtCore import QMimeData, QPointF, Qt, QUrl
 from qtpy.QtGui import QDropEvent
 from qtpy.QtWidgets import QFileDialog
 
+from phenome_gui.ui import loading_panel as loading_panel_module
 from phenome_gui.ui.loading_panel import LoadingPanel
 from phenome_gui.ui.styles import STYLESHEETS
 from phenome_gui.utils.image_viewer import ImageViewer
@@ -16,6 +19,18 @@ from phenome_gui.utils.image_viewer import ImageViewer
 def panel(widget) -> LoadingPanel:
     """ The loading panel of a built widget, with its paths pointed at the test dataset. """
     return widget.loading_panel
+
+
+@pytest.fixture
+def shown_errors(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """ Catch the errors the panel shows through napari, rather than raising them as the tests run.
+
+    Returns:
+        Filled with each message shown, in order.
+    """
+    shown = []
+    monkeypatch.setattr(loading_panel_module.notifications, 'show_error', shown.append)
+    return shown
 
 
 def shown_columns(table) -> list[str]:
@@ -91,18 +106,21 @@ def test_loading_announces_itself(panel: LoadingPanel, qtbot) -> None:
         panel._on_load_data_csv()
 
 
-def test_a_failed_load_clears_the_table_and_raises(panel: LoadingPanel, tmp_path: Path, qtbot) -> None:
-    """The raise is what surfaces the failure to the user, so it has to survive."""
+def test_a_load_finding_nothing_clears_the_table_and_says_so(
+    panel: LoadingPanel, tmp_path: Path, shown_errors: list, qtbot
+) -> None:
+    """Shown as an error rather than raised: the load runs on a worker, where a raise reaches no one."""
     panel._on_load_data_csv()
     assert panel._metadata_table.native.rowCount() == 6
 
     panel._phenome.params.paths.images = tmp_path / 'empty'
     (tmp_path / 'empty').mkdir()
 
-    with qtbot.waitSignal(panel.data_loaded, timeout=1000), pytest.raises(ValueError, match='Could not load data'):
+    with qtbot.waitSignal(panel.data_loaded, timeout=1000):
         panel._on_load_data_csv()
 
     assert panel._metadata_table.native.rowCount() == 0
+    assert any('Could not load data' in message for message in shown_errors)
 
 
 # ----------------------------------------------------------------------------
@@ -166,16 +184,24 @@ def test_a_failed_load_still_announces_that_the_results_are_gone(
     panel._phenome.params.paths.images = tmp_path / 'empty'
     (tmp_path / 'empty').mkdir()
 
-    with qtbot.waitSignal(panel.results_cleared, timeout=1000), pytest.raises(ValueError):
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000):
         panel._on_load_data_csv()
 
 
-def test_a_load_that_raises_before_the_table_still_announces_it(panel: LoadingPanel, qtbot) -> None:
-    """pd.read_csv raises on a missing metadata file, past the point where the results were dropped."""
+def test_a_load_that_raises_before_the_table_still_announces_it(
+    panel: LoadingPanel, shown_errors: list, qtbot
+) -> None:
+    """pd.read_csv raises on a missing metadata file, past the point where the results were dropped.
+
+    Caught by the worker and reported, rather than raised out of the click, which is where it went
+    while the load ran on the GUI thread.
+    """
     panel._phenome.params.paths.metadata = Path('no_such_file.csv')
 
-    with qtbot.waitSignal(panel.results_cleared, timeout=1000), pytest.raises(FileNotFoundError):
+    with qtbot.waitSignal(panel.results_cleared, timeout=1000):
         panel._on_load_data_csv()
+
+    assert any('no_such_file.csv' in message for message in shown_errors)
 
 
 def test_refresh_table_asks_nothing_and_announces_nothing(
@@ -456,7 +482,7 @@ def outlined(widget) -> str:
     sheet = widget.styleSheet()
     if sheet == STYLESHEETS['STYLE_OK']:
         return 'ok'
-    if sheet == STYLESHEETS['STYLE_BAD']:
+    if sheet == STYLESHEETS['STYLE_ERROR']:
         return 'bad'
     return 'none'
 
@@ -640,3 +666,109 @@ def test_a_folder_dropped_on_the_masks_writes_them(panel: LoadingPanel, tmp_path
 
     assert panel._phenome.params.paths.masks == tmp_path
     assert outlined(panel._mask_dir_dialog) == 'ok'
+
+
+# ----------------------------------------------------------------------------
+# The load, run on a worker so the window can show that it is waiting
+# ----------------------------------------------------------------------------
+
+
+def outlines(panel: LoadingPanel) -> list[str]:
+    """ How both Load Data buttons are outlined: 'ok', 'bad', 'wait', or 'none'. """
+    names = {STYLESHEETS['STYLE_OK']: 'ok', STYLESHEETS['STYLE_ERROR']: 'bad', STYLESHEETS['STYLE_WAIT']: 'wait'}
+    return [names.get(button.styleSheet(), 'none') for button in (panel._csv_load_data_btn, panel._path_load_data_btn)]
+
+
+@pytest.fixture
+def held_load(panel: LoadingPanel, monkeypatch: pytest.MonkeyPatch):
+    """ Hold the next load on its worker until the test lets it go.
+
+    The real load is still made once it is let go, so what follows it is what follows a real one.
+
+    Returns:
+        The event that lets the load go on. Set it, or the worker waits out its timeout.
+    """
+    release = threading.Event()
+    real_load = panel._phenome.load_data_csv
+
+    def _held() -> pd.DataFrame:
+        release.wait(timeout=5)
+        return real_load()
+
+    monkeypatch.setattr(panel._phenome, 'load_data_csv', _held)
+    yield release
+    release.set()
+
+
+@pytest.mark.real_load_worker
+def test_the_buttons_wait_while_the_load_runs(panel: LoadingPanel, held_load, qtbot) -> None:
+    """On the real worker thread: the waiting outline is drawn while the files are still being found.
+
+    On the GUI thread it never could be - nothing is painted until the load returns, by which time
+    the outline has already been changed to how it ended.
+    """
+    panel._csv_radio.setChecked(True)
+
+    panel._csv_load_data_btn.click()
+
+    try:
+        assert outlines(panel) == ['wait', 'wait']
+        assert not panel._loading_group.isEnabled()
+        assert not panel._structure_group.isEnabled()
+    finally:
+        held_load.set()
+
+    qtbot.waitUntil(lambda: outlines(panel) == ['ok', 'ok'], timeout=5000)
+    assert panel._loading_group.isEnabled()
+    assert panel._csv_load_data_btn.isEnabled()
+    assert panel._metadata_table.native.rowCount() == 6
+
+
+def test_calling_the_load_off_leaves_the_buttons_as_they_were(panel: LoadingPanel, confirmation, processed) -> None:
+    """Asked before anything changes colour, so a load called off is not left waiting for good."""
+    panel._on_load_data_csv()
+    processed(panel._phenome, 6)
+    confirmation.accepted = False
+
+    panel._on_load_data_csv()
+
+    assert outlines(panel) == ['ok', 'ok']
+    assert panel._loading_group.isEnabled()
+
+
+def test_a_load_that_finds_files_ends_green(panel: LoadingPanel) -> None:
+    panel._on_load_data_csv()
+
+    assert outlines(panel) == ['ok', 'ok']
+
+
+def test_a_load_that_finds_nothing_ends_red(panel: LoadingPanel, tmp_path: Path, shown_errors: list) -> None:
+    (tmp_path / 'empty').mkdir()
+    panel._phenome.params.paths.images = tmp_path / 'empty'
+
+    panel._on_load_data_csv()
+
+    assert outlines(panel) == ['bad', 'bad']
+
+
+def test_a_load_that_raises_ends_red_and_unlocked(panel: LoadingPanel, shown_errors: list) -> None:
+    """Without the failure handler the tab would stay locked, its buttons waiting for good."""
+    panel._phenome.params.paths.metadata = Path('no_such_file.csv')
+
+    panel._on_load_data_csv()
+
+    assert outlines(panel) == ['bad', 'bad']
+    assert panel._loading_group.isEnabled()
+    assert panel._structure_group.isEnabled()
+
+
+def test_unlocking_keeps_a_red_box_closing_its_load(panel: LoadingPanel, tmp_path: Path, shown_errors: list) -> None:
+    """Unlocked to what the boxes allow, rather than every button opened back up."""
+    panel._csv_radio.setChecked(True)
+    panel._on_load_data_csv()
+    panel._mask_dir_dialog.path = tmp_path / 'missing'
+
+    panel._set_loading(True)
+    panel._set_loading(False, STYLESHEETS['STYLE_OK'])
+
+    assert not panel._csv_load_data_btn.isEnabled()

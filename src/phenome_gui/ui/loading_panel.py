@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 from magicgui.widgets import create_widget
+from napari.qt.threading import thread_worker
+from napari.utils import notifications
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -68,6 +70,10 @@ class LoadingPanel(QWidget):
     # is redrawn from the metadata a step has just added to: that is not a load, and drops nothing.
     results_cleared = Signal()
 
+    # Emitted with True as a load starts on its worker thread and with False once it has finished
+    # either way, so the steps that would run against the pipeline it is emptying can hold off.
+    loading_changed = Signal(bool)
+
     def __init__(
         self,
         phenome: PhenoMeInterface,
@@ -95,7 +101,7 @@ class LoadingPanel(QWidget):
         layout = QVBoxLayout()
 
         # Group for radio buttons to select data structure
-        structure_group = QGroupBox("Metadata structure")
+        self._structure_group = structure_group = QGroupBox("Metadata structure")
         structure_layout = QHBoxLayout()
 
         self._csv_radio = QRadioButton(".CSV file")
@@ -108,7 +114,7 @@ class LoadingPanel(QWidget):
 
         # Group for data loading params, holding one page per metadata
         # structure and showing the one matching the checked radio button.
-        loading_group = QGroupBox("Data loading")
+        self._loading_group = loading_group = QGroupBox("Data loading")
         self._loading_stack = QStackedLayout()
 
         # .csv metadata widgets. Built empty: _on_structure_changed() fills every box from the
@@ -292,7 +298,7 @@ class LoadingPanel(QWidget):
                 if not good:
                     problems.append(f'fix the {label}')
 
-            widget.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_BAD'])
+            widget.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_ERROR'])
 
         return problems
 
@@ -305,28 +311,91 @@ class LoadingPanel(QWidget):
         self._load_data(self._phenome.load_data_path)
 
     def _load_data(self, load: Callable[[], pd.DataFrame | None]) -> None:
-        """ Ask before dropping what is there, load the dataset, and show it in the table.
+        """ Ask before dropping what is there, then load the dataset on a worker thread.
 
         The two metadata structures differ only in the call they load through, so they share this: the
-        confirmation, the announcement and the table are the same either way.
+        confirmation, the waiting and the table are the same either way.
+
+        Run off the GUI thread so the window keeps painting while the files are found: on it, nothing
+        could be drawn until the load returned, the waiting outline included.
 
         Args:
             load: The interface method loading the dataset, which drops the previous results itself.
-        Raises:
-            ValueError: Raised on through _update_metadata_table() when no file was found.
         """
+        # Asked before anything changes colour: a load called off here leaves the tab as it was
         if not self._confirm_clearing():
             logger.info('Loading was called off, leaving the previous results as they were.')
             return
 
-        try:
-            metadata_df = load()
-        finally:
-            # The interface drops the previous results before it reads a single file, so whoever shows
-            # them is told whether or not the load itself got as far as finding any.
-            self.results_cleared.emit()
+        self._set_loading(True)
 
-        self._update_metadata_table(metadata_df)
+        worker = self._load_data_worker(load)
+        worker.returned.connect(self._on_load_finished)
+        worker.errored.connect(self._on_load_failed)
+        worker.start()
+
+    @thread_worker
+    def _load_data_worker(self, load: Callable[[], pd.DataFrame | None]) -> None:
+        """ Create the worker loading the dataset on a parallel thread.
+
+        Touches PhenoMe alone: the dataset found is stored on the interface, and everything shown of it
+        is the finish handlers' to draw, on the GUI thread.
+
+        Args:
+            load: The interface method loading the dataset.
+        """
+        load()
+
+    def _on_load_finished(self) -> None:
+        """ Show the dataset just loaded, and outline the buttons by whether any file was found. """
+        # The interface drops the previous results before it reads a single file, so whoever shows
+        # them is told whether or not the load itself got as far as finding any.
+        self.results_cleared.emit()
+
+        found = self._update_metadata_table(self._phenome.metadata_df)
+        self._set_loading(False, STYLESHEETS['STYLE_OK' if found else 'STYLE_ERROR'])
+
+    def _on_load_failed(self, error: Exception) -> None:
+        """ Say why a load raised, and leave the tab ready for another.
+
+        Without this the worker would swallow the error, leaving the tab locked and its buttons
+        waiting for good.
+
+        Args:
+            error: The exception the load raised, as the worker caught it.
+        """
+        # Dropped before the load got as far as failing, so they are gone whatever came of it
+        self.results_cleared.emit()
+
+        logger.error('Could not load the data: %s', error)
+        notifications.show_error(f'Could not load data: {error}')
+        self._set_loading(False, STYLESHEETS['STYLE_ERROR'])
+
+    def _set_loading(self, loading: bool, outcome: str = '') -> None:
+        """ Lock the tab while a load runs, and outline the buttons by how it is going.
+
+        The paths are read on the worker as the load starts, so the boxes and the structure are held
+        for the length of it rather than changed underneath it. A locked button keeps its outline,
+        which is what shows the load is still going.
+
+        Args:
+            loading: True as a load starts, False once it has finished.
+            outcome: The outline the buttons are left with once it has finished. Unused while loading,
+                which always outlines them as waiting.
+        """
+        sheet = STYLESHEETS['STYLE_WAIT'] if loading else outcome
+        for button in (self._csv_load_data_btn, self._path_load_data_btn):
+            button.setText('Loading data...' if loading else 'Load Data')
+            button.setStyleSheet(sheet)
+
+        self._structure_group.setEnabled(not loading)
+        self._loading_group.setEnabled(not loading)
+
+        # Unlocked to whatever the boxes allow: a red box still closes its button
+        if not loading:
+            self._refresh_load_buttons()
+
+        self.loading_changed.emit(loading)
 
     def _confirm_clearing(self) -> bool:
         """ Ask whether the results of the loaded dataset may be dropped, when there are any.
@@ -360,21 +429,23 @@ class LoadingPanel(QWidget):
         """
         self._update_metadata_table(self._phenome.get_metadata_table())
 
-    def _update_metadata_table(self, metadata_df: pd.DataFrame | None) -> None:
+    def _update_metadata_table(self, metadata_df: pd.DataFrame | None) -> bool:
         """ Update the metadata table in the GUI with the given metadata dataframe.
 
         Args:
             metadata_df: The metadata dataframe to display in the table.
-        Raises:
-            ValueError: If the dataframe is None or empty, the table being cleared beforehand.
+        Returns:
+            True if the table was updated successfully, False if the dataframe was None or empty.
         """
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self.data_loaded.emit()
-            raise ValueError("Could not load data. Please check the provided paths and files.")
+            notifications.show_error("Could not load data. Please check the provided paths and files.")
+            return False
         else:
             self._metadata_table.value = metadata_df
             self.data_loaded.emit()
+            return True
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """

@@ -101,7 +101,6 @@ class _PathLineEdit(QLineEdit):
         self.setText(path)
         event.acceptProposedAction()
 
-
 class PathWidget(QWidget):
     """ A box holding a path, with a button opening a dialog to pick one and room to drop one onto.
 
@@ -167,6 +166,25 @@ class PathWidget(QWidget):
             'A PathWidget does not know whether it asks for a file or a folder: '
             'use DirectoryWidget or FileWidget.'
         )
+
+    def setStyleSheet(self, style: str) -> None:
+        """ Set the style of the line edit, leaving the browse button as it is.
+
+        Args:
+            style: The stylesheet to apply, as held in STYLESHEETS.
+        """
+        self._line_edit.setStyleSheet(style)
+
+    def styleSheet(self) -> str:
+        """ The style of the line edit, which is where setStyleSheet() puts it.
+
+        Read from the same place it is written: QWidget's own would answer for the widget around the
+        box, which is never styled, and report every box as unstyled.
+
+        Returns:
+            The stylesheet the line edit was given, '' for none.
+        """
+        return self._line_edit.styleSheet()
 
     @property
     def path(self) -> str:
