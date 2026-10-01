@@ -282,6 +282,11 @@ def widget(viewer: RecordingViewer, dataset: dict[str, Path], qtbot) -> PhenoMeW
     widget._phenome.params.paths.images = dataset['images']
     widget._phenome.params.paths.masks = dataset['masks']
     widget._phenome.params.paths.metadata = dataset['metadata']
+
+    # The boxes were filled from the defaults when the widget was built, which name a dataset on
+    # one developer's machine. Shown again from the parameters, so the paths they hold - and the
+    # checks run against them - are ones that exist wherever the suite runs.
+    widget.loading_panel._on_structure_changed()
     return widget
 
 

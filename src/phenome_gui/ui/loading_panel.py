@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..utils.image_viewer import ImageViewer
+from ..utils.path_checking import check_csv_file_exists, check_directory_exists
 from ..utils.phenome_interface import PhenoMeInterface
 from .styles import STYLESHEETS
 from .table_dock import TableDockArea
@@ -152,6 +153,20 @@ class LoadingPanel(QWidget):
         self._build_loading_group()
         loading_group.setLayout(self._loading_stack)
 
+        # What each page's load reads: the box, what it is called in a tooltip, what it has to be,
+        # and whether it may be left empty. The images are the one thing a load needs. Defined
+        # before the first call to _on_structure_changed(), which checks them. The template is a
+        # pattern rather than a path, and is left unchecked.
+        self._csv_paths = [
+            (self._image_dir_dialog, 'images directory', check_directory_exists, True),
+            (self._mask_dir_dialog, 'masks directory', check_directory_exists, False),
+            (self._metadata_dir_dialog, 'metadata file', check_csv_file_exists, False),
+        ]
+        self._path_paths = [
+            (self._path_image_dir_dialog, 'images directory', check_directory_exists, True),
+            (self._path_mask_dir_dialog, 'masks directory', check_directory_exists, False),
+        ]
+
         self._csv_radio.toggled.connect(self._on_structure_changed)
         self._path_radio.toggled.connect(self._on_structure_changed)
         self._on_structure_changed()
@@ -163,14 +178,6 @@ class LoadingPanel(QWidget):
         self._path_mask_dir_dialog.changed.connect(self._on_directory_changed)
         self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
         self._path_template.changed.connect(self._on_directory_changed)
-
-        # List of dir dialog text boxes
-        self._dir_dialog_list = [self._image_dir_dialog,
-                                 self._mask_dir_dialog,
-                                 self._path_image_dir_dialog,
-                                 self._path_mask_dir_dialog,
-                                 self._metadata_dir_dialog,
-            ]
 
         # Connect buttons to load data
         self._csv_load_data_btn.clicked.connect(self._on_load_data_csv)
@@ -224,13 +231,21 @@ class LoadingPanel(QWidget):
 
     def _on_structure_changed(self) -> None:
         """ Update the displayed page of the loading stack when the metadata structure selection changes. """
+        # Read before any box is written. Writing one emits its change signal, which saves every box
+        # of the page back into the parameters - including the ones not shown yet, still holding
+        # whatever they held before. Read as it goes, a path just typed on one page would be put
+        # back by the other page's stale box the moment the page was switched.
+        images = self._phenome.params.paths.images
+        masks = self._phenome.params.paths.masks
+        metadata = self._phenome.params.paths.metadata
+
         # Written through the text rather than the value: an empty path reads back as the working
         # directory, and str(None) would put the word 'None' in the box
-        _show(self._image_dir_dialog, self._phenome.params.paths.images)
-        _show(self._mask_dir_dialog, self._phenome.params.paths.masks)
-        _show(self._path_image_dir_dialog, self._phenome.params.paths.images)
-        _show(self._path_mask_dir_dialog, self._phenome.params.paths.masks)
-        _show(self._metadata_dir_dialog, self._phenome.params.paths.metadata)
+        _show(self._image_dir_dialog, images)
+        _show(self._mask_dir_dialog, masks)
+        _show(self._path_image_dir_dialog, images)
+        _show(self._path_mask_dir_dialog, masks)
+        _show(self._metadata_dir_dialog, metadata)
 
         # Change page
         page = 0 if self._csv_radio.isChecked() else 1
@@ -244,8 +259,6 @@ class LoadingPanel(QWidget):
         A box left empty names nothing, which is what None says: PhenoMe finds the images without
         masks and without metadata, leaving out the columns each would have added.
         """
-        self._check_directories_ok()
-
         if self._csv_radio.isChecked():
             self._phenome.params.paths.images = _chosen(self._image_dir_dialog)
             self._phenome.params.paths.masks = _chosen(self._mask_dir_dialog)
@@ -259,28 +272,53 @@ class LoadingPanel(QWidget):
 
         self._refresh_load_buttons()
 
-    def _check_directories_ok(self):
-        """
-        TODO
-        """
-        for widget in self._dir_dialog_list:
-            if _chosen(widget) is not None and _chosen(widget).exists() or _chosen(widget) is None:
-                widget.native.setStyleSheet(STYLESHEETS['STYLE_OK'])
-            else:
-                widget.native.setStyleSheet(STYLESHEETS['STYLE_BAD'])
-
     def _refresh_load_buttons(self) -> None:
-        """ Offer the load only once there is an images directory to find anything in.
+        """ Outline every path box green or red, and offer each page's load only while its boxes are all good.
 
-        The masks and the metadata are PhenoMe's to do without, but the images are what a load looks
-        for: with none named there is nothing to find, and the run would fail on a path of None.
+        The colour and the gate come from the one pass over the boxes, so a box cannot read green
+        while the load it feeds stays shut, nor red while it opens. Each page is gated on its own
+        boxes alone: the metadata file is the csv page's, and a bad one must not close the load of the
+        path page, which never reads it.
         """
-        has_images = self._phenome.params.paths.images is not None
-        tooltip = '' if has_images else 'Please choose an images directory first.'
+        for button, paths in (
+            (self._csv_load_data_btn, self._csv_paths),
+            (self._path_load_data_btn, self._path_paths),
+        ):
+            problems = self._check_page(paths)
 
-        for button in (self._csv_load_data_btn, self._path_load_data_btn):
-            button.setEnabled(has_images)
-            button.setToolTip(tooltip)
+            button.setEnabled(not problems)
+            button.setToolTip(f"Please {' and '.join(problems)} first." if problems else '')
+
+    def _check_page(self, paths: list) -> list[str]:
+        """ Outline every box a page's load reads, and say what is wrong with them.
+
+        Read through the text, so an empty box is None rather than the working directory - which
+        exists, is a directory, and would otherwise read as a good images path. Empty is good for a
+        box that may be left empty, and is the one thing wrong with a required one.
+
+        Args:
+            paths: The page's boxes, each as (widget, label, check, required).
+        Returns:
+            What has to be put right before the page can load, in the order of the boxes. Empty when
+            every box is good.
+        """
+        problems = []
+
+        for widget, label, check, required in paths:
+            path = _chosen(widget)
+
+            if path is None:
+                good = not required
+                if required:
+                    problems.append(f'choose an {label}')
+            else:
+                good = check(path)
+                if not good:
+                    problems.append(f'fix the {label}')
+
+            widget.native.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_BAD'])
+
+        return problems
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """

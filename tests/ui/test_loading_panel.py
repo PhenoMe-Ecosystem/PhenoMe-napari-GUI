@@ -6,6 +6,7 @@ import pytest
 from qtpy.QtCore import Qt
 
 from phenome_gui.ui.loading_panel import LoadingPanel
+from phenome_gui.ui.styles import STYLESHEETS
 from phenome_gui.utils.image_viewer import ImageViewer
 
 
@@ -357,11 +358,24 @@ def load_buttons(panel: LoadingPanel) -> tuple:
 
 
 def test_the_load_waits_on_an_images_directory(panel: LoadingPanel) -> None:
+    panel._csv_radio.setChecked(True)
+
     clear(panel._image_dir_dialog)
 
-    for button in load_buttons(panel):
-        assert not button.isEnabled()
-        assert button.toolTip() == 'Please choose an images directory first.'
+    assert not panel._csv_load_data_btn.isEnabled()
+    assert panel._csv_load_data_btn.toolTip() == 'Please choose an images directory first.'
+
+
+def test_the_other_page_waits_once_it_is_shown(panel: LoadingPanel) -> None:
+    """Each page is gated on its own boxes, and a page's boxes are filled from the parameters when it
+    is shown - so an images directory cleared on one page closes the other's load as it comes up."""
+    panel._csv_radio.setChecked(True)
+    clear(panel._image_dir_dialog)
+
+    panel._path_radio.setChecked(True)
+
+    assert not panel._path_load_data_btn.isEnabled()
+    assert panel._path_load_data_btn.toolTip() == 'Please choose an images directory first.'
 
 
 def test_naming_the_images_again_opens_the_load(panel: LoadingPanel, dataset) -> None:
@@ -431,3 +445,151 @@ def test_loading_from_the_paths_without_a_template_finds_them(panel: LoadingPane
     panel._path_load_data_btn.click()
 
     assert panel._metadata_table.native.rowCount() == 6
+
+
+# ----------------------------------------------------------------------------
+# The outlines, which say whether each path names what its box asks for
+# ----------------------------------------------------------------------------
+
+
+def outlined(widget) -> str:
+    """ Which outline a box is drawn with: 'ok', 'bad', or 'none' for a box left unstyled. """
+    sheet = widget.native.styleSheet()
+    if sheet == STYLESHEETS['STYLE_OK']:
+        return 'ok'
+    if sheet == STYLESHEETS['STYLE_BAD']:
+        return 'bad'
+    return 'none'
+
+
+CSV_PATH_BOXES = ['_image_dir_dialog', '_mask_dir_dialog', '_metadata_dir_dialog']
+
+
+@pytest.mark.parametrize('box', CSV_PATH_BOXES)
+def test_a_box_naming_what_it_asks_for_is_green(panel: LoadingPanel, box: str) -> None:
+    """The fixture points every box at the test dataset, which exists wherever the suite runs."""
+    assert outlined(getattr(panel, box)) == 'ok'
+
+
+@pytest.mark.parametrize('box', CSV_PATH_BOXES)
+def test_a_path_to_nothing_is_red(panel: LoadingPanel, box: str, tmp_path: Path) -> None:
+    getattr(panel, box).value = tmp_path / 'missing'
+
+    assert outlined(getattr(panel, box)) == 'bad'
+
+
+@pytest.mark.parametrize('box', ['_image_dir_dialog', '_mask_dir_dialog'])
+def test_a_file_in_a_directory_box_is_red(panel: LoadingPanel, box: str, tmp_path: Path) -> None:
+    """It exists, which is all the first check asked, and PhenoMe still cannot search it."""
+    path = tmp_path / 'image.tif'
+    path.write_bytes(b'')
+
+    getattr(panel, box).value = path
+
+    assert outlined(getattr(panel, box)) == 'bad'
+
+
+def test_a_folder_in_the_metadata_box_is_red(panel: LoadingPanel, tmp_path: Path) -> None:
+    panel._metadata_dir_dialog.value = tmp_path
+
+    assert outlined(panel._metadata_dir_dialog) == 'bad'
+
+
+def test_a_file_of_another_kind_in_the_metadata_box_is_red(panel: LoadingPanel, tmp_path: Path) -> None:
+    path = tmp_path / 'metadata.txt'
+    path.write_text('filename\n')
+
+    panel._metadata_dir_dialog.value = path
+
+    assert outlined(panel._metadata_dir_dialog) == 'bad'
+
+
+def test_an_empty_images_box_is_red(panel: LoadingPanel) -> None:
+    """The one box a load cannot do without."""
+    clear(panel._image_dir_dialog)
+
+    assert outlined(panel._image_dir_dialog) == 'bad'
+
+
+@pytest.mark.parametrize('box', ['_mask_dir_dialog', '_metadata_dir_dialog'])
+def test_an_empty_optional_box_is_green(panel: LoadingPanel, box: str) -> None:
+    """Empty is an answer the load accepts for these, and green says the load will go."""
+    clear(getattr(panel, box))
+
+    assert outlined(getattr(panel, box)) == 'ok'
+
+
+def test_the_template_is_left_unstyled(panel: LoadingPanel) -> None:
+    """A pattern rather than a path, with nothing on disk to check it against."""
+    panel._path_radio.setChecked(True)
+
+    assert outlined(panel._path_template) == 'none'
+
+
+# ----------------------------------------------------------------------------
+# The gate, which a red box closes
+# ----------------------------------------------------------------------------
+
+
+def test_a_red_box_closes_the_load(panel: LoadingPanel, tmp_path: Path) -> None:
+    panel._csv_radio.setChecked(True)
+
+    panel._mask_dir_dialog.value = tmp_path / 'missing'
+
+    assert not panel._csv_load_data_btn.isEnabled()
+    assert panel._csv_load_data_btn.toolTip() == 'Please fix the masks directory first.'
+
+
+def test_every_red_box_is_named(panel: LoadingPanel, tmp_path: Path) -> None:
+    """In the order of the boxes, so the tooltip reads down the page."""
+    panel._csv_radio.setChecked(True)
+    clear(panel._image_dir_dialog)
+    panel._metadata_dir_dialog.value = tmp_path / 'missing.csv'
+
+    assert panel._csv_load_data_btn.toolTip() == (
+        'Please choose an images directory and fix the metadata file first.'
+    )
+
+
+def test_putting_a_box_right_opens_the_load_again(panel: LoadingPanel, dataset, tmp_path: Path) -> None:
+    panel._csv_radio.setChecked(True)
+    panel._mask_dir_dialog.value = tmp_path / 'missing'
+
+    panel._mask_dir_dialog.value = dataset['masks']
+
+    assert outlined(panel._mask_dir_dialog) == 'ok'
+    assert panel._csv_load_data_btn.isEnabled()
+    assert panel._csv_load_data_btn.toolTip() == ''
+
+
+def test_a_bad_metadata_file_leaves_the_path_page_open(panel: LoadingPanel, tmp_path: Path) -> None:
+    """The metadata file is the csv page's alone, and the path page's load never reads it."""
+    panel._csv_radio.setChecked(True)
+    panel._metadata_dir_dialog.value = tmp_path / 'missing.csv'
+
+    panel._path_radio.setChecked(True)
+
+    assert panel._path_load_data_btn.isEnabled()
+
+
+def test_switching_pages_keeps_the_paths_just_typed(panel: LoadingPanel, tmp_path: Path) -> None:
+    """Showing a page writes its boxes, and each write that changes one saves the whole page back.
+
+    Both are changed, which is what it takes: writing the images box onto the path page saves that
+    page back while its masks box still holds the old path, and read as it went, that old path would
+    have been put back over the one just typed. A box written with what it already holds emits
+    nothing, so changing the masks alone would never have shown it.
+    """
+    panel._csv_radio.setChecked(True)
+    images = tmp_path / 'images'
+    masks = tmp_path / 'masks'
+    images.mkdir()
+    masks.mkdir()
+    panel._image_dir_dialog.value = images
+    panel._mask_dir_dialog.value = masks
+
+    panel._path_radio.setChecked(True)
+
+    assert panel._phenome.params.paths.images == images
+    assert panel._phenome.params.paths.masks == masks
+    assert Path(str(panel._path_mask_dir_dialog.line_edit.value)) == masks
