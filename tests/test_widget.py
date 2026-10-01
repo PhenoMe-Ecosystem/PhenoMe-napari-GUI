@@ -130,6 +130,19 @@ def test_finishing_the_clustering_refreshes_the_metadata_table(widget: PhenoMeWi
     assert 'cluster' in list(widget.loading_panel._metadata_table.value['columns'])
 
 
+def test_a_dataset_of_images_alone_reaches_the_processing_panel(widget: PhenoMeWidget) -> None:
+    """End to end: the masks and the metadata are PhenoMe's to do without, and the steps after do too."""
+    widget._phenome.params.paths.masks = None
+    widget._phenome.params.paths.metadata = None
+
+    widget.loading_panel._csv_load_data_btn.click()
+
+    assert len(widget._phenome.metadata_df) == 6
+    assert widget.processing_panel._process_button.toolTip() == (
+        'Please create or load a checkpoint and load a model first.'
+    )
+
+
 # ----------------------------------------------------------------------------
 # A loaded checkpoint, which opens the analysis steps without a run being made here
 # ----------------------------------------------------------------------------

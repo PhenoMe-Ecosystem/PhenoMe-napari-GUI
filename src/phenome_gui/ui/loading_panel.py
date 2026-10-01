@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import pandas as pd
 from magicgui.widgets import create_widget
@@ -20,9 +21,38 @@ from qtpy.QtWidgets import (
 
 from ..utils.image_viewer import ImageViewer
 from ..utils.phenome_interface import PhenoMeInterface
+from .styles import STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
+
+
+def _chosen(widget) -> Path | None:
+    """ The path a directory box names, or None when it has been left empty.
+
+    Read off the text rather than off the value: magicgui answers for an empty box with the working
+    directory, which is a path like any other and names nothing anyone picked.
+
+    Args:
+        widget: The FileEdit the path is read from.
+    Returns:
+        The path named, or None for an empty box.
+    """
+    text = str(widget.line_edit.value).strip()
+
+    return Path(text) if text else None
+
+def _show(widget, path: Path | None) -> None:
+    """ Put a path in a directory box, leaving it empty for one that names nothing.
+
+    Written through the text for the same reason _chosen() reads it: setting an empty value lands
+    the box on the working directory, and str(None) would spell out the word 'None'.
+
+    Args:
+        widget: The FileEdit the path is shown in.
+        path: The path to show, or None to leave the box empty.
+    """
+    widget.line_edit.value = '' if path is None else str(path)
 
 
 class LoadingPanel(QWidget):
@@ -134,6 +164,14 @@ class LoadingPanel(QWidget):
         self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
         self._path_template.changed.connect(self._on_directory_changed)
 
+        # List of dir dialog text boxes
+        self._dir_dialog_list = [self._image_dir_dialog,
+                                 self._mask_dir_dialog,
+                                 self._path_image_dir_dialog,
+                                 self._path_mask_dir_dialog,
+                                 self._metadata_dir_dialog,
+            ]
+
         # Connect buttons to load data
         self._csv_load_data_btn.clicked.connect(self._on_load_data_csv)
         self._path_load_data_btn.clicked.connect(self._on_load_data_path)
@@ -186,27 +224,63 @@ class LoadingPanel(QWidget):
 
     def _on_structure_changed(self) -> None:
         """ Update the displayed page of the loading stack when the metadata structure selection changes. """
-        # Change text of corresponding widgets
-        self._image_dir_dialog.value = str(self._phenome.params.paths.images)
-        self._mask_dir_dialog.value = str(self._phenome.params.paths.masks)
-        self._path_image_dir_dialog.value = str(self._phenome.params.paths.images)
-        self._path_mask_dir_dialog.value = str(self._phenome.params.paths.masks)
-        self._metadata_dir_dialog.value = str(self._phenome.params.paths.metadata)
+        # Written through the text rather than the value: an empty path reads back as the working
+        # directory, and str(None) would put the word 'None' in the box
+        _show(self._image_dir_dialog, self._phenome.params.paths.images)
+        _show(self._mask_dir_dialog, self._phenome.params.paths.masks)
+        _show(self._path_image_dir_dialog, self._phenome.params.paths.images)
+        _show(self._path_mask_dir_dialog, self._phenome.params.paths.masks)
+        _show(self._metadata_dir_dialog, self._phenome.params.paths.metadata)
 
         # Change page
         page = 0 if self._csv_radio.isChecked() else 1
         self._loading_stack.setCurrentIndex(page)
 
+        self._refresh_load_buttons()
+
     def _on_directory_changed(self) -> None:
-        """ Update the parameters when a directory is changed. """
+        """ Update the parameters when a directory is changed.
+
+        A box left empty names nothing, which is what None says: PhenoMe finds the images without
+        masks and without metadata, leaving out the columns each would have added.
+        """
+        self._check_directories_ok()
+
         if self._csv_radio.isChecked():
-            self._phenome.params.paths.images = self._image_dir_dialog.value
-            self._phenome.params.paths.masks = self._mask_dir_dialog.value
-            self._phenome.params.paths.metadata = self._metadata_dir_dialog.value
+            self._phenome.params.paths.images = _chosen(self._image_dir_dialog)
+            self._phenome.params.paths.masks = _chosen(self._mask_dir_dialog)
+            self._phenome.params.paths.metadata = _chosen(self._metadata_dir_dialog)
         else:
-            self._phenome.params.paths.images = self._path_image_dir_dialog.value
-            self._phenome.params.paths.masks = self._path_mask_dir_dialog.value
-            self._phenome.params.paths.template = self._path_template.value
+            self._phenome.params.paths.images = _chosen(self._path_image_dir_dialog)
+            self._phenome.params.paths.masks = _chosen(self._path_mask_dir_dialog)
+
+            # A LineEdit reports its emptiness honestly, unlike the path boxes
+            self._phenome.params.paths.template = self._path_template.value or None
+
+        self._refresh_load_buttons()
+
+    def _check_directories_ok(self):
+        """
+        TODO
+        """
+        for widget in self._dir_dialog_list:
+            if _chosen(widget) is not None and _chosen(widget).exists() or _chosen(widget) is None:
+                widget.native.setStyleSheet(STYLESHEETS['STYLE_OK'])
+            else:
+                widget.native.setStyleSheet(STYLESHEETS['STYLE_BAD'])
+
+    def _refresh_load_buttons(self) -> None:
+        """ Offer the load only once there is an images directory to find anything in.
+
+        The masks and the metadata are PhenoMe's to do without, but the images are what a load looks
+        for: with none named there is nothing to find, and the run would fail on a path of None.
+        """
+        has_images = self._phenome.params.paths.images is not None
+        tooltip = '' if has_images else 'Please choose an images directory first.'
+
+        for button in (self._csv_load_data_btn, self._path_load_data_btn):
+            button.setEnabled(has_images)
+            button.setToolTip(tooltip)
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """

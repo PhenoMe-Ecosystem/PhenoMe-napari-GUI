@@ -269,3 +269,165 @@ def test_popping_the_table_out_and_closing_it_brings_it_back(docked_panel: Loadi
     assert docked_panel.layout().indexOf(area) == slot
     assert area.dock.widget() is docked_panel._metadata_table.native
     assert not area.dock.isHidden()
+
+
+# ----------------------------------------------------------------------------
+# An empty box, which names nothing rather than naming the working directory
+# ----------------------------------------------------------------------------
+
+
+def clear(widget) -> None:
+    """ Empty a directory box the way a user does, through its text.
+
+    Setting the value instead would land it on the working directory, which is what the panel reads
+    around and what a test must not read around with it.
+
+    Args:
+        widget: The FileEdit to empty.
+    """
+    widget.line_edit.value = ''
+
+
+CSV_BOXES = [
+    pytest.param('_image_dir_dialog', 'images', id='images'),
+    pytest.param('_mask_dir_dialog', 'masks', id='masks'),
+    pytest.param('_metadata_dir_dialog', 'metadata', id='metadata'),
+]
+
+PATH_BOXES = [
+    pytest.param('_path_image_dir_dialog', 'images', id='images'),
+    pytest.param('_path_mask_dir_dialog', 'masks', id='masks'),
+]
+
+
+@pytest.mark.parametrize(('box', 'field'), CSV_BOXES)
+def test_emptying_a_csv_box_names_nothing(panel: LoadingPanel, box: str, field: str) -> None:
+    panel._csv_radio.setChecked(True)
+
+    clear(getattr(panel, box))
+
+    assert getattr(panel._phenome.params.paths, field) is None
+
+
+@pytest.mark.parametrize(('box', 'field'), PATH_BOXES)
+def test_emptying_a_path_box_names_nothing(panel: LoadingPanel, box: str, field: str) -> None:
+    panel._path_radio.setChecked(True)
+
+    clear(getattr(panel, box))
+
+    assert getattr(panel._phenome.params.paths, field) is None
+
+
+def test_emptying_the_template_names_nothing(panel: LoadingPanel) -> None:
+    """A pattern rather than a path, but empty means the same: no metadata read off the paths."""
+    panel._path_radio.setChecked(True)
+
+    panel._path_template.value = ''
+
+    assert panel._phenome.params.paths.template is None
+
+
+def test_a_filled_box_still_names_its_path(panel: LoadingPanel, tmp_path: Path) -> None:
+    """The reading goes through the text now, which must not cost the ordinary case."""
+    panel._csv_radio.setChecked(True)
+
+    panel._image_dir_dialog.value = tmp_path / 'imgs'
+
+    assert panel._phenome.params.paths.images == tmp_path / 'imgs'
+
+
+def test_a_cleared_box_stays_cleared_across_the_pages(panel: LoadingPanel) -> None:
+    """Shown through the text too: str(None) would spell the word 'None' into the box."""
+    panel._csv_radio.setChecked(True)
+    clear(panel._mask_dir_dialog)
+
+    panel._path_radio.setChecked(True)
+
+    assert str(panel._path_mask_dir_dialog.line_edit.value) == ''
+
+
+# ----------------------------------------------------------------------------
+# The load, which waits on the images and on nothing else
+# ----------------------------------------------------------------------------
+
+
+def load_buttons(panel: LoadingPanel) -> tuple:
+    """ Both Load Data buttons, the two pages offering one each. """
+    return panel._csv_load_data_btn, panel._path_load_data_btn
+
+
+def test_the_load_waits_on_an_images_directory(panel: LoadingPanel) -> None:
+    clear(panel._image_dir_dialog)
+
+    for button in load_buttons(panel):
+        assert not button.isEnabled()
+        assert button.toolTip() == 'Please choose an images directory first.'
+
+
+def test_naming_the_images_again_opens_the_load(panel: LoadingPanel, dataset) -> None:
+    clear(panel._image_dir_dialog)
+
+    panel._image_dir_dialog.value = dataset['images']
+
+    for button in load_buttons(panel):
+        assert button.isEnabled()
+        assert button.toolTip() == ''
+
+
+def test_the_load_does_not_wait_on_the_masks_or_the_metadata(panel: LoadingPanel) -> None:
+    """Both are PhenoMe's to do without, so neither may close the load."""
+    clear(panel._mask_dir_dialog)
+    clear(panel._metadata_dir_dialog)
+
+    for button in load_buttons(panel):
+        assert button.isEnabled()
+
+
+def test_loading_without_masks_finds_the_images(panel: LoadingPanel, dataset) -> None:
+    """PhenoMe keeps the mask_path column and leaves it empty, which the image viewer reads as no mask."""
+    panel._csv_radio.setChecked(True)
+    panel._image_dir_dialog.value = dataset['images']
+    panel._metadata_dir_dialog.value = dataset['metadata']
+    clear(panel._mask_dir_dialog)
+
+    panel._csv_load_data_btn.click()
+
+    assert panel._metadata_table.native.rowCount() == 6
+    assert panel._phenome.metadata_df['mask_path'].isna().all()
+
+
+def test_loading_without_metadata_finds_the_images(panel: LoadingPanel, dataset) -> None:
+    """The .csv is what the metadata columns come from, and the images are found without it."""
+    panel._csv_radio.setChecked(True)
+    panel._image_dir_dialog.value = dataset['images']
+    panel._mask_dir_dialog.value = dataset['masks']
+    clear(panel._metadata_dir_dialog)
+
+    panel._csv_load_data_btn.click()
+
+    assert panel._metadata_table.native.rowCount() == 6
+    assert {'drug_name', 'time'}.isdisjoint(shown_columns(panel._metadata_table))
+
+
+def test_loading_with_the_images_alone_finds_them(panel: LoadingPanel, dataset) -> None:
+    """The whole of the point: only the images directory is needed."""
+    panel._csv_radio.setChecked(True)
+    panel._image_dir_dialog.value = dataset['images']
+    clear(panel._mask_dir_dialog)
+    clear(panel._metadata_dir_dialog)
+
+    panel._csv_load_data_btn.click()
+
+    assert panel._metadata_table.native.rowCount() == 6
+
+
+def test_loading_from_the_paths_without_a_template_finds_them(panel: LoadingPanel, path_dataset) -> None:
+    """The template is what the metadata is read off the paths with, and the images do without it."""
+    panel._path_radio.setChecked(True)
+    panel._path_image_dir_dialog.value = path_dataset['images']
+    clear(panel._path_mask_dir_dialog)
+    panel._path_template.value = ''
+
+    panel._path_load_data_btn.click()
+
+    assert panel._metadata_table.native.rowCount() == 6

@@ -47,6 +47,23 @@ IDENTIFIER_MIN_ROWS = 10
 PROJECTION_INDEX_COLUMN = 'Index'
 
 
+def _as_phenome_path(path: Path | None) -> str | None:
+    """ A directory as PhenoMe takes it, or None when none was named.
+
+    Stringified rather than handed over as a Path: find_files() reads its image directory as text,
+    looking for the wildcards a glob would carry, and a Path raises there. None is kept as it is,
+    being what says there is no directory at all - str(None) would be the path 'None', which PhenoMe
+    would then go looking for.
+
+    Args:
+        path: The directory named, or None when the box was left empty.
+    Returns:
+        The directory as text, or None.
+    """
+    return None if path is None else str(path)
+
+
+
 class PhenoMeInterface:
     """
     Single entry point to PhenoMe for the GUI.
@@ -160,9 +177,9 @@ class PhenoMeInterface:
         """
         self.clear_results()
 
-        images_folder = str(self.params.paths.images)
-        masks_folder = str(self.params.paths.masks)
-        metadata_csv = str(self.params.paths.metadata)
+        images_folder = _as_phenome_path(self.params.paths.images)
+        masks_folder = _as_phenome_path(self.params.paths.masks)
+        metadata_csv = self.params.paths.metadata
         self.metadata_df = self.data_loading.load_data_csv(images_folder, metadata_csv, masks_folder)
         return self.metadata_df
 
@@ -177,8 +194,8 @@ class PhenoMeInterface:
         """
         self.clear_results()
 
-        images_folder = str(self.params.paths.images)
-        masks_folder = str(self.params.paths.masks)
+        images_folder = _as_phenome_path(self.params.paths.images)
+        masks_folder = _as_phenome_path(self.params.paths.masks)
         template = self.params.paths.template
         self.metadata_df = self.data_loading.load_data_path(images_folder, template, masks_folder)
         return self.metadata_df
