@@ -6,6 +6,18 @@ from phenome import PhenoMe, get_metadata_from_path, make_dataframe_metadata_fn
 
 logger = getLogger(__name__)
 
+# The files a load takes for images: what PhenoMe's read_image() can open, by its own branches for
+# TIFF, NumPy and NIfTI, and through OpenCV for the rest. Passed to find_files() explicitly, as its
+# default of None filters nothing - every file in the folder would be taken, notes and all, whatever
+# its docstring says. '.nii.gz' is left out: find_files() filters on the last suffix alone, so it
+# could only be allowed by allowing every '.gz'.
+EXTENSIONS = [
+    '.tif', '.tiff',
+    '.png', '.jpg', '.jpeg', '.bmp', '.webp', '.jp2',
+    '.npy', '.npz',
+    '.nii',
+]
+
 class DataLoading:
     """ Data loading component of the PhenoMe interface.
 
@@ -48,7 +60,9 @@ class DataLoading:
             # column the images cannot be matched on reaches the log here and nowhere else.
             logger.info("Metadata columns: %s", metadata_df.columns.tolist())
 
-        return self.pheno.find_files(images_folder, mask_dir=masks_folder, metadata_fn=metadata_fn)
+        return self.pheno.find_files(
+            images_folder, mask_dir=masks_folder, extensions=EXTENSIONS, metadata_fn=metadata_fn
+        )
 
     def load_data_path(self, images_folder: str, template: str | None = None, masks_folder: str | None = None) -> pd.DataFrame:
         """ Find the image files and corresponding masks, extracting the metadata from the file paths.
@@ -71,4 +85,6 @@ class DataLoading:
 
         metadata_fn = get_metadata_from_path(template) if template else None
 
-        return self.pheno.find_files(images_folder, mask_dir=masks_folder, metadata_fn=metadata_fn)
+        return self.pheno.find_files(
+            images_folder, mask_dir=masks_folder, extensions=EXTENSIONS, metadata_fn=metadata_fn
+        )

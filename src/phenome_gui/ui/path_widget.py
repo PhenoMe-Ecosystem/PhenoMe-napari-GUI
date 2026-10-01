@@ -53,7 +53,7 @@ class _PathLineEdit(QLineEdit):
         Args:
             event: The drag entering the box.
         """
-        self._judge(event, super().dragEnterEvent)
+        self._check_drag_valid(event, super().dragEnterEvent)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         """ Keep judging the drag as it moves over the box.
@@ -64,9 +64,9 @@ class _PathLineEdit(QLineEdit):
         Args:
             event: The drag moving over the box.
         """
-        self._judge(event, super().dragMoveEvent)
+        self._check_drag_valid(event, super().dragMoveEvent)
 
-    def _judge(self, event: QDragEnterEvent | QDragMoveEvent, default) -> None:
+    def _check_drag_valid(self, event: QDragEnterEvent | QDragMoveEvent, default) -> None:
         """ Take a drag of a local path, refuse a drag of other URLs, and leave plain text to QLineEdit.
 
         A drag of URLs is the path's business throughout: one that is not local is refused rather than

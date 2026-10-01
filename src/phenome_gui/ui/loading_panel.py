@@ -125,7 +125,7 @@ class LoadingPanel(QWidget):
 
         # path-based metadata widgets
         self._path_image_dir_dialog = DirectoryWidget('Images Directory...', placeholder='Drag a folder here...')
-        self._path_mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) folder here...')
+        self._path_mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) Drag a folder here...')
         self._path_template = create_widget(
             label='Template', annotation=str, widget_type='LineEdit', options={'value':self._phenome.params.paths.template}
         )
