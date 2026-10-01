@@ -22,38 +22,34 @@ from qtpy.QtWidgets import (
 from ..utils.image_viewer import ImageViewer
 from ..utils.path_checking import check_csv_file_exists, check_directory_exists
 from ..utils.phenome_interface import PhenoMeInterface
+from .path_widget import DirectoryWidget, FileWidget, PathWidget
 from .styles import STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
 
 
-def _chosen(widget) -> Path | None:
-    """ The path a directory box names, or None when it has been left empty.
-
-    Read off the text rather than off the value: magicgui answers for an empty box with the working
-    directory, which is a path like any other and names nothing anyone picked.
+def _chosen(widget: PathWidget) -> Path | None:
+    """ The path a box names, or None when it has been left empty.
 
     Args:
-        widget: The FileEdit the path is read from.
+        widget: The path box the path is read from.
     Returns:
         The path named, or None for an empty box.
     """
-    text = str(widget.line_edit.value).strip()
+    text = widget.path.strip()
 
     return Path(text) if text else None
 
-def _show(widget, path: Path | None) -> None:
-    """ Put a path in a directory box, leaving it empty for one that names nothing.
 
-    Written through the text for the same reason _chosen() reads it: setting an empty value lands
-    the box on the working directory, and str(None) would spell out the word 'None'.
+def _show(widget: PathWidget, path: Path | None) -> None:
+    """ Put a path in a box, leaving it empty for one that names nothing.
 
     Args:
-        widget: The FileEdit the path is shown in.
-        path: The path to show, or None to leave the box empty.
+        widget: The path box the path is shown in.
+        path: The path to show, or None to leave the box empty - str(None) would spell out 'None'.
     """
-    widget.line_edit.value = '' if path is None else str(path)
+    widget.path = '' if path is None else path
 
 
 class LoadingPanel(QWidget):
@@ -115,36 +111,20 @@ class LoadingPanel(QWidget):
         loading_group = QGroupBox("Data loading")
         self._loading_stack = QStackedLayout()
 
-        # .csv metadata widgets
-        self._image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.images)}
-        )
-        self._mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.masks)}
-        )
-        self._metadata_dir_dialog = create_widget(
-            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':str(self._phenome.params.paths.metadata)}
-        )
+        # .csv metadata widgets. Built empty: _on_structure_changed() fills every box from the
+        # parameters below, before any of them is connected.
+        self._image_dir_dialog = DirectoryWidget('Images Directory...', placeholder='Drag a folder here...')
+        self._mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) Drag a folder here...')
+        self._metadata_dir_dialog = FileWidget('Metadata Path...', file_filter='CSV Files (*.csv)', placeholder='(Optional) Drag a file here...')
 
         # path-based metadata widgets
-        self._path_image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.params.paths.images}
-        )
-        self._path_mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.params.paths.masks}
-        )
+        self._path_image_dir_dialog = DirectoryWidget('Images Directory...', placeholder='Drag a folder here...')
+        self._path_mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) folder here...')
         self._path_template = create_widget(
             label='Template', annotation=str, widget_type='LineEdit', options={'value':self._phenome.params.paths.template}
         )
         self._path_template_label = QLabel('Template')
 
-        self._image_dir_dialog.choose_btn.text = 'Images Directory...'
-        self._mask_dir_dialog.choose_btn.text = 'Masks Directory...'
-        self._metadata_dir_dialog.choose_btn.text = 'Metadata Path...'
-        self._path_image_dir_dialog.choose_btn.text = 'Images Directory...'
-        self._path_mask_dir_dialog.choose_btn.text = 'Masks Directory...'
         self._path_template_label.text = 'Template'
 
         self._csv_load_data_btn = QPushButton('Load Data')
@@ -171,12 +151,11 @@ class LoadingPanel(QWidget):
         self._path_radio.toggled.connect(self._on_structure_changed)
         self._on_structure_changed()
 
-        # Connect signals to update parameters when directories change
-        self._image_dir_dialog.changed.connect(self._on_directory_changed)
-        self._mask_dir_dialog.changed.connect(self._on_directory_changed)
-        self._path_image_dir_dialog.changed.connect(self._on_directory_changed)
-        self._path_mask_dir_dialog.changed.connect(self._on_directory_changed)
-        self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
+        # Connect signals to update parameters when the paths change
+        for widget, *_ in self._csv_paths + self._path_paths:
+            widget.path_changed.connect(self._on_directory_changed)
+
+        # The template is a pattern rather than a path, so it is in neither table
         self._path_template.changed.connect(self._on_directory_changed)
 
         # Connect buttons to load data
@@ -208,17 +187,17 @@ class LoadingPanel(QWidget):
         # .csv metadata structure
         csv_page = QWidget()
         csv_loading_layout = QVBoxLayout(csv_page)
-        csv_loading_layout.addWidget(self._image_dir_dialog.native)
-        csv_loading_layout.addWidget(self._mask_dir_dialog.native)
-        csv_loading_layout.addWidget(self._metadata_dir_dialog.native)
+        csv_loading_layout.addWidget(self._image_dir_dialog)
+        csv_loading_layout.addWidget(self._mask_dir_dialog)
+        csv_loading_layout.addWidget(self._metadata_dir_dialog)
         csv_loading_layout.addStretch(0)
         csv_loading_layout.addWidget(self._csv_load_data_btn)
 
         # path-based metadata structure
         path_page = QWidget()
         path_loading_layout = QVBoxLayout(path_page)
-        path_loading_layout.addWidget(self._path_image_dir_dialog.native)
-        path_loading_layout.addWidget(self._path_mask_dir_dialog.native)
+        path_loading_layout.addWidget(self._path_image_dir_dialog)
+        path_loading_layout.addWidget(self._path_mask_dir_dialog)
         template_row = QHBoxLayout()
         template_row.addWidget(self._path_template.native)
         template_row.addWidget(self._path_template_label)
@@ -239,8 +218,6 @@ class LoadingPanel(QWidget):
         masks = self._phenome.params.paths.masks
         metadata = self._phenome.params.paths.metadata
 
-        # Written through the text rather than the value: an empty path reads back as the working
-        # directory, and str(None) would put the word 'None' in the box
         _show(self._image_dir_dialog, images)
         _show(self._mask_dir_dialog, masks)
         _show(self._path_image_dir_dialog, images)
@@ -292,9 +269,8 @@ class LoadingPanel(QWidget):
     def _check_page(self, paths: list) -> list[str]:
         """ Outline every box a page's load reads, and say what is wrong with them.
 
-        Read through the text, so an empty box is None rather than the working directory - which
-        exists, is a directory, and would otherwise read as a good images path. Empty is good for a
-        box that may be left empty, and is the one thing wrong with a required one.
+        Empty is good for a box that may be left empty, and is the one thing wrong with a required
+        one.
 
         Args:
             paths: The page's boxes, each as (widget, label, check, required).
@@ -316,7 +292,7 @@ class LoadingPanel(QWidget):
                 if not good:
                     problems.append(f'fix the {label}')
 
-            widget.native.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_BAD'])
+            widget.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_BAD'])
 
         return problems
 

@@ -404,8 +404,8 @@ def test_answering_no_to_the_second_load_keeps_everything(
 def load_paths(widget: PhenoMeWidget, path_dataset) -> None:
     """ Load the second dataset through the loading panel, the way a user would. """
     widget.loading_panel._path_radio.setChecked(True)
-    widget.loading_panel._path_image_dir_dialog.value = path_dataset['images']
-    widget.loading_panel._path_mask_dir_dialog.value = path_dataset['masks']
+    widget.loading_panel._path_image_dir_dialog.path = path_dataset['images']
+    widget.loading_panel._path_mask_dir_dialog.path = path_dataset['masks']
     widget.loading_panel._path_template.value = path_dataset['template']
     widget.loading_panel._path_load_data_btn.click()
 

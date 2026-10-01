@@ -3,7 +3,9 @@
 from pathlib import Path
 
 import pytest
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QMimeData, QPointF, Qt, QUrl
+from qtpy.QtGui import QDropEvent
+from qtpy.QtWidgets import QFileDialog
 
 from phenome_gui.ui.loading_panel import LoadingPanel
 from phenome_gui.ui.styles import STYLESHEETS
@@ -39,9 +41,9 @@ def test_choosing_the_path_structure_swaps_the_page(panel: LoadingPanel) -> None
 
 def test_the_csv_page_writes_its_three_paths(panel: LoadingPanel, tmp_path: Path) -> None:
     panel._csv_radio.setChecked(True)
-    panel._image_dir_dialog.value = tmp_path / 'imgs'
-    panel._mask_dir_dialog.value = tmp_path / 'msks'
-    panel._metadata_dir_dialog.value = tmp_path / 'meta.csv'
+    panel._image_dir_dialog.path = tmp_path / 'imgs'
+    panel._mask_dir_dialog.path = tmp_path / 'msks'
+    panel._metadata_dir_dialog.path = tmp_path / 'meta.csv'
 
     assert panel._phenome.params.paths.images == tmp_path / 'imgs'
     assert panel._phenome.params.paths.masks == tmp_path / 'msks'
@@ -51,7 +53,7 @@ def test_the_csv_page_writes_its_three_paths(panel: LoadingPanel, tmp_path: Path
 def test_the_path_page_writes_the_template_instead(panel: LoadingPanel, tmp_path: Path) -> None:
     """The template stays a string: PhenoMe calls str.replace on it, which a Path does not have."""
     panel._path_radio.setChecked(True)
-    panel._path_image_dir_dialog.value = tmp_path / 'imgs'
+    panel._path_image_dir_dialog.path = tmp_path / 'imgs'
     panel._path_template.value = '.../(drug)/(time)/(filename).*'
 
     assert panel._phenome.params.paths.images == tmp_path / 'imgs'
@@ -61,8 +63,8 @@ def test_the_path_page_writes_the_template_instead(panel: LoadingPanel, tmp_path
 
 def test_loading_from_the_paths_reads_the_metadata_off_them(panel: LoadingPanel, path_dataset) -> None:
     panel._path_radio.setChecked(True)
-    panel._path_image_dir_dialog.value = path_dataset['images']
-    panel._path_mask_dir_dialog.value = path_dataset['masks']
+    panel._path_image_dir_dialog.path = path_dataset['images']
+    panel._path_mask_dir_dialog.path = path_dataset['masks']
     panel._path_template.value = path_dataset['template']
 
     panel._on_load_data_path()
@@ -150,7 +152,7 @@ def test_a_load_announces_that_the_results_are_gone(panel: LoadingPanel, qtbot) 
 
 def test_loading_from_the_paths_announces_it_too(panel: LoadingPanel, path_dataset, qtbot) -> None:
     panel._path_radio.setChecked(True)
-    panel._path_image_dir_dialog.value = path_dataset['images']
+    panel._path_image_dir_dialog.path = path_dataset['images']
     panel._path_template.value = path_dataset['template']
 
     with qtbot.waitSignal(panel.results_cleared, timeout=1000):
@@ -278,15 +280,12 @@ def test_popping_the_table_out_and_closing_it_brings_it_back(docked_panel: Loadi
 
 
 def clear(widget) -> None:
-    """ Empty a directory box the way a user does, through its text.
-
-    Setting the value instead would land it on the working directory, which is what the panel reads
-    around and what a test must not read around with it.
+    """ Empty a path box, the way deleting its text does.
 
     Args:
-        widget: The FileEdit to empty.
+        widget: The path box to empty.
     """
-    widget.line_edit.value = ''
+    widget.path = ''
 
 
 CSV_BOXES = [
@@ -332,7 +331,7 @@ def test_a_filled_box_still_names_its_path(panel: LoadingPanel, tmp_path: Path) 
     """The reading goes through the text now, which must not cost the ordinary case."""
     panel._csv_radio.setChecked(True)
 
-    panel._image_dir_dialog.value = tmp_path / 'imgs'
+    panel._image_dir_dialog.path = tmp_path / 'imgs'
 
     assert panel._phenome.params.paths.images == tmp_path / 'imgs'
 
@@ -344,7 +343,7 @@ def test_a_cleared_box_stays_cleared_across_the_pages(panel: LoadingPanel) -> No
 
     panel._path_radio.setChecked(True)
 
-    assert str(panel._path_mask_dir_dialog.line_edit.value) == ''
+    assert str(panel._path_mask_dir_dialog.path) == ''
 
 
 # ----------------------------------------------------------------------------
@@ -381,7 +380,7 @@ def test_the_other_page_waits_once_it_is_shown(panel: LoadingPanel) -> None:
 def test_naming_the_images_again_opens_the_load(panel: LoadingPanel, dataset) -> None:
     clear(panel._image_dir_dialog)
 
-    panel._image_dir_dialog.value = dataset['images']
+    panel._image_dir_dialog.path = dataset['images']
 
     for button in load_buttons(panel):
         assert button.isEnabled()
@@ -400,8 +399,8 @@ def test_the_load_does_not_wait_on_the_masks_or_the_metadata(panel: LoadingPanel
 def test_loading_without_masks_finds_the_images(panel: LoadingPanel, dataset) -> None:
     """PhenoMe keeps the mask_path column and leaves it empty, which the image viewer reads as no mask."""
     panel._csv_radio.setChecked(True)
-    panel._image_dir_dialog.value = dataset['images']
-    panel._metadata_dir_dialog.value = dataset['metadata']
+    panel._image_dir_dialog.path = dataset['images']
+    panel._metadata_dir_dialog.path = dataset['metadata']
     clear(panel._mask_dir_dialog)
 
     panel._csv_load_data_btn.click()
@@ -413,8 +412,8 @@ def test_loading_without_masks_finds_the_images(panel: LoadingPanel, dataset) ->
 def test_loading_without_metadata_finds_the_images(panel: LoadingPanel, dataset) -> None:
     """The .csv is what the metadata columns come from, and the images are found without it."""
     panel._csv_radio.setChecked(True)
-    panel._image_dir_dialog.value = dataset['images']
-    panel._mask_dir_dialog.value = dataset['masks']
+    panel._image_dir_dialog.path = dataset['images']
+    panel._mask_dir_dialog.path = dataset['masks']
     clear(panel._metadata_dir_dialog)
 
     panel._csv_load_data_btn.click()
@@ -426,7 +425,7 @@ def test_loading_without_metadata_finds_the_images(panel: LoadingPanel, dataset)
 def test_loading_with_the_images_alone_finds_them(panel: LoadingPanel, dataset) -> None:
     """The whole of the point: only the images directory is needed."""
     panel._csv_radio.setChecked(True)
-    panel._image_dir_dialog.value = dataset['images']
+    panel._image_dir_dialog.path = dataset['images']
     clear(panel._mask_dir_dialog)
     clear(panel._metadata_dir_dialog)
 
@@ -438,7 +437,7 @@ def test_loading_with_the_images_alone_finds_them(panel: LoadingPanel, dataset) 
 def test_loading_from_the_paths_without_a_template_finds_them(panel: LoadingPanel, path_dataset) -> None:
     """The template is what the metadata is read off the paths with, and the images do without it."""
     panel._path_radio.setChecked(True)
-    panel._path_image_dir_dialog.value = path_dataset['images']
+    panel._path_image_dir_dialog.path = path_dataset['images']
     clear(panel._path_mask_dir_dialog)
     panel._path_template.value = ''
 
@@ -453,8 +452,8 @@ def test_loading_from_the_paths_without_a_template_finds_them(panel: LoadingPane
 
 
 def outlined(widget) -> str:
-    """ Which outline a box is drawn with: 'ok', 'bad', or 'none' for a box left unstyled. """
-    sheet = widget.native.styleSheet()
+    """ Which outline a Qt widget is drawn with: 'ok', 'bad', or 'none' for one left unstyled. """
+    sheet = widget.styleSheet()
     if sheet == STYLESHEETS['STYLE_OK']:
         return 'ok'
     if sheet == STYLESHEETS['STYLE_BAD']:
@@ -473,7 +472,7 @@ def test_a_box_naming_what_it_asks_for_is_green(panel: LoadingPanel, box: str) -
 
 @pytest.mark.parametrize('box', CSV_PATH_BOXES)
 def test_a_path_to_nothing_is_red(panel: LoadingPanel, box: str, tmp_path: Path) -> None:
-    getattr(panel, box).value = tmp_path / 'missing'
+    getattr(panel, box).path = tmp_path / 'missing'
 
     assert outlined(getattr(panel, box)) == 'bad'
 
@@ -484,13 +483,13 @@ def test_a_file_in_a_directory_box_is_red(panel: LoadingPanel, box: str, tmp_pat
     path = tmp_path / 'image.tif'
     path.write_bytes(b'')
 
-    getattr(panel, box).value = path
+    getattr(panel, box).path = path
 
     assert outlined(getattr(panel, box)) == 'bad'
 
 
 def test_a_folder_in_the_metadata_box_is_red(panel: LoadingPanel, tmp_path: Path) -> None:
-    panel._metadata_dir_dialog.value = tmp_path
+    panel._metadata_dir_dialog.path = tmp_path
 
     assert outlined(panel._metadata_dir_dialog) == 'bad'
 
@@ -499,7 +498,7 @@ def test_a_file_of_another_kind_in_the_metadata_box_is_red(panel: LoadingPanel, 
     path = tmp_path / 'metadata.txt'
     path.write_text('filename\n')
 
-    panel._metadata_dir_dialog.value = path
+    panel._metadata_dir_dialog.path = path
 
     assert outlined(panel._metadata_dir_dialog) == 'bad'
 
@@ -523,7 +522,7 @@ def test_the_template_is_left_unstyled(panel: LoadingPanel) -> None:
     """A pattern rather than a path, with nothing on disk to check it against."""
     panel._path_radio.setChecked(True)
 
-    assert outlined(panel._path_template) == 'none'
+    assert outlined(panel._path_template.native) == 'none'
 
 
 # ----------------------------------------------------------------------------
@@ -534,7 +533,7 @@ def test_the_template_is_left_unstyled(panel: LoadingPanel) -> None:
 def test_a_red_box_closes_the_load(panel: LoadingPanel, tmp_path: Path) -> None:
     panel._csv_radio.setChecked(True)
 
-    panel._mask_dir_dialog.value = tmp_path / 'missing'
+    panel._mask_dir_dialog.path = tmp_path / 'missing'
 
     assert not panel._csv_load_data_btn.isEnabled()
     assert panel._csv_load_data_btn.toolTip() == 'Please fix the masks directory first.'
@@ -544,7 +543,7 @@ def test_every_red_box_is_named(panel: LoadingPanel, tmp_path: Path) -> None:
     """In the order of the boxes, so the tooltip reads down the page."""
     panel._csv_radio.setChecked(True)
     clear(panel._image_dir_dialog)
-    panel._metadata_dir_dialog.value = tmp_path / 'missing.csv'
+    panel._metadata_dir_dialog.path = tmp_path / 'missing.csv'
 
     assert panel._csv_load_data_btn.toolTip() == (
         'Please choose an images directory and fix the metadata file first.'
@@ -553,9 +552,9 @@ def test_every_red_box_is_named(panel: LoadingPanel, tmp_path: Path) -> None:
 
 def test_putting_a_box_right_opens_the_load_again(panel: LoadingPanel, dataset, tmp_path: Path) -> None:
     panel._csv_radio.setChecked(True)
-    panel._mask_dir_dialog.value = tmp_path / 'missing'
+    panel._mask_dir_dialog.path = tmp_path / 'missing'
 
-    panel._mask_dir_dialog.value = dataset['masks']
+    panel._mask_dir_dialog.path = dataset['masks']
 
     assert outlined(panel._mask_dir_dialog) == 'ok'
     assert panel._csv_load_data_btn.isEnabled()
@@ -565,7 +564,7 @@ def test_putting_a_box_right_opens_the_load_again(panel: LoadingPanel, dataset, 
 def test_a_bad_metadata_file_leaves_the_path_page_open(panel: LoadingPanel, tmp_path: Path) -> None:
     """The metadata file is the csv page's alone, and the path page's load never reads it."""
     panel._csv_radio.setChecked(True)
-    panel._metadata_dir_dialog.value = tmp_path / 'missing.csv'
+    panel._metadata_dir_dialog.path = tmp_path / 'missing.csv'
 
     panel._path_radio.setChecked(True)
 
@@ -585,11 +584,59 @@ def test_switching_pages_keeps_the_paths_just_typed(panel: LoadingPanel, tmp_pat
     masks = tmp_path / 'masks'
     images.mkdir()
     masks.mkdir()
-    panel._image_dir_dialog.value = images
-    panel._mask_dir_dialog.value = masks
+    panel._image_dir_dialog.path = images
+    panel._mask_dir_dialog.path = masks
 
     panel._path_radio.setChecked(True)
 
     assert panel._phenome.params.paths.images == images
     assert panel._phenome.params.paths.masks == masks
-    assert Path(str(panel._path_mask_dir_dialog.line_edit.value)) == masks
+    assert Path(str(panel._path_mask_dir_dialog.path)) == masks
+
+
+# ----------------------------------------------------------------------------
+# Browsing and dropping, which the path boxes bring with them
+# ----------------------------------------------------------------------------
+
+
+def test_browsing_for_the_images_writes_them(panel: LoadingPanel, dataset, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A folder picked in the dialog reaches the parameters and is checked, as one typed would be."""
+    panel._csv_radio.setChecked(True)
+    clear(panel._image_dir_dialog)
+    monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *args, **kwargs: str(dataset['images']))
+
+    panel._image_dir_dialog._browse_button.click()
+
+    assert panel._phenome.params.paths.images == dataset['images']
+    assert outlined(panel._image_dir_dialog) == 'ok'
+    assert panel._csv_load_data_btn.isEnabled()
+
+
+def test_the_metadata_box_offers_only_csv_files(panel: LoadingPanel, monkeypatch: pytest.MonkeyPatch) -> None:
+    offered = []
+
+    def _dialog(parent, caption, start, file_filter='', *args, **kwargs):
+        offered.append(file_filter)
+        return '', file_filter
+
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', _dialog)
+
+    panel._metadata_dir_dialog._browse_button.click()
+
+    assert offered == ['CSV Files (*.csv)']
+
+
+def test_a_folder_dropped_on_the_masks_writes_them(panel: LoadingPanel, tmp_path: Path) -> None:
+    """Dropped from a file browser, the path reaches the parameters the way a typed one does."""
+    panel._csv_radio.setChecked(True)
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(tmp_path))])
+    event = QDropEvent(
+        QPointF(5, 5), Qt.DropAction.CopyAction, mime_data,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+
+    panel._mask_dir_dialog._line_edit.dropEvent(event)
+
+    assert panel._phenome.params.paths.masks == tmp_path
+    assert outlined(panel._mask_dir_dialog) == 'ok'
