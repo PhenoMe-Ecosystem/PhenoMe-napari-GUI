@@ -48,8 +48,13 @@ class ParamsBase(BaseModel):
 class PathParams(ParamsBase):
     """ Filesystem inputs and outputs.
 
+    Every field here is None when its box has been left empty, which is what says a thing was not
+    chosen at all. Only `images` is needed to load a dataset: PhenoMe finds the images with no masks
+    and no metadata, leaving out the columns each would have added. `images` itself being None closes
+    the load, there being nothing to find.
+
     `template` is a filename pattern rather than a path, and is typed as such so it is never coerced
-    into a Path.
+    into a Path. Empty means no metadata, the same as an empty metadata file.
 
     `checkpoint` is None until one has been created or loaded, and goes back to None whenever another
     dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
@@ -57,10 +62,10 @@ class PathParams(ParamsBase):
     and the properties are written to it, so a run without one would have nowhere to put them.
     """
 
-    images: Path = Path('')
-    masks: Path = Path('')
-    metadata: Path = Path('')
-    template: str = '.../(drug_name)/(time)/(filename).*'
+    images: Path | None = None
+    masks: Path | None = None
+    metadata: Path | None = None
+    template: str | None = '.../(drug_name)/(time)/(filename).*'
     checkpoint: Path | None = None
 
 

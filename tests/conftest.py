@@ -282,6 +282,11 @@ def widget(viewer: RecordingViewer, dataset: dict[str, Path], qtbot) -> PhenoMeW
     widget._phenome.params.paths.images = dataset['images']
     widget._phenome.params.paths.masks = dataset['masks']
     widget._phenome.params.paths.metadata = dataset['metadata']
+
+    # The boxes were filled from the defaults when the widget was built, which name a dataset on
+    # one developer's machine. Shown again from the parameters, so the paths they hold - and the
+    # checks run against them - are ones that exist wherever the suite runs.
+    widget.loading_panel._on_structure_changed()
     return widget
 
 
@@ -432,6 +437,24 @@ class _SyncWorker:
             self.errored.emit(error)
         else:
             self.returned.emit()
+
+
+@pytest.fixture(autouse=True)
+def inline_loads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ Run every dataset load inline rather than on a worker thread.
+
+    The loading tab loads on a worker so the window keeps painting, which leaves most tests asserting
+    on a table not yet filled. Patched on the class, so it covers every way a panel is built. A test
+    marked real_load_worker keeps the real thread, for what only a real thread can show.
+    """
+    if request.node.get_closest_marker('real_load_worker'):
+        return
+
+    from phenome_gui.ui.loading_panel import LoadingPanel
+
+    monkeypatch.setattr(
+        LoadingPanel, '_load_data_worker', lambda self, load: _SyncWorker(load)
+    )
 
 
 @pytest.fixture

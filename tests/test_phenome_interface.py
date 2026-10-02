@@ -974,3 +974,55 @@ def test_nothing_to_project_leaves_no_projection(loaded: PhenoMeInterface, reduc
 
     assert loaded.compute_projection() is None
     assert loaded.projection_df is None
+
+
+# ----------------------------------------------------------------------------
+# Loading with only the images, the masks and the metadata being PhenoMe's to do without
+# ----------------------------------------------------------------------------
+
+
+def test_the_images_load_without_masks(phenome: PhenoMeInterface) -> None:
+    """PhenoMe keeps the mask_path column and leaves it empty, rather than refusing the load."""
+    phenome.params.paths.masks = None
+
+    metadata_df = phenome.load_data_csv()
+
+    assert len(metadata_df) == 6
+    assert metadata_df['mask_path'].isna().all()
+
+
+def test_the_images_load_without_metadata(phenome: PhenoMeInterface) -> None:
+    """The .csv is what the metadata columns come from, and the images are found without one."""
+    phenome.params.paths.metadata = None
+
+    metadata_df = phenome.load_data_csv()
+
+    assert len(metadata_df) == 6
+    assert {'drug_name', 'time'}.isdisjoint(metadata_df.columns)
+
+
+def test_the_images_load_on_their_own(phenome: PhenoMeInterface) -> None:
+    """The whole of the point: the images directory is the only thing a load needs."""
+    phenome.params.paths.masks = None
+    phenome.params.paths.metadata = None
+
+    assert len(phenome.load_data_csv()) == 6
+
+
+def test_the_images_load_off_the_paths_without_a_template(phenome: PhenoMeInterface, path_dataset) -> None:
+    """The template is what metadata is read off the paths with, and the images do without it."""
+    phenome.params.paths.images = path_dataset['images']
+    phenome.params.paths.masks = None
+    phenome.params.paths.template = None
+
+    assert len(phenome.load_data_path()) == 6
+
+
+def test_a_named_directory_reaches_phenome_as_text(phenome: PhenoMeInterface) -> None:
+    """find_files() reads its image directory as text, looking for the wildcards a glob would carry."""
+    assert isinstance(phenome_interface._as_phenome_path(Path('/tmp/images')), str)
+
+
+def test_an_unnamed_directory_stays_nothing(phenome: PhenoMeInterface) -> None:
+    """str(None) is the path 'None', which PhenoMe would go looking for."""
+    assert phenome_interface._as_phenome_path(None) is None

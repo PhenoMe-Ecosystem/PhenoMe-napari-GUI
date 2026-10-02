@@ -1,6 +1,6 @@
 [project]
 name = "phenome-gui"
-version = "0.2.0"
+version = "0.2.1"
 description = "GUI integration of the PhenoMe phenotyping framework"
 readme = "README.md"
 license = "MIT"
@@ -85,6 +85,7 @@ log_cli_level = "INFO"
 testpaths = ["tests"]
 markers = [
     "integration: builds a real napari viewer, so it needs a display",
+    "real_load_worker: loads data on the real worker thread rather than inline",
 ]
 
 [tool.ruff]

@@ -1,8 +1,11 @@
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import pandas as pd
 from magicgui.widgets import create_widget
+from napari.qt.threading import thread_worker
+from napari.utils import notifications
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -19,10 +22,36 @@ from qtpy.QtWidgets import (
 )
 
 from ..utils.image_viewer import ImageViewer
+from ..utils.path_checking import check_csv_file_exists, check_directory_exists
 from ..utils.phenome_interface import PhenoMeInterface
+from .path_widget import DirectoryWidget, FileWidget, PathWidget
+from .styles import STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
+
+
+def _chosen(widget: PathWidget) -> Path | None:
+    """ The path a box names, or None when it has been left empty.
+
+    Args:
+        widget: The path box the path is read from.
+    Returns:
+        The path named, or None for an empty box.
+    """
+    text = widget.path.strip()
+
+    return Path(text) if text else None
+
+
+def _show(widget: PathWidget, path: Path | None) -> None:
+    """ Put a path in a box, leaving it empty for one that names nothing.
+
+    Args:
+        widget: The path box the path is shown in.
+        path: The path to show, or None to leave the box empty - str(None) would spell out 'None'.
+    """
+    widget.path = '' if path is None else path
 
 
 class LoadingPanel(QWidget):
@@ -40,6 +69,10 @@ class LoadingPanel(QWidget):
     # those results can let go of them. Kept apart from data_loaded, which is also emitted when the table
     # is redrawn from the metadata a step has just added to: that is not a load, and drops nothing.
     results_cleared = Signal()
+
+    # Emitted with True as a load starts on its worker thread and with False once it has finished
+    # either way, so the steps that would run against the pipeline it is emptying can hold off.
+    loading_changed = Signal(bool)
 
     def __init__(
         self,
@@ -68,7 +101,7 @@ class LoadingPanel(QWidget):
         layout = QVBoxLayout()
 
         # Group for radio buttons to select data structure
-        structure_group = QGroupBox("Metadata structure")
+        self._structure_group = structure_group = QGroupBox("Metadata structure")
         structure_layout = QHBoxLayout()
 
         self._csv_radio = QRadioButton(".CSV file")
@@ -81,39 +114,23 @@ class LoadingPanel(QWidget):
 
         # Group for data loading params, holding one page per metadata
         # structure and showing the one matching the checked radio button.
-        loading_group = QGroupBox("Data loading")
+        self._loading_group = loading_group = QGroupBox("Data loading")
         self._loading_stack = QStackedLayout()
 
-        # .csv metadata widgets
-        self._image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.images)}
-        )
-        self._mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit', options={'mode': 'd', 'value':str(self._phenome.params.paths.masks)}
-        )
-        self._metadata_dir_dialog = create_widget(
-            label='Metadata Directory', annotation=str, widget_type='FileEdit', options={'mode':'r', 'filter':'CSV Files (*.csv)', 'value':str(self._phenome.params.paths.metadata)}
-        )
+        # .csv metadata widgets. Built empty: _on_structure_changed() fills every box from the
+        # parameters below, before any of them is connected.
+        self._image_dir_dialog = DirectoryWidget('Images Directory...', placeholder='Drag a folder here...')
+        self._mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) Drag a folder here...')
+        self._metadata_dir_dialog = FileWidget('Metadata Path...', file_filter='CSV Files (*.csv)', placeholder='(Optional) Drag a file here...')
 
         # path-based metadata widgets
-        self._path_image_dir_dialog = create_widget(
-            label='Images Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.params.paths.images}
-        )
-        self._path_mask_dir_dialog = create_widget(
-            label='Masks Directory...', annotation=str, widget_type='FileEdit',
-            options={'mode': 'd', 'value':self._phenome.params.paths.masks}
-        )
+        self._path_image_dir_dialog = DirectoryWidget('Images Directory...', placeholder='Drag a folder here...')
+        self._path_mask_dir_dialog = DirectoryWidget('Masks Directory...', placeholder='(Optional) Drag a folder here...')
         self._path_template = create_widget(
             label='Template', annotation=str, widget_type='LineEdit', options={'value':self._phenome.params.paths.template}
         )
         self._path_template_label = QLabel('Template')
 
-        self._image_dir_dialog.choose_btn.text = 'Images Directory...'
-        self._mask_dir_dialog.choose_btn.text = 'Masks Directory...'
-        self._metadata_dir_dialog.choose_btn.text = 'Metadata Path...'
-        self._path_image_dir_dialog.choose_btn.text = 'Images Directory...'
-        self._path_mask_dir_dialog.choose_btn.text = 'Masks Directory...'
         self._path_template_label.text = 'Template'
 
         self._csv_load_data_btn = QPushButton('Load Data')
@@ -122,16 +139,29 @@ class LoadingPanel(QWidget):
         self._build_loading_group()
         loading_group.setLayout(self._loading_stack)
 
+        # What each page's load reads: the box, what it is called in a tooltip, what it has to be,
+        # and whether it may be left empty. The images are the one thing a load needs. Defined
+        # before the first call to _on_structure_changed(), which checks them. The template is a
+        # pattern rather than a path, and is left unchecked.
+        self._csv_paths = [
+            (self._image_dir_dialog, 'images directory', check_directory_exists, True),
+            (self._mask_dir_dialog, 'masks directory', check_directory_exists, False),
+            (self._metadata_dir_dialog, 'metadata file', check_csv_file_exists, False),
+        ]
+        self._path_paths = [
+            (self._path_image_dir_dialog, 'images directory', check_directory_exists, True),
+            (self._path_mask_dir_dialog, 'masks directory', check_directory_exists, False),
+        ]
+
         self._csv_radio.toggled.connect(self._on_structure_changed)
         self._path_radio.toggled.connect(self._on_structure_changed)
         self._on_structure_changed()
 
-        # Connect signals to update parameters when directories change
-        self._image_dir_dialog.changed.connect(self._on_directory_changed)
-        self._mask_dir_dialog.changed.connect(self._on_directory_changed)
-        self._path_image_dir_dialog.changed.connect(self._on_directory_changed)
-        self._path_mask_dir_dialog.changed.connect(self._on_directory_changed)
-        self._metadata_dir_dialog.changed.connect(self._on_directory_changed)
+        # Connect signals to update parameters when the paths change
+        for widget, *_ in self._csv_paths + self._path_paths:
+            widget.path_changed.connect(self._on_directory_changed)
+
+        # The template is a pattern rather than a path, so it is in neither table
         self._path_template.changed.connect(self._on_directory_changed)
 
         # Connect buttons to load data
@@ -163,17 +193,17 @@ class LoadingPanel(QWidget):
         # .csv metadata structure
         csv_page = QWidget()
         csv_loading_layout = QVBoxLayout(csv_page)
-        csv_loading_layout.addWidget(self._image_dir_dialog.native)
-        csv_loading_layout.addWidget(self._mask_dir_dialog.native)
-        csv_loading_layout.addWidget(self._metadata_dir_dialog.native)
+        csv_loading_layout.addWidget(self._image_dir_dialog)
+        csv_loading_layout.addWidget(self._mask_dir_dialog)
+        csv_loading_layout.addWidget(self._metadata_dir_dialog)
         csv_loading_layout.addStretch(0)
         csv_loading_layout.addWidget(self._csv_load_data_btn)
 
         # path-based metadata structure
         path_page = QWidget()
         path_loading_layout = QVBoxLayout(path_page)
-        path_loading_layout.addWidget(self._path_image_dir_dialog.native)
-        path_loading_layout.addWidget(self._path_mask_dir_dialog.native)
+        path_loading_layout.addWidget(self._path_image_dir_dialog)
+        path_loading_layout.addWidget(self._path_mask_dir_dialog)
         template_row = QHBoxLayout()
         template_row.addWidget(self._path_template.native)
         template_row.addWidget(self._path_template_label)
@@ -186,27 +216,91 @@ class LoadingPanel(QWidget):
 
     def _on_structure_changed(self) -> None:
         """ Update the displayed page of the loading stack when the metadata structure selection changes. """
-        # Change text of corresponding widgets
-        self._image_dir_dialog.value = str(self._phenome.params.paths.images)
-        self._mask_dir_dialog.value = str(self._phenome.params.paths.masks)
-        self._path_image_dir_dialog.value = str(self._phenome.params.paths.images)
-        self._path_mask_dir_dialog.value = str(self._phenome.params.paths.masks)
-        self._metadata_dir_dialog.value = str(self._phenome.params.paths.metadata)
+        # Read before any box is written. Writing one emits its change signal, which saves every box
+        # of the page back into the parameters - including the ones not shown yet, still holding
+        # whatever they held before. Read as it goes, a path just typed on one page would be put
+        # back by the other page's stale box the moment the page was switched.
+        images = self._phenome.params.paths.images
+        masks = self._phenome.params.paths.masks
+        metadata = self._phenome.params.paths.metadata
+
+        _show(self._image_dir_dialog, images)
+        _show(self._mask_dir_dialog, masks)
+        _show(self._path_image_dir_dialog, images)
+        _show(self._path_mask_dir_dialog, masks)
+        _show(self._metadata_dir_dialog, metadata)
 
         # Change page
         page = 0 if self._csv_radio.isChecked() else 1
         self._loading_stack.setCurrentIndex(page)
 
+        self._refresh_load_buttons()
+
     def _on_directory_changed(self) -> None:
-        """ Update the parameters when a directory is changed. """
+        """ Update the parameters when a directory is changed.
+
+        A box left empty names nothing, which is what None says: PhenoMe finds the images without
+        masks and without metadata, leaving out the columns each would have added.
+        """
         if self._csv_radio.isChecked():
-            self._phenome.params.paths.images = self._image_dir_dialog.value
-            self._phenome.params.paths.masks = self._mask_dir_dialog.value
-            self._phenome.params.paths.metadata = self._metadata_dir_dialog.value
+            self._phenome.params.paths.images = _chosen(self._image_dir_dialog)
+            self._phenome.params.paths.masks = _chosen(self._mask_dir_dialog)
+            self._phenome.params.paths.metadata = _chosen(self._metadata_dir_dialog)
         else:
-            self._phenome.params.paths.images = self._path_image_dir_dialog.value
-            self._phenome.params.paths.masks = self._path_mask_dir_dialog.value
-            self._phenome.params.paths.template = self._path_template.value
+            self._phenome.params.paths.images = _chosen(self._path_image_dir_dialog)
+            self._phenome.params.paths.masks = _chosen(self._path_mask_dir_dialog)
+
+            # A LineEdit reports its emptiness honestly, unlike the path boxes
+            self._phenome.params.paths.template = self._path_template.value or None
+
+        self._refresh_load_buttons()
+
+    def _refresh_load_buttons(self) -> None:
+        """ Outline every path box green or red, and offer each page's load only while its boxes are all good.
+
+        The colour and the gate come from the one pass over the boxes, so a box cannot read green
+        while the load it feeds stays shut, nor red while it opens. Each page is gated on its own
+        boxes alone: the metadata file is the csv page's, and a bad one must not close the load of the
+        path page, which never reads it.
+        """
+        for button, paths in (
+            (self._csv_load_data_btn, self._csv_paths),
+            (self._path_load_data_btn, self._path_paths),
+        ):
+            problems = self._check_page(paths)
+
+            button.setEnabled(not problems)
+            button.setToolTip(f"Please {' and '.join(problems)} first." if problems else '')
+
+    def _check_page(self, paths: list) -> list[str]:
+        """ Outline every box a page's load reads, and say what is wrong with them.
+
+        Empty is good for a box that may be left empty, and is the one thing wrong with a required
+        one.
+
+        Args:
+            paths: The page's boxes, each as (widget, label, check, required).
+        Returns:
+            What has to be put right before the page can load, in the order of the boxes. Empty when
+            every box is good.
+        """
+        problems = []
+
+        for widget, label, check, required in paths:
+            path = _chosen(widget)
+
+            if path is None:
+                good = not required
+                if required:
+                    problems.append(f'choose an {label}')
+            else:
+                good = check(path)
+                if not good:
+                    problems.append(f'fix the {label}')
+
+            widget.setStyleSheet(STYLESHEETS['STYLE_OK' if good else 'STYLE_ERROR'])
+
+        return problems
 
     def _on_load_data_csv(self) -> None:
         """ Load the data using a .csv metadata file and show it in the table. """
@@ -217,28 +311,91 @@ class LoadingPanel(QWidget):
         self._load_data(self._phenome.load_data_path)
 
     def _load_data(self, load: Callable[[], pd.DataFrame | None]) -> None:
-        """ Ask before dropping what is there, load the dataset, and show it in the table.
+        """ Ask before dropping what is there, then load the dataset on a worker thread.
 
         The two metadata structures differ only in the call they load through, so they share this: the
-        confirmation, the announcement and the table are the same either way.
+        confirmation, the waiting and the table are the same either way.
+
+        Run off the GUI thread so the window keeps painting while the files are found: on it, nothing
+        could be drawn until the load returned, the waiting outline included.
 
         Args:
             load: The interface method loading the dataset, which drops the previous results itself.
-        Raises:
-            ValueError: Raised on through _update_metadata_table() when no file was found.
         """
+        # Asked before anything changes colour: a load called off here leaves the tab as it was
         if not self._confirm_clearing():
             logger.info('Loading was called off, leaving the previous results as they were.')
             return
 
-        try:
-            metadata_df = load()
-        finally:
-            # The interface drops the previous results before it reads a single file, so whoever shows
-            # them is told whether or not the load itself got as far as finding any.
-            self.results_cleared.emit()
+        self._set_loading(True)
 
-        self._update_metadata_table(metadata_df)
+        worker = self._load_data_worker(load)
+        worker.returned.connect(self._on_load_finished)
+        worker.errored.connect(self._on_load_failed)
+        worker.start()
+
+    @thread_worker
+    def _load_data_worker(self, load: Callable[[], pd.DataFrame | None]) -> None:
+        """ Create the worker loading the dataset on a parallel thread.
+
+        Touches PhenoMe alone: the dataset found is stored on the interface, and everything shown of it
+        is the finish handlers' to draw, on the GUI thread.
+
+        Args:
+            load: The interface method loading the dataset.
+        """
+        load()
+
+    def _on_load_finished(self) -> None:
+        """ Show the dataset just loaded, and outline the buttons by whether any file was found. """
+        # The interface drops the previous results before it reads a single file, so whoever shows
+        # them is told whether or not the load itself got as far as finding any.
+        self.results_cleared.emit()
+
+        found = self._update_metadata_table(self._phenome.metadata_df)
+        self._set_loading(False, STYLESHEETS['STYLE_OK' if found else 'STYLE_ERROR'])
+
+    def _on_load_failed(self, error: Exception) -> None:
+        """ Say why a load raised, and leave the tab ready for another.
+
+        Without this the worker would swallow the error, leaving the tab locked and its buttons
+        waiting for good.
+
+        Args:
+            error: The exception the load raised, as the worker caught it.
+        """
+        # Dropped before the load got as far as failing, so they are gone whatever came of it
+        self.results_cleared.emit()
+
+        logger.error('Could not load the data: %s', error)
+        notifications.show_error(f'Could not load data: {error}')
+        self._set_loading(False, STYLESHEETS['STYLE_ERROR'])
+
+    def _set_loading(self, loading: bool, outcome: str = '') -> None:
+        """ Lock the tab while a load runs, and outline the buttons by how it is going.
+
+        The paths are read on the worker as the load starts, so the boxes and the structure are held
+        for the length of it rather than changed underneath it. A locked button keeps its outline,
+        which is what shows the load is still going.
+
+        Args:
+            loading: True as a load starts, False once it has finished.
+            outcome: The outline the buttons are left with once it has finished. Unused while loading,
+                which always outlines them as waiting.
+        """
+        sheet = STYLESHEETS['STYLE_WAIT'] if loading else outcome
+        for button in (self._csv_load_data_btn, self._path_load_data_btn):
+            button.setText('Loading data...' if loading else 'Load Data')
+            button.setStyleSheet(sheet)
+
+        self._structure_group.setEnabled(not loading)
+        self._loading_group.setEnabled(not loading)
+
+        # Unlocked to whatever the boxes allow: a red box still closes its button
+        if not loading:
+            self._refresh_load_buttons()
+
+        self.loading_changed.emit(loading)
 
     def _confirm_clearing(self) -> bool:
         """ Ask whether the results of the loaded dataset may be dropped, when there are any.
@@ -272,21 +429,23 @@ class LoadingPanel(QWidget):
         """
         self._update_metadata_table(self._phenome.get_metadata_table())
 
-    def _update_metadata_table(self, metadata_df: pd.DataFrame | None) -> None:
+    def _update_metadata_table(self, metadata_df: pd.DataFrame | None) -> bool:
         """ Update the metadata table in the GUI with the given metadata dataframe.
 
         Args:
             metadata_df: The metadata dataframe to display in the table.
-        Raises:
-            ValueError: If the dataframe is None or empty, the table being cleared beforehand.
+        Returns:
+            True if the table was updated successfully, False if the dataframe was None or empty.
         """
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self.data_loaded.emit()
-            raise ValueError("Could not load data. Please check the provided paths and files.")
+            notifications.show_error("Could not load data. Please check the provided paths and files.")
+            return False
         else:
             self._metadata_table.value = metadata_df
             self.data_loaded.emit()
+            return True
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """

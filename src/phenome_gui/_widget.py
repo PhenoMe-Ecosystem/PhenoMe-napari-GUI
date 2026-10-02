@@ -91,6 +91,10 @@ class PhenoMeWidget(QWidget):
         self.loading_panel.results_cleared.connect(self.analysis_panel.clear_results)
         self.loading_panel.results_cleared.connect(self._on_results_cleared)
 
+        # A load empties the pipeline on a worker thread, so the steps that run against it hold off
+        # until it has finished rather than run against what is being taken away underneath them
+        self.loading_panel.loading_changed.connect(self._on_loading_changed)
+
     def _on_checkpoint_loaded(self) -> None:
         """ Bring the explorer up to date with what a loaded checkpoint brought with it.
 
@@ -101,6 +105,19 @@ class PhenoMeWidget(QWidget):
         """
         if self._explorer_window is not None:
             self._explorer_window.refresh_choices()
+
+    def _on_loading_changed(self, loading: bool) -> None:
+        """ Hold the processing and analysis steps off while a dataset loads, and let them go after.
+
+        Locked as panels rather than button by button: each keeps the enabled state of its own
+        buttons underneath, so they all come back as they were once the panel is enabled again.
+
+        Args:
+            loading: True as a load starts, False once it has finished.
+        """
+        for panel in (self.processing_panel, self.analysis_panel, self._explorer_window):
+            if panel is not None:
+                panel.setEnabled(not loading)
 
     def _on_results_cleared(self) -> None:
         """ Let go of what the widget itself holds of the previous dataset.
