@@ -7,6 +7,7 @@ from phenome.utils import ProgressCallback
 from torch import cuda
 
 from ..registries.models import MODEL_OPTIONS
+from ..registries.process_options import OPTIONS_LOADERS
 from .analysis import PhenoMeAnalysis
 from .checkpoint import CheckpointMismatch, inspect_checkpoint
 from .data_loading import DataLoading
@@ -88,8 +89,11 @@ class PhenoMeInterface:
         self.outliers_df = None
         self.projection_df = None
         self.model = None
-        self.process_options = None
         self.transforms = None
+
+        # The model and the device the network in self.model was loaded for, as (GUI name, device),
+        # or None before any load. Read to tell whether a run can reuse it or has to load again.
+        self._loaded_model: tuple[str, str] | None = None
         self.cuda_available = cuda.is_available()
 
         self.data_loading = DataLoading(self.pheno)
@@ -207,26 +211,77 @@ class PhenoMeInterface:
     def load_model(self) -> None:
         """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
 
-        A model arrives with the transformations its images are to be prepared with and the arguments
-        its embeddings are to be extracted under, both read from the registries by the name it is
-        known by. They are kept here until the images are processed, which is where they are used, so
-        both are written to the log as they arrive: what a run was made under is otherwise nowhere.
+        A model arrives with the transformations its images are to be prepared with, read from the
+        registries by the name it is known by. They are kept here until the images are processed,
+        which is where they are used, and written to the log as they arrive: what a run was made
+        under is otherwise nowhere.
+
+        Raises:
+            ValueError: The selected model is not one the registries know, so there is nothing to load.
         """
         model_name = self.params.process.model
 
         real_model_name = MODEL_OPTIONS.get(model_name)
-        if real_model_name:
-            device = self.params.process.device
-            self.model, self.transforms, self.process_options = self.image_processing.load_model(real_model_name, device=device)
-
-            logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
-            logger.info(
-                "Its images are prepared with %s, and processed with %s.",
-                'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
-                str(self.process_options) if self.process_options else 'no arguments of its own'
+        if not real_model_name:
+            raise ValueError(
+                f"Model name '{model_name}' not recognized. Available options: {list(MODEL_OPTIONS)}"
             )
-        else:
-            logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
+
+        device = self.params.process.device
+
+        # Forgotten before the load rather than after it, so a load that raises leaves nothing
+        # claiming to be loaded
+        self._loaded_model = None
+        self.model, self.transforms, _ = self.image_processing.load_model(real_model_name, device=device)
+        self._loaded_model = (model_name, device)
+
+        logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
+        logger.info(
+            "Its images are prepared with %s.",
+            'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
+        )
+
+    @property
+    def needs_model_load(self) -> bool:
+        """ Whether the next run has to load a model before it can extract anything.
+
+        True before any load, and whenever the model or the device has been picked again since: the
+        network held is then not the one the run is to be made with.
+
+        Returns:
+            True when the loaded network does not answer for the selected model and device.
+        """
+        return self._loaded_model != (self.params.process.model, self.params.process.device)
+
+    def ensure_model_loaded(self) -> bool:
+        """ Load the selected model, unless the one already held answers for it.
+
+        Called at the start of a run rather than when a model is picked: picking is only a choice,
+        and the download is left to the moment it is needed.
+
+        Returns:
+            True when a model was loaded, False when the one held was kept.
+        Raises:
+            ValueError: The selected model is not one the registries know.
+        """
+        if not self.needs_model_load:
+            return False
+
+        self.load_model()
+        return True
+
+    def model_options(self) -> dict:
+        """ The arguments the selected model's embeddings are extracted under, read from the registry.
+
+        Read by the name selected rather than off a loaded model: they are fixed per model, and a
+        checkpoint is compared against them before the run that loads it.
+
+        Returns:
+            The model's own process_images() arguments, or none for a model the registries do not know.
+        """
+        real_model_name = MODEL_OPTIONS.get(self.params.process.model)
+        options_loader = OPTIONS_LOADERS.get(real_model_name)
+        return options_loader() if options_loader else {}
 
     def process_arguments(self) -> dict:
         """ The arguments a run is made with: the model's own, under what the form settles.
@@ -238,7 +293,7 @@ class PhenoMeInterface:
         Returns:
             The arguments handed to PhenoMe on top of the ones the run itself names.
         """
-        return {**(self.process_options or {}), 'channel_mode': self.params.process.channel_mode}
+        return {**self.model_options(), 'channel_mode': self.params.process.channel_mode}
 
     def processing_params(self) -> dict:
         """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.

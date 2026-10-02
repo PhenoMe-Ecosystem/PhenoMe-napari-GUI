@@ -1,9 +1,10 @@
 """Tests for the image processing panel.
 
-Nothing here loads a model or extracts embeddings: the pipeline state is stubbed instead, and the model
-is a sentinel object, since all the panel ever asks is whether one is present.
+Nothing here loads a model or extracts embeddings: the pipeline state is stubbed instead, the model
+being a sentinel object, and the load and the extraction stand-ins where a run is driven.
 """
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -205,10 +206,11 @@ def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Misma
 # ----------------------------------------------------------------------------
 
 
-def test_extract_needs_the_data_a_checkpoint_and_a_model(panel: ProcessingPanel) -> None:
+def test_extract_needs_the_data_and_a_checkpoint(panel: ProcessingPanel) -> None:
+    """The model is not among them: the default counts as selected, and the run loads it itself."""
     assert not panel._process_button.isEnabled()
     assert panel._process_button.toolTip() == (
-        'Please load data and create or load a checkpoint and load a model first.'
+        'Please load data and create or load a checkpoint first.'
     )
 
 
@@ -217,12 +219,11 @@ def test_extract_still_waits_on_the_rest_after_loading(panel: ProcessingPanel, w
 
     assert not panel._process_button.isEnabled()
     assert panel._process_button.toolTip() == (
-        'Please create or load a checkpoint and load a model first.'
+        'Please create or load a checkpoint first.'
     )
 
 
-def test_extract_still_waits_on_data_after_the_model(panel: ProcessingPanel, tmp_path: Path) -> None:
-    panel._phenome.model = object()
+def test_extract_still_waits_on_data_after_the_checkpoint(panel: ProcessingPanel, tmp_path: Path) -> None:
     panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
     panel.refresh_buttons()
 
@@ -233,11 +234,65 @@ def test_extract_still_waits_on_data_after_the_model(panel: ProcessingPanel, tmp
 def test_extract_still_waits_on_a_checkpoint(panel: ProcessingPanel, widget) -> None:
     """The embeddings are written to it, so a run without one would have nowhere to put them."""
     widget.loading_panel._on_load_data_csv()
-    panel._phenome.model = object()
     panel.refresh_buttons()
 
     assert not panel._process_button.isEnabled()
     assert panel._process_button.toolTip() == 'Please create or load a checkpoint first.'
+
+
+def test_extract_waits_on_a_model_the_registry_no_longer_offers(ready: ProcessingPanel) -> None:
+    """The parameter outlives the registry, and a run on a model nobody can load would only fail."""
+    ready._phenome.params.process.model = 'Some - Retired Model'
+    ready.refresh_buttons()
+
+    assert not ready._process_button.isEnabled()
+    assert ready._process_button.toolTip() == 'Please select a model first.'
+
+
+def test_extract_opens_without_a_loaded_model(ready: ProcessingPanel) -> None:
+    """The run is what loads the model, so waiting on a loaded one would never open the button."""
+    ready._phenome.model = None
+    ready.refresh_buttons()
+
+    assert ready._process_button.isEnabled()
+
+
+@pytest.fixture
+def extracting(ready: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> list:
+    """ Stand in for the model load and the extraction, recording the order they are asked in.
+
+    The worker is run on this thread through work(), which calls what it wraps without starting one.
+
+    Returns:
+        Filled with 'load' and 'process', in the order the worker asked for them.
+    """
+    calls = []
+
+    def _load() -> None:
+        calls.append('load')
+        ready._phenome._loaded_model = (ready._phenome.params.process.model, ready._phenome.params.process.device)
+
+    monkeypatch.setattr(ready._phenome, 'load_model', _load)
+    monkeypatch.setattr(ready._phenome, 'process_images', lambda **kwargs: calls.append('process'))
+    ready._stop_event = threading.Event()
+    return calls
+
+
+def test_the_extraction_loads_the_model_before_processing(ready: ProcessingPanel, extracting: list) -> None:
+    """The button switches on model_ready, so it has to come between the load and the images."""
+    ready.model_ready.connect(lambda: extracting.append('ready'))
+
+    ready._process_images_worker().work()
+
+    assert extracting == ['load', 'ready', 'process']
+
+
+def test_the_extraction_reuses_the_model_already_loaded(ready: ProcessingPanel, extracting: list) -> None:
+    ready._process_images_worker().work()
+
+    ready._process_images_worker().work()
+
+    assert extracting == ['load', 'process', 'process']
 
 
 def test_extract_opens_once_all_three_are_there(ready: ProcessingPanel) -> None:
@@ -341,13 +396,9 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     either way, which is what keeps this a test of the panel driving a real one.
 
     Returns:
-        Called as picking_model(ANOTHER_MODEL), or with None for
-        the window being cancelled. Returns the list of loads the panel then started.
+        Called as picking_model(ANOTHER_MODEL), or with None for the window being cancelled.
     """
-    started = []
-    monkeypatch.setattr(panel, '_load_model', lambda: started.append(panel._phenome.params.process.model))
-
-    def _answer(model: str | None) -> list:
+    def _answer(model: str | None) -> None:
         def _exec(window) -> int:
             if model is None:
                 return 0
@@ -355,7 +406,6 @@ def picking_model(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
             return 1
 
         monkeypatch.setattr(ModelWindow, 'exec_', _exec)
-        return started
 
     return _answer
 
@@ -368,24 +418,29 @@ def test_choosing_a_model_writes_the_parameter(panel: ProcessingPanel, picking_m
     assert panel._phenome.params.process.model == ANOTHER_MODEL
 
 
-def test_choosing_a_model_loads_it(panel: ProcessingPanel, picking_model) -> None:
-    """Picking and loading are the one gesture now: the window is what the download is started from."""
-    started = picking_model(ANOTHER_MODEL)
+def test_choosing_a_model_does_not_load_it(
+    panel: ProcessingPanel, picking_model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The download is left to the extraction, a pick being only a choice."""
+    loads = []
+    monkeypatch.setattr(panel._phenome, 'load_model', lambda: loads.append(True))
+    picking_model(ANOTHER_MODEL)
 
     panel._select_model_button.click()
 
-    assert started == [ANOTHER_MODEL]
+    assert loads == []
+    assert panel._phenome.model is None
+    assert panel._phenome.needs_model_load
 
 
 def test_a_cancelled_window_changes_nothing(panel: ProcessingPanel, picking_model) -> None:
     """A model looked at and thought better of leaves the parameters as they were."""
     before = panel._phenome.params.process.model
-    started = picking_model(None)
+    picking_model(None)
 
     panel._select_model_button.click()
 
     assert panel._phenome.params.process.model == before
-    assert started == []
 
 
 def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
@@ -612,8 +667,8 @@ def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel)
     assert ready._props_button.toolTip() == 'Please create or load a checkpoint first.'
 
 
-def test_clearing_keeps_the_loaded_model(ready: ProcessingPanel) -> None:
-    """A downloaded network is not read off the images, so the label naming it stays true."""
+def test_clearing_keeps_the_selected_model(ready: ProcessingPanel) -> None:
+    """A model is not read off the images, so the label naming it, and the network loaded for it, stay."""
     ready._current_model_label.setText(FIRST_MODEL)
 
     ready._phenome.clear_results()
@@ -684,15 +739,24 @@ def test_a_failed_properties_run_keeps_the_changed_preset(ready: ProcessingPanel
     assert ready._preset_changed
 
 
-def test_a_failed_model_load_reopens_the_model_controls(panel: ProcessingPanel, reported) -> None:
-    """A failed download otherwise leaves the one way to a model shut, with no way to try again."""
-    panel._select_model_button.setEnabled(False)
-    panel._select_model_button.setText('Downloading model...')
+def test_a_running_task_shuts_the_model_and_device_choices(ready: ProcessingPanel) -> None:
+    """The run loads the model it starts with, so a pick made during it would name one it never used."""
+    ready._set_processing_task_running(True)
 
-    panel._on_load_model_failed(RuntimeError('connection refused'))
+    assert not ready._select_model_button.isEnabled()
+    assert not ready._cpu_radio.isEnabled()
+    assert not ready._cuda_radio.isEnabled()
 
-    assert panel._select_model_button.isEnabled()
-    assert panel._select_model_button.text() == 'Select Model...'
+
+def test_a_failed_extraction_reopens_the_model_and_device_choices(ready: ProcessingPanel, reported) -> None:
+    """A failed model load arrives as a failed extraction, and the next try may want another model."""
+    ready._set_processing_task_running(True)
+
+    ready._on_process_failed(OSError('connection refused'))
+
+    assert ready._select_model_button.isEnabled()
+    assert ready._cpu_radio.isEnabled()
+    assert ready._cuda_radio.isEnabled() is ready._phenome.cuda_available
 
 
 # ----------------------------------------------------------------------------

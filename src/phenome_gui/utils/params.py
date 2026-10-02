@@ -101,9 +101,13 @@ class PropertiesParams(ParamsBase):
 
     The preset is stored capitalised as the GUI displays it; PhenoMe knows its presets by their lower
     case name, and the interface folds the case on the way down.
+
+    `compute` says whether a run computes the properties once the embeddings are extracted, the two
+    being one task in the GUI.
     """
 
     preset: PropertiesPreset = 'Basic'
+    compute: bool = True
 
 
 class ClusteringParams(ParamsBase):

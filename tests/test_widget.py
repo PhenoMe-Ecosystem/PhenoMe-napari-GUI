@@ -81,12 +81,12 @@ def test_each_table_sits_in_its_own_tab(widget: PhenoMeWidget) -> None:
 def test_loading_data_opens_up_the_processing_panel(widget: PhenoMeWidget) -> None:
     extract = widget.processing_panel._process_button
     assert extract.toolTip() == (
-        'Please load data and create or load a checkpoint and load a model first.'
+        'Please load data and create or load a checkpoint first.'
     )
 
     widget.loading_panel._on_load_data_csv()
 
-    assert extract.toolTip() == 'Please create or load a checkpoint and load a model first.'
+    assert extract.toolTip() == 'Please create or load a checkpoint first.'
 
 
 def test_a_running_task_locks_the_analysis_panel(widget: PhenoMeWidget, processed) -> None:
@@ -140,7 +140,7 @@ def test_a_dataset_of_images_alone_reaches_the_processing_panel(widget: PhenoMeW
 
     assert len(widget._phenome.metadata_df) == 6
     assert widget.processing_panel._process_button.toolTip() == (
-        'Please create or load a checkpoint and load a model first.'
+        'Please create or load a checkpoint first.'
     )
 
 

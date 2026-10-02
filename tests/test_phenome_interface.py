@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (
     MODEL_MISMATCH,
@@ -24,6 +25,10 @@ from phenome_gui.utils.phenome_interface import (
 )
 
 from .conftest import CHECKPOINT_PROPERTIES
+
+# The one model the registry gives an argument of its own that PhenoMe's default disagrees with, read
+# off the registry rather than spelled out
+STEDFM_MODEL = next(name for name, key in MODEL_OPTIONS.items() if key == 'sted-fm')
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -108,13 +113,12 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
     """ Catch the arguments an extraction would be run under, rather than running one.
 
     The interface hands a model's own arguments down alongside the form's, so the interface is made to
-    look as it does once a model has been loaded: one that brings no arguments of its own.
+    look as it does once a model has been loaded.
 
     Returns:
         Filled with the keyword arguments handed down, once an extraction has been asked for.
     """
     phenome.model = object()
-    phenome.process_options = {}
 
     passed = {}
 
@@ -155,10 +159,10 @@ def test_the_channel_mode_reaches_phenome(phenome: PhenoMeInterface, extraction:
 
 
 def test_the_form_has_the_last_word_on_the_channel_mode(
-    phenome: PhenoMeInterface, extraction: dict
+    phenome: PhenoMeInterface, extraction: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A model may name the same argument, and what was picked is what runs - handed down once."""
-    phenome.process_options = {'channel_mode': 'split', 'force_rgb': False}
+    monkeypatch.setattr(phenome, 'model_options', lambda: {'channel_mode': 'split', 'force_rgb': False})
     phenome.params.process.channel_mode = 'combined'
 
     phenome.process_images()
@@ -172,7 +176,7 @@ def test_the_form_has_the_last_word_on_the_channel_mode(
 def test_a_model_keeps_the_arguments_the_form_does_not_set(
     phenome: PhenoMeInterface, extraction: dict
 ) -> None:
-    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.model = STEDFM_MODEL
 
     phenome.process_images()
 
@@ -209,13 +213,112 @@ def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
     phenome: PhenoMeInterface, extraction: dict
 ) -> None:
     """Comparing a checkpoint against arguments the run does not use is comparing against nothing."""
-    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.model = STEDFM_MODEL
     phenome.params.process.channel_mode = 'combined'
     compared = phenome.processing_params()
 
     phenome.process_images()
 
     assert all(compared[key] == extraction[key] for key in phenome.process_arguments())
+
+
+def test_the_checkpoint_is_compared_against_the_selected_model_before_it_is_loaded(
+    phenome: PhenoMeInterface
+) -> None:
+    """The comparison is made before the run that loads the model, so it cannot wait on the load."""
+    phenome.params.process.model = STEDFM_MODEL
+
+    assert phenome.model is None
+    assert phenome.processing_params()['force_rgb'] is False
+
+
+# ----------------------------------------------------------------------------
+# Loading the model, which the run does rather than the pick
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def downloads(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> list:
+    """ Stand in for the registry's model loading, which downloads a network.
+
+    Returns:
+        Filled with (registry name, device) for every load asked of the registry.
+    """
+    asked = []
+
+    def _load(model_name: str, device: str = 'cpu') -> tuple:
+        asked.append((model_name, device))
+        return object(), None, {}
+
+    monkeypatch.setattr(phenome.image_processing, 'load_model', _load)
+    return asked
+
+
+def test_a_model_is_loaded_on_the_first_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    assert phenome.needs_model_load
+
+    assert phenome.ensure_model_loaded()
+
+    assert downloads == [(MODEL_OPTIONS[phenome.params.process.model], 'cpu')]
+    assert phenome.model is not None
+    assert not phenome.needs_model_load
+
+
+def test_the_loaded_model_is_kept_for_the_next_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    """A second download of the same network would be hundreds of megabytes for nothing."""
+    phenome.ensure_model_loaded()
+
+    assert not phenome.ensure_model_loaded()
+
+    assert len(downloads) == 1
+
+
+def test_picking_another_model_loads_it_on_the_next_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    phenome.ensure_model_loaded()
+
+    phenome.params.process.model = STEDFM_MODEL
+
+    assert phenome.needs_model_load
+    assert phenome.ensure_model_loaded()
+    assert downloads[-1] == ('sted-fm', 'cpu')
+
+
+def test_picking_another_device_loads_the_model_again(phenome: PhenoMeInterface, downloads: list) -> None:
+    """The network is moved onto its device as it is loaded, so the one held runs on the old device."""
+    phenome.ensure_model_loaded()
+
+    phenome.params.process.device = 'cuda'
+
+    assert phenome.ensure_model_loaded()
+    assert downloads[-1][1] == 'cuda'
+
+
+def test_an_unknown_model_raises_rather_than_leaving_nothing_loaded(
+    phenome: PhenoMeInterface, downloads: list
+) -> None:
+    """A load that silently did nothing would only fail later, halfway into the run, on no model at all."""
+    phenome.params.process.model = 'Some - Retired Model'
+
+    with pytest.raises(ValueError, match='Some - Retired Model'):
+        phenome.ensure_model_loaded()
+
+    assert downloads == []
+    assert phenome.needs_model_load
+
+
+def test_a_failed_load_leaves_nothing_counted_as_loaded(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next run has to try again, rather than run on whatever was held before."""
+    def _fail(model_name: str, device: str = 'cpu') -> tuple:
+        raise OSError('connection refused')
+
+    monkeypatch.setattr(phenome.image_processing, 'load_model', _fail)
+
+    with pytest.raises(OSError):
+        phenome.ensure_model_loaded()
+
+    assert phenome.needs_model_load
 
 
 @pytest.fixture

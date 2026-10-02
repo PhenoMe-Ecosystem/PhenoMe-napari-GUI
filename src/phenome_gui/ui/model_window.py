@@ -26,7 +26,7 @@ class ModelWindow(QDialog):
     """ The window a model is picked from, listing what is offered and describing what is highlighted.
 
     Picks a model and no more: nothing is loaded here and no PhenoMe state is held, the loading being
-    a download of some hundreds of megabytes that belongs on a worker thread. The caller reads what
+    a download of some hundreds of megabytes left to the embedding extraction. The caller reads what
     was picked through selected_model() once the window has been accepted.
 
     The list shows the names the GUI offers, where the descriptions are registered under the names
@@ -40,7 +40,7 @@ class ModelWindow(QDialog):
             parent: The widget the dialog is parented to, so it closes with it.
             model: The model to highlight when it opens, as the GUI names it. None, or one no
                 longer offered, opens on the first of them: a window with nothing picked would offer
-                a Load Model button meaning nothing.
+                a Select Model button meaning nothing.
         """
         super().__init__(parent)
         self.setWindowTitle("Select Model")
@@ -65,9 +65,9 @@ class ModelWindow(QDialog):
         layout.addLayout(panes)
 
         # Named rather than left as Qt's Ok, the button saying what pressing it does: it closes the
-        # window and starts a download.
+        # window and selects the model, without loading it.
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        buttons.addButton('Load Model', QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton('Select Model', QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -100,7 +100,7 @@ class ModelWindow(QDialog):
         self._details.setHtml(get_model_details(MODEL_OPTIONS.get(model, '')))
 
     def selected_model(self) -> str:
-        """ The model currently highlighted, for the caller to load once the window is accepted.
+        """ The model currently highlighted, for the caller to select once the window is accepted.
 
         Returns:
             The model as the GUI names it, which is what the process parameters hold.

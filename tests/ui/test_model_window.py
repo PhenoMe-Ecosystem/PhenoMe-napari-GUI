@@ -72,7 +72,7 @@ def test_the_window_opens_on_the_model_it_was_given(window) -> None:
 
 
 def test_the_window_opens_on_something_when_given_nothing(window) -> None:
-    """A window with nothing picked would offer a Load Model button meaning nothing."""
+    """A window with nothing picked would offer a Select Model button meaning nothing."""
     assert window().selected_model() == next(iter(MODEL_OPTIONS))
 
 
