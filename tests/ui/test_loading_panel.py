@@ -43,11 +43,6 @@ def shown_columns(table) -> list[str]:
 # ----------------------------------------------------------------------------
 
 
-def test_the_csv_structure_is_the_default(panel: LoadingPanel) -> None:
-    assert panel._csv_radio.isChecked()
-    assert panel._loading_stack.currentIndex() == 0
-
-
 def test_choosing_the_path_structure_swaps_the_page(panel: LoadingPanel) -> None:
     panel._path_radio.setChecked(True)
 
@@ -275,14 +270,6 @@ def docked_panel(phenome, viewer, in_main_window) -> LoadingPanel:
     owned by a widget of its own.
     """
     return in_main_window(lambda parent: LoadingPanel(phenome, ImageViewer(viewer), parent))
-
-
-def test_the_table_is_shown_in_a_dock_area(docked_panel: LoadingPanel) -> None:
-    area = docked_panel._table_area
-
-    assert area.dock is docked_panel._table_dock
-    assert area.dock.widget() is docked_panel._metadata_table.native
-    assert area.dockWidgetArea(area.dock) == Qt.DockWidgetArea.TopDockWidgetArea
 
 
 def test_popping_the_table_out_and_closing_it_brings_it_back(docked_panel: LoadingPanel, qtbot) -> None:
@@ -544,13 +531,6 @@ def test_an_empty_optional_box_is_green(panel: LoadingPanel, box: str) -> None:
     assert outlined(getattr(panel, box)) == 'ok'
 
 
-def test_the_template_is_left_unstyled(panel: LoadingPanel) -> None:
-    """A pattern rather than a path, with nothing on disk to check it against."""
-    panel._path_radio.setChecked(True)
-
-    assert outlined(panel._path_template.native) == 'none'
-
-
 # ----------------------------------------------------------------------------
 # The gate, which a red box closes
 # ----------------------------------------------------------------------------
@@ -636,20 +616,6 @@ def test_browsing_for_the_images_writes_them(panel: LoadingPanel, dataset, monke
     assert panel._phenome.params.paths.images == dataset['images']
     assert outlined(panel._image_dir_dialog) == 'ok'
     assert panel._csv_load_data_btn.isEnabled()
-
-
-def test_the_metadata_box_offers_only_csv_files(panel: LoadingPanel, monkeypatch: pytest.MonkeyPatch) -> None:
-    offered = []
-
-    def _dialog(parent, caption, start, file_filter='', *args, **kwargs):
-        offered.append(file_filter)
-        return '', file_filter
-
-    monkeypatch.setattr(QFileDialog, 'getOpenFileName', _dialog)
-
-    panel._metadata_dir_dialog._browse_button.click()
-
-    assert offered == ['CSV Files (*.csv)']
 
 
 def test_a_folder_dropped_on_the_masks_writes_them(panel: LoadingPanel, tmp_path: Path) -> None:

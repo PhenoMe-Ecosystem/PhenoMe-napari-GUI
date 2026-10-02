@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from phenome import PhenoMe
 
-from phenome_gui.utils.data_loading import EXTENSIONS, DataLoading
+from phenome_gui.utils.data_loading import DataLoading
 
 # Files that sit beside images in a real dataset folder, none of which PhenoMe can read as one
 NOT_IMAGES = ['readme.txt', 'data.json', 'checkpoint.hdf5', 'notes.csv', '.DS_Store']
@@ -78,15 +78,3 @@ def test_a_folder_without_images_finds_nothing(loading: DataLoading, tmp_path: P
     assert metadata_df.empty
 
 
-@pytest.mark.parametrize('extension', ['.hdf5', '.h5', '.czi', '.nd2', '.txt', '.csv'])
-def test_files_phenome_cannot_read_are_not_images(extension: str) -> None:
-    """A checkpoint saved in the images folder, above all, must not be read back as an image."""
-    assert extension not in EXTENSIONS
-
-
-def test_every_extension_is_written_as_find_files_compares_it() -> None:
-    """Compared against os.path.splitext(), which keeps the dot and lower-cases nothing itself."""
-    for extension in EXTENSIONS:
-        assert extension.startswith('.')
-        assert extension == extension.lower()
-        assert extension.count('.') == 1

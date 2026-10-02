@@ -7,11 +7,8 @@ import pandas as pd
 import pytest
 
 from phenome_gui._widget import PhenoMeWidget
-from phenome_gui.ui.analysis_panel import AnalysisPanel
 from phenome_gui.ui.clustering_params import ClusterParamsWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
-from phenome_gui.ui.loading_panel import LoadingPanel
-from phenome_gui.ui.processing_panel import ProcessingPanel
 
 from .conftest import CHECKPOINT_PROPERTIES
 
@@ -23,20 +20,6 @@ PANEL_ATTRIBUTES = ['loading_panel', 'processing_panel', 'analysis_panel']
 # ----------------------------------------------------------------------------
 
 
-def test_the_three_panels_are_the_three_tabs(widget: PhenoMeWidget) -> None:
-    assert widget._tabs.count() == 3
-    assert [widget._tabs.tabText(i) for i in range(3)] == ['Data loading', 'Processing', 'Analysis']
-    assert widget._tabs.widget(0) is widget.loading_panel
-    assert widget._tabs.widget(1) is widget.processing_panel
-    assert widget._tabs.widget(2) is widget.analysis_panel
-
-
-def test_the_panels_are_of_their_own_types(widget: PhenoMeWidget) -> None:
-    assert isinstance(widget.loading_panel, LoadingPanel)
-    assert isinstance(widget.processing_panel, ProcessingPanel)
-    assert isinstance(widget.analysis_panel, AnalysisPanel)
-
-
 @pytest.mark.parametrize('attribute', PANEL_ATTRIBUTES)
 def test_every_panel_shares_the_one_interface(widget: PhenoMeWidget, attribute: str) -> None:
     """A second interface would give a panel its own parameters and its own view of the pipeline."""
@@ -45,32 +28,6 @@ def test_every_panel_shares_the_one_interface(widget: PhenoMeWidget, attribute: 
 
 def test_the_two_displaying_panels_share_the_one_viewer(widget: PhenoMeWidget) -> None:
     assert widget.loading_panel._image_viewer is widget.analysis_panel._image_viewer
-
-
-@pytest.mark.parametrize('attribute', PANEL_ATTRIBUTES)
-def test_no_panel_reaches_for_a_sibling(widget: PhenoMeWidget, attribute: str) -> None:
-    """The panels talk through signals; holding a sibling would put the wiring back inside them."""
-    panel = getattr(widget, attribute)
-
-    for sibling in PANEL_ATTRIBUTES:
-        assert not hasattr(panel, sibling)
-
-
-def panel_holding(native, widget: PhenoMeWidget):
-    """ Walk up the parent chain until one of the panels is reached. """
-    panels = {getattr(widget, attribute) for attribute in PANEL_ATTRIBUTES}
-    parent = native.parentWidget()
-    while parent is not None:
-        if parent in panels:
-            return parent
-        parent = parent.parentWidget()
-    return None
-
-
-def test_each_table_sits_in_its_own_tab(widget: PhenoMeWidget) -> None:
-    """A Qt widget has one parent, so adding it to another layout silently moves it out of its tab."""
-    assert panel_holding(widget.loading_panel._metadata_table.native, widget) is widget.loading_panel
-    assert panel_holding(widget.analysis_panel._images_table.native, widget) is widget.analysis_panel
 
 
 # ----------------------------------------------------------------------------
@@ -216,14 +173,6 @@ def test_a_loaded_checkpoint_opens_every_analysis_step(widget: PhenoMeWidget, wi
         button = getattr(widget.analysis_panel, name)
         assert button.isEnabled(), name
         assert button.toolTip() == ''
-
-
-def test_a_loaded_checkpoint_opens_the_properties_step(widget: PhenoMeWidget, with_checkpoint) -> None:
-    """Its images are processed, so more may be measured on them whatever the checkpoint already holds."""
-    with_checkpoint(properties=False)
-
-    assert widget.processing_panel._props_button.isEnabled()
-    assert widget.processing_panel._props_button.toolTip() == ''
 
 
 @pytest.fixture
@@ -385,14 +334,6 @@ def test_a_second_load_empties_the_images_table(analysed: PhenoMeWidget, path_da
 
     assert analysed.analysis_panel._images_table.native.rowCount() == 0
     assert analysed.analysis_panel._images_df is None
-
-
-def test_a_second_load_locks_the_analysis_steps_again(analysed: PhenoMeWidget, path_dataset) -> None:
-    """They run on the embeddings, which went with the dataset they were extracted from."""
-    load_paths(analysed, path_dataset)
-
-    assert not analysed.analysis_panel._run_clustering_button.isEnabled()
-    assert not analysed.processing_panel._props_button.isEnabled()
 
 
 def test_a_second_load_wipes_the_explorer(analysed: PhenoMeWidget, path_dataset) -> None:

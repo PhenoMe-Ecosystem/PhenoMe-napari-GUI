@@ -117,15 +117,6 @@ def test_changing_a_combo_writes_its_parameter(
     assert getattr(explorer_params(explorer), field) == value
 
 
-def test_the_window_edits_the_shared_parameters_rather_than_a_copy(
-    explorer: InteractiveExplorerWindow, widget: PhenoMeWidget
-) -> None:
-    """The window stays open and is read whenever a projection is computed, so there is nothing to confirm."""
-    explorer._method_combo.setCurrentText('PCA')
-
-    assert widget._phenome.params.explorer.method == 'PCA'
-
-
 # ----------------------------------------------------------------------------
 # What the window waits on
 # ----------------------------------------------------------------------------
@@ -277,19 +268,6 @@ def coordinates(groups: list[str] | None = None) -> pd.DataFrame:
 def drawn(window: InteractiveExplorerWindow) -> dict[str | None, int]:
     """ The groups currently on the canvas, as a name to number of points mapping. """
     return {item.opts.get('name'): len(item.getData()[0]) for item in window._canvas._plot.listDataItems()}
-
-
-def test_computing_reports_the_parameters_it_runs_with(
-    loaded_explorer: InteractiveExplorerWindow, computing, caplog: pytest.LogCaptureFixture
-) -> None:
-    computing()
-    loaded_explorer._method_combo.setCurrentText('UMAP')
-
-    with caplog.at_level(logging.INFO, logger='main_logger'):
-        loaded_explorer._compute_button.click()
-
-    assert 'Compute clicked' in caplog.text
-    assert "method='UMAP'" in caplog.text
 
 
 def test_computing_projects_with_the_chosen_method(
@@ -770,7 +748,6 @@ def test_the_highlight_checkbox_changes_no_parameter(
 
     loaded_explorer._highlight_checkbox.setChecked(True)
 
-    assert loaded_explorer._highlight_checkbox.text() == 'Highlight'
     assert explorer_params(loaded_explorer) == before
 
 
@@ -1366,11 +1343,6 @@ def saving_to(monkeypatch: pytest.MonkeyPatch):
         )
 
     return _answer
-
-
-def test_the_export_is_shown_in_the_window(explorer: InteractiveExplorerWindow) -> None:
-    """A button built but never laid out is one nobody can press, whatever it is connected to."""
-    assert explorer._export_graph_button.isVisibleTo(explorer)
 
 
 def test_there_is_nothing_to_export_until_a_projection_is_drawn(

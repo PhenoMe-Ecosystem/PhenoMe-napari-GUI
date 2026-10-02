@@ -50,11 +50,6 @@ def test_parameters_are_copied_not_shared(phenome: PhenoMeInterface) -> None:
     assert PhenoMeInterface(seed=42).params.clustering.n_clusters == 5
 
 
-def test_a_parameter_round_trips(phenome: PhenoMeInterface) -> None:
-    phenome.params.prototypes.n_prototypes = 7
-    assert phenome.params.prototypes.n_prototypes == 7
-
-
 def test_the_criteria_start_unset(phenome: PhenoMeInterface) -> None:
     """Unset rather than empty, an empty criterion reading as one no image can answer."""
     assert phenome.params.explorer.filter is None

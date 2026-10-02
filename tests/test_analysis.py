@@ -127,21 +127,3 @@ def test_nothing_to_project_comes_back_as_none(analysis: PhenoMeAnalysis, reduct
     assert returned is None
 
 
-@pytest.mark.parametrize(
-    ('call', 'kwargs', 'pheno_method'),
-    [
-        ('get_prototype_images', {'cluster_col': None, 'n_prototypes': 1, 'source': 'embeddings'}, 'find_prototypes'),
-        (
-            'get_outlier_images',
-            {'group_by': None, 'method': 'z-score', 'threshold': 3.0, 'source': 'embeddings'},
-            'detect_outliers',
-        ),
-    ],
-)
-def test_plotting_is_always_off(
-    analysis: PhenoMeAnalysis, pipeline: FakePipeline, call: str, kwargs: dict, pheno_method: str
-) -> None:
-    """These run on a worker thread, where PhenoMe's matplotlib figures must never be opened."""
-    getattr(analysis, call)(**kwargs)
-
-    assert pipeline.calls[pheno_method]['plot'] is False

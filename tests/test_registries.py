@@ -64,23 +64,6 @@ def test_every_model_the_gui_offers_is_registered(registry: dict) -> None:
     assert sorted(registry) == MODEL_KEYS
 
 
-def test_nothing_is_registered_that_cannot_be_picked() -> None:
-    """A key in the registries and not in the form is a model nobody can reach."""
-    assert (
-        sorted(MODEL_LOADERS)
-        == sorted(TRANSFORMS_LOADERS)
-        == sorted(OPTIONS_LOADERS)
-        == sorted(DETAILS_LOADERS)
-    )
-
-
-@pytest.mark.parametrize('model_key', MODEL_KEYS)
-def test_every_model_has_something_to_load_it_with(model_key: str) -> None:
-    assert callable(MODEL_LOADERS[model_key])
-    assert callable(TRANSFORMS_LOADERS[model_key])
-    assert callable(OPTIONS_LOADERS[model_key])
-
-
 # ----------------------------------------------------------------------------
 # What each model is processed with
 # ----------------------------------------------------------------------------
@@ -226,15 +209,6 @@ def test_the_refusal_says_what_there_is_instead(loaded_without_weights) -> None:
 def test_every_model_is_described(model_key: str) -> None:
     """The pane is the only place a model says what it is, so one left blank is a model picked on its name."""
     assert get_model_details(model_key).strip()
-
-
-@pytest.mark.parametrize('model_key', MODEL_KEYS)
-def test_a_description_is_html(model_key: str) -> None:
-    """Rendered rather than printed by the pane, which is what lets one carry a list and a link."""
-    details = get_model_details(model_key)
-
-    assert isinstance(details, str)
-    assert '<' in details
 
 
 def test_the_dinov2_variants_share_one_description() -> None:

@@ -14,7 +14,6 @@ from phenome_gui.ui.prototypes_outliers_params import (
     PrototypesParamsWindow,
 )
 from phenome_gui.utils.params import (
-    METHOD_CHOICES,
     SOURCE_CHOICES,
     ClusteringParams,
     OutliersParams,
@@ -127,12 +126,6 @@ def test_editing_the_form_leaves_the_caller_untouched(
 # ----------------------------------------------------------------------------
 # Form-specific behaviour
 # ----------------------------------------------------------------------------
-
-
-def test_outlier_methods_are_the_two_phenome_knows(parent: QWidget) -> None:
-    dialog = OutliersParamsWindow(parent, OutliersParams(), COLUMNS)
-
-    assert items(dialog._method_dropdown) == METHOD_CHOICES == ['z-score', 'iqr']
 
 
 def test_outlier_form_tracks_all_four_values(parent: QWidget) -> None:

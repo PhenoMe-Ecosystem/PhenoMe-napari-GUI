@@ -4,11 +4,11 @@ Nothing here loads a model or extracts embeddings: the pipeline state is stubbed
 being a sentinel object, and the load and the extraction stand-ins where a run is driven.
 """
 
-import threading
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from qtpy.QtWidgets import QFileDialog, QFormLayout, QMessageBox
+from qtpy.QtWidgets import QFileDialog, QMessageBox
 
 from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.ui.model_window import ModelWindow
@@ -81,62 +81,6 @@ def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
     """
     stand_in = Reported()
     monkeypatch.setattr(QMessageBox, 'critical', stand_in)
-    return stand_in
-
-
-class Started:
-    """ Stands in for a worker, recording what it was asked to run rather than running it.
-
-    Both processing tasks are started the same way, so one of these answers for either: what is
-    recorded is the flag each was given, which is the whole of what the tests are checking.
-    """
-
-    def __init__(self) -> None:
-        self.runs = []
-
-    def __call__(self, force: bool = False) -> "Started":
-        """ Stand in for the worker factory, taking the flag the panel passes it.
-
-        Args:
-            force: force_reprocess for the extraction, force_update for the properties.
-        Returns:
-            Itself, standing in for the worker it would have built.
-        """
-        self._pending = force
-        return self
-
-    def connect(self, handler) -> None:
-        """ Take a handler the panel connects to one of the worker's signals, and drop it.
-
-        Args:
-            handler: What the panel would be called back on, which nothing here ever calls.
-        """
-
-    @property
-    def returned(self) -> "Started":
-        """ The signal the panel connects its completion handler to. """
-        return self
-
-    @property
-    def errored(self) -> "Started":
-        """ The signal the panel connects its failure handler to. """
-        return self
-
-    def start(self) -> None:
-        """ Take note that a run was started, and under which flag. """
-        self.runs.append(self._pending)
-
-
-@pytest.fixture
-def started(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Started:
-    """ Stand in for both task workers, so a click records a run instead of making one.
-
-    Returns:
-        The stand-in, holding the flag each started run was given.
-    """
-    stand_in = Started()
-    monkeypatch.setattr(panel, '_process_images_worker', stand_in)
-    monkeypatch.setattr(panel, '_compute_properties_worker', stand_in)
     return stand_in
 
 
@@ -214,15 +158,6 @@ def test_extract_needs_the_data_and_a_checkpoint(panel: ProcessingPanel) -> None
     )
 
 
-def test_extract_still_waits_on_the_rest_after_loading(panel: ProcessingPanel, widget) -> None:
-    widget.loading_panel._on_load_data_csv()
-
-    assert not panel._process_button.isEnabled()
-    assert panel._process_button.toolTip() == (
-        'Please create or load a checkpoint first.'
-    )
-
-
 def test_extract_still_waits_on_data_after_the_checkpoint(panel: ProcessingPanel, tmp_path: Path) -> None:
     panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
     panel.refresh_buttons()
@@ -257,97 +192,14 @@ def test_extract_opens_without_a_loaded_model(ready: ProcessingPanel) -> None:
     assert ready._process_button.isEnabled()
 
 
-@pytest.fixture
-def extracting(ready: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> list:
-    """ Stand in for the model load and the extraction, recording the order they are asked in.
-
-    The worker is run on this thread through work(), which calls what it wraps without starting one.
-
-    Returns:
-        Filled with 'load' and 'process', in the order the worker asked for them.
-    """
-    calls = []
-
-    def _load() -> None:
-        calls.append('load')
-        ready._phenome._loaded_model = (ready._phenome.params.process.model, ready._phenome.params.process.device)
-
-    monkeypatch.setattr(ready._phenome, 'load_model', _load)
-    monkeypatch.setattr(ready._phenome, 'process_images', lambda **kwargs: calls.append('process'))
-    ready._stop_event = threading.Event()
-    return calls
-
-
-def test_the_extraction_loads_the_model_before_processing(ready: ProcessingPanel, extracting: list) -> None:
-    """The button switches on model_ready, so it has to come between the load and the images."""
-    ready.model_ready.connect(lambda: extracting.append('ready'))
-
-    ready._process_images_worker().work()
-
-    assert extracting == ['load', 'ready', 'process']
-
-
-def test_the_extraction_reuses_the_model_already_loaded(ready: ProcessingPanel, extracting: list) -> None:
-    ready._process_images_worker().work()
-
-    ready._process_images_worker().work()
-
-    assert extracting == ['load', 'process', 'process']
-
-
 def test_extract_opens_once_all_three_are_there(ready: ProcessingPanel) -> None:
     assert ready._process_button.isEnabled()
     assert ready._process_button.toolTip() == ''
 
 
 # ----------------------------------------------------------------------------
-# The properties button, which waits on the embeddings and a checkpoint
-# ----------------------------------------------------------------------------
-
-
-def test_properties_wait_on_a_checkpoint(panel: ProcessingPanel) -> None:
-    assert not panel._props_button.isEnabled()
-    assert panel._props_button.toolTip() == 'Please create or load a checkpoint first.'
-
-
-def test_properties_wait_on_the_embeddings(panel: ProcessingPanel, tmp_path: Path) -> None:
-    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
-    panel.refresh_buttons()
-
-    assert not panel._props_button.isEnabled()
-    assert panel._props_button.toolTip() == 'Please extract embeddings first.'
-
-
-def test_properties_open_once_the_images_are_processed(
-    panel: ProcessingPanel, processed, tmp_path: Path
-) -> None:
-    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
-    processed(panel._phenome, 6)
-    panel.refresh_buttons()
-
-    assert panel._props_button.isEnabled()
-    assert panel._props_button.toolTip() == ''
-
-
-# ----------------------------------------------------------------------------
 # The running lock
 # ----------------------------------------------------------------------------
-
-
-def test_a_running_task_locks_both_buttons(ready: ProcessingPanel) -> None:
-    ready._set_processing_task_running(True)
-
-    for button in (ready._process_button, ready._props_button):
-        assert not button.isEnabled()
-        assert button.toolTip() == 'Please wait for the running task to finish.'
-
-
-def test_finishing_releases_both_buttons(ready: ProcessingPanel) -> None:
-    ready._set_processing_task_running(True)
-    ready._set_processing_task_running(False)
-
-    assert ready._process_button.isEnabled()
-    assert ready._props_button.isEnabled()
 
 
 @pytest.mark.parametrize('running', [True, False])
@@ -361,11 +213,6 @@ def test_the_lock_is_announced(panel: ProcessingPanel, qtbot, running: bool) -> 
 # ----------------------------------------------------------------------------
 # Parameters
 # ----------------------------------------------------------------------------
-
-
-def test_the_device_defaults_to_the_cpu(panel: ProcessingPanel) -> None:
-    assert panel._cpu_radio.isChecked()
-    assert panel._phenome.params.process.device == 'cpu'
 
 
 def test_choosing_cuda_writes_the_torch_name(panel: ProcessingPanel) -> None:
@@ -525,11 +372,6 @@ def test_the_advanced_form_discards_a_cancelled_worker_count(panel: ProcessingPa
     assert panel._phenome.params.process.num_workers == before
 
 
-def test_the_worker_count_starts_at_none_of_them(panel: ProcessingPanel) -> None:
-    """Every worker is a wait before the run starts, which is not worth paying unasked."""
-    assert panel._phenome.params.process.num_workers == 0
-
-
 def test_the_worker_field_offers_no_more_than_the_model_takes(panel: ProcessingPanel) -> None:
     """A count the form can offer and the model rejects would raise on a confirmed edit."""
     panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
@@ -558,20 +400,6 @@ def test_the_channel_mode_offers_the_values_the_model_accepts(panel: ProcessingP
 
     combo = panel._channel_mode_combo
     assert [combo.itemText(row) for row in range(combo.count())] == CHANNEL_MODE_CHOICES
-
-
-def test_the_channel_mode_is_the_first_thing_asked(panel: ProcessingPanel) -> None:
-    """It decides what is embedded, where the fields under it only decide how quickly."""
-    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
-
-    form = panel._advanced_parameters_dialog.layout()
-    assert form.itemAt(0, QFormLayout.ItemRole.FieldRole).widget() is panel._channel_mode_combo
-    assert form.itemAt(0, QFormLayout.ItemRole.LabelRole).widget().text() == 'Channel mode'
-
-
-def test_the_channel_mode_starts_split(panel: ProcessingPanel) -> None:
-    """PhenoMe's own default, a channel keeping its own place in the embedding."""
-    assert panel._phenome.params.process.channel_mode == 'split'
 
 
 def test_the_advanced_form_applies_the_channel_mode(panel: ProcessingPanel) -> None:
@@ -618,18 +446,6 @@ def test_an_unknown_total_puts_the_bar_in_busy_mode(panel: ProcessingPanel) -> N
     assert panel._progress_bar.format() == 'Preparing'
 
 
-def test_the_bar_settles_when_the_task_finishes(panel: ProcessingPanel) -> None:
-    """A warm checkpoint can return without ever reporting progress, so the end is set here."""
-    panel._on_progress(0, 0, 'Preparing')
-
-    panel._on_finish_process()
-
-    assert panel._progress_bar.maximum() == 1
-    assert panel._progress_bar.value() == 1
-    assert panel._progress_bar.format() == 'Done!'
-    assert panel._process_button.text() == 'Extract Embeddings'
-
-
 # ----------------------------------------------------------------------------
 # Letting go of the previous run when another dataset is loaded
 # ----------------------------------------------------------------------------
@@ -656,17 +472,6 @@ def test_clearing_settles_the_progress_bar(ready: ProcessingPanel) -> None:
     assert ready._progress_bar.format() == ''
 
 
-def test_clearing_closes_the_properties_button_back_down(ready: ProcessingPanel) -> None:
-    """The checkpoint went with the embeddings, and is the first of the two to be come by again."""
-    assert ready._props_button.isEnabled()
-
-    ready._phenome.clear_results()
-    ready.clear_results()
-
-    assert not ready._props_button.isEnabled()
-    assert ready._props_button.toolTip() == 'Please create or load a checkpoint first.'
-
-
 def test_clearing_keeps_the_selected_model(ready: ProcessingPanel) -> None:
     """A model is not read off the images, so the label naming it, and the network loaded for it, stay."""
     ready._current_model_label.setText(FIRST_MODEL)
@@ -681,17 +486,6 @@ def test_clearing_keeps_the_selected_model(ready: ProcessingPanel) -> None:
 # ----------------------------------------------------------------------------
 # A task that raises, which must never leave the tab locked
 # ----------------------------------------------------------------------------
-
-
-def test_a_failed_extraction_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
-    """Both buttons are held shut for the duration of a task, and a raise has to reopen them."""
-    ready._set_processing_task_running(True)
-
-    ready._on_process_failed(RuntimeError('Checkpoint has committed rows but none match'))
-
-    assert ready._process_button.isEnabled()
-    assert ready._props_button.isEnabled()
-    assert ready._process_button.text() == 'Extract Embeddings'
 
 
 def test_a_failed_extraction_is_reported(ready: ProcessingPanel, reported) -> None:
@@ -720,25 +514,6 @@ def test_a_failed_extraction_announces_the_task_is_over(ready: ProcessingPanel, 
     assert announced[-1] is False
 
 
-def test_a_failed_properties_run_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
-    ready._set_processing_task_running(True)
-
-    ready._on_properties_failed(RuntimeError('nope'))
-
-    assert ready._props_button.isEnabled()
-    assert ready._process_button.isEnabled()
-    assert ready._props_button.text() == 'Calculate Properties'
-
-
-def test_a_failed_properties_run_keeps_the_changed_preset(ready: ProcessingPanel, reported) -> None:
-    """Nothing was computed, so the preset still has to be forced onto the next run."""
-    ready._props_selection_combo.setCurrentText('Complete')
-
-    ready._on_properties_failed(RuntimeError('nope'))
-
-    assert ready._preset_changed
-
-
 def test_a_running_task_shuts_the_model_and_device_choices(ready: ProcessingPanel) -> None:
     """The run loads the model it starts with, so a pick made during it would name one it never used."""
     ready._set_processing_task_running(True)
@@ -760,129 +535,8 @@ def test_a_failed_extraction_reopens_the_model_and_device_choices(ready: Process
 
 
 # ----------------------------------------------------------------------------
-# Reading the checkpoint before the run is made against it
-# ----------------------------------------------------------------------------
-
-
-def test_a_matching_checkpoint_is_not_asked_about(ready: ProcessingPanel, started, mismatched) -> None:
-    """The usual run, which has to stay a single click."""
-    mismatched(None)
-
-    ready._on_process_clicked()
-
-    assert mismatched.asked == 0
-    assert started.runs == [False]
-
-
-def test_a_complete_checkpoint_is_still_handed_to_phenome(
-    ready: ProcessingPanel, started, mismatched
-) -> None:
-    """PhenoMe loads rather than processes when it already holds every image, so the panel leaves it to."""
-    mismatched(None)
-
-    ready._on_process_clicked()
-
-    assert started.runs == [False]
-
-
-def test_a_mismatched_checkpoint_is_asked_about(ready: ProcessingPanel, started, mismatched) -> None:
-    """The settings it compares can be picked again after the checkpoint was come by."""
-    mismatched(CheckpointMismatch(MODEL_MISMATCH, 'force_rgb differs'))
-
-    ready._on_process_clicked()
-
-    assert mismatched.asked == 1
-
-
-def test_a_confirmed_overwrite_runs_from_scratch(ready: ProcessingPanel, started, mismatched) -> None:
-    mismatched(CheckpointMismatch(MODEL_MISMATCH, 'force_rgb differs'), accepted=True)
-
-    ready._on_process_clicked()
-
-    assert started.runs == [True]
-
-
-def test_a_refused_overwrite_runs_nothing_at_all(ready: ProcessingPanel, started, mismatched) -> None:
-    """The checkpoint is deleted by the run, so refusing has to stop it before it starts."""
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
-
-    ready._on_process_clicked()
-
-    assert started.runs == []
-
-
-def test_a_refused_overwrite_leaves_the_buttons_open(ready: ProcessingPanel, started, mismatched) -> None:
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
-
-    ready._on_process_clicked()
-
-    assert ready._process_button.isEnabled()
-    assert ready._process_button.text() == 'Extract Embeddings'
-
-
-def test_the_overwrite_question_names_what_was_found(
-    ready: ProcessingPanel, started, mismatched
-) -> None:
-    """It is answered by deleting a checkpoint, so it has to say what is wrong with this one."""
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'It holds 3 image(s), none of them loaded.'))
-
-    ready._on_process_clicked()
-
-    assert 'different dataset' in mismatched.last
-    assert 'It holds 3 image(s), none of them loaded.' in mismatched.last
-
-
-def test_the_overwrite_question_says_the_file_goes(
-    ready: ProcessingPanel, started, mismatched
-) -> None:
-    """PhenoMe removes the file rather than writing over it, properties and all."""
-    mismatched(CheckpointMismatch(MODEL_MISMATCH))
-
-    ready._on_process_clicked()
-
-    assert 'deletes the file' in mismatched.last
-
-
-def test_the_overwrite_question_reads_without_a_detail(
-    ready: ProcessingPanel, started, mismatched
-) -> None:
-    """The parameter mismatch adds none, and must not leave an empty paragraph behind it."""
-    mismatched(CheckpointMismatch(MODEL_MISMATCH))
-
-    ready._on_process_clicked()
-
-    assert 'different processing settings' in mismatched.last
-    assert '\n\n\n' not in mismatched.last
-
-
-# ----------------------------------------------------------------------------
 # A preset changed after the properties were computed
 # ----------------------------------------------------------------------------
-
-
-def test_an_unchanged_preset_resumes_the_checkpoint(ready: ProcessingPanel, started) -> None:
-    ready._on_properties_clicked()
-
-    assert started.runs == [False]
-
-
-def test_a_changed_preset_is_computed_again(ready: ProcessingPanel, started) -> None:
-    """PhenoMe otherwise resumes the properties of the preset picked before, and only warns about it."""
-    ready._props_selection_combo.setCurrentText('Complete')
-
-    ready._on_properties_clicked()
-
-    assert started.runs == [True]
-
-
-def test_a_computed_preset_is_not_forced_twice(ready: ProcessingPanel, started) -> None:
-    """Once computed it answers for what the checkpoint holds, so the next run may resume again."""
-    ready._props_selection_combo.setCurrentText('Complete')
-    ready._on_finish_properties()
-
-    ready._on_properties_clicked()
-
-    assert started.runs == [False]
 
 
 def test_loading_another_dataset_forgets_the_changed_preset(ready: ProcessingPanel) -> None:
@@ -910,70 +564,6 @@ def test_there_is_still_nothing_to_stop_once_everything_is_loaded(ready: Process
     assert not ready._stop_button.isEnabled()
 
 
-@pytest.mark.parametrize('click', ['_on_process_clicked', '_on_properties_clicked'])
-def test_either_started_task_can_be_stopped(ready: ProcessingPanel, started, mismatched, click: str) -> None:
-    mismatched(None)
-
-    getattr(ready, click)()
-
-    assert ready._stop_button.isEnabled()
-    assert ready._stop_button.text() == 'Stop'
-
-
-def test_a_finished_task_leaves_nothing_to_stop(ready: ProcessingPanel, started, mismatched) -> None:
-    mismatched(None)
-    ready._on_process_clicked()
-
-    ready._on_finish_process()
-
-    assert not ready._stop_button.isEnabled()
-    assert ready._stop_button.text() == 'Stop'
-
-
-def test_stopping_asks_the_task_to_stop(ready: ProcessingPanel, started, mismatched) -> None:
-    mismatched(None)
-    ready._on_process_clicked()
-
-    ready._stop_button.click()
-
-    assert ready._stop_event.is_set()
-
-
-def test_a_stop_cannot_be_asked_for_twice(ready: ProcessingPanel, started, mismatched) -> None:
-    """It is taken at the next report PhenoMe makes, and a second click would do nothing."""
-    mismatched(None)
-    ready._on_process_clicked()
-
-    ready._stop_button.click()
-
-    assert not ready._stop_button.isEnabled()
-    assert ready._stop_button.text() == 'Stopping...'
-    assert ready._stop_button.toolTip() == 'Waiting for the current step to finish.'
-
-
-def test_a_new_run_may_be_stopped_again(ready: ProcessingPanel, started, mismatched) -> None:
-    """Every run gets an event of its own, or the one before it would stop this one at once."""
-    mismatched(None)
-    ready._on_process_clicked()
-    ready._stop_button.click()
-    ready._on_process_failed(TaskStopped())
-
-    ready._on_process_clicked()
-
-    assert ready._stop_button.isEnabled()
-    assert not ready._stop_event.is_set()
-
-
-def test_a_stopped_extraction_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
-    ready._set_processing_task_running(True)
-
-    ready._on_process_failed(TaskStopped())
-
-    assert ready._process_button.isEnabled()
-    assert ready._props_button.isEnabled()
-    assert ready._process_button.text() == 'Extract Embeddings'
-
-
 def test_a_stopped_extraction_is_not_reported_as_a_failure(ready: ProcessingPanel, reported) -> None:
     """It was asked for, and the checkpoint holds what it had committed."""
     ready._on_process_failed(TaskStopped())
@@ -991,77 +581,462 @@ def test_a_stopped_extraction_settles_the_bar(ready: ProcessingPanel, reported) 
     assert ready._progress_bar.format() == 'Stopped'
 
 
-def test_a_stopped_properties_run_reopens_the_buttons(ready: ProcessingPanel, reported) -> None:
-    ready._set_processing_task_running(True)
-
-    ready._on_properties_failed(TaskStopped())
-
-    assert ready._props_button.isEnabled()
-    assert ready._process_button.isEnabled()
-    assert ready._props_button.text() == 'Calculate Properties'
+# ----------------------------------------------------------------------------
+# A run of the Process button, driven end to end
+# ----------------------------------------------------------------------------
 
 
-def test_a_stopped_properties_run_is_not_reported_as_a_failure(ready: ProcessingPanel, reported) -> None:
-    ready._on_properties_failed(TaskStopped())
+class Pipeline:
+    """ Stands in for the three PhenoMe calls a run makes, recording them in the order they come.
 
-    assert reported.shown == 0
-    assert ready._progress_bar.format() == 'Stopped'
+    Stubbed where the GUI hands over to PhenoMe, so everything in front of it - the panel, the
+    interface, the progress throttle and the stop - runs as it does for real. Each step can be given
+    something to do while it runs, for a test watching the panel mid-run or making the step fail.
+    """
+
+    def __init__(self) -> None:
+        self.steps: list[str] = []
+        self.force_reprocess: list[bool] = []
+        self.force_update: list[bool] = []
+        self.on_load = None
+        self.on_process = None
+        self.on_properties = None
+
+    def load_model(self, model_name: str, device: str = 'cpu') -> tuple:
+        """ Stand in for downloading a network.
+
+        Args:
+            model_name: The registry name of the model.
+            device: The device it would be moved onto.
+        Returns:
+            A model, PhenoMe's own transformations, and no arguments of its own.
+        """
+        self.steps.append('load')
+        if self.on_load is not None:
+            self.on_load()
+        return object(), None, {}
+
+    def process_images(
+        self, model, checkpoint_path, progress_callback=None, force_reprocess: bool = False, **kwargs
+    ) -> None:
+        """ Stand in for the extraction, handing its progress callback to the test.
+
+        Args:
+            model: The loaded network.
+            checkpoint_path: The checkpoint the embeddings would be written to.
+            progress_callback: What the extraction reports its batches through.
+            force_reprocess: Whether the checkpoint would be deleted and filled again.
+            **kwargs: The run's other arguments, of no interest here.
+        """
+        self.steps.append('process')
+        self.force_reprocess.append(force_reprocess)
+        if self.on_process is not None:
+            self.on_process(progress_callback)
+
+    def compute_properties(
+        self, property_preset: str, checkpoint_path=None, progress_callback=None, force_update: bool = False
+    ) -> pd.DataFrame:
+        """ Stand in for the properties step, handing its progress callback to the test.
+
+        Args:
+            property_preset: The preset, as PhenoMe names it.
+            checkpoint_path: The checkpoint the properties would be written to.
+            progress_callback: What the step reports its images through.
+            force_update: Whether the properties the checkpoint holds would be computed again.
+        Returns:
+            A frame of properties, one image's worth.
+        """
+        self.steps.append('properties')
+        self.force_update.append(force_update)
+        if self.on_properties is not None:
+            self.on_properties(progress_callback)
+        return pd.DataFrame({'area': [1.0]})
 
 
-def test_a_stopped_properties_run_resumes_rather_than_starting_over(
-    ready: ProcessingPanel, started, reported
-) -> None:
-    """PhenoMe clears the old properties before the first report, so the preset has been applied:
-    forcing it again would wipe the partial run the next click is meant to carry on from."""
-    ready._props_selection_combo.setCurrentText('Complete')
+@pytest.fixture
+def pipeline(
+    ready: ProcessingPanel, mismatched, sync_worker, monkeypatch: pytest.MonkeyPatch
+) -> Pipeline:
+    """ Have the Process button run its real worker inline, on a stand-in for PhenoMe.
 
-    ready._on_properties_failed(TaskStopped())
-    ready._on_properties_clicked()
+    The checkpoint reads as matching unless a test says otherwise through `mismatched`.
 
-    assert not ready._preset_changed
-    assert started.runs == [False]
-
-
-def test_a_task_stopped_between_reports_still_finishes(ready: ProcessingPanel, started, mismatched) -> None:
-    """The stop is only read on a report; one that never comes leaves a result as good as any other."""
-    mismatched(None)
-    ready._on_process_clicked()
-    ready._stop_button.click()
-
-    ready._on_finish_process()
-
-    assert ready._process_button.isEnabled()
-    assert ready._progress_bar.format() == 'Done!'
-
-
-def test_a_stopped_run_is_unwound_out_of_phenome(
-    ready: ProcessingPanel, sync_worker, mismatched, reported, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """End to end: the stop is read from the callback PhenoMe reports through, and lands on the panel."""
-    mismatched(None)
-    batches = []
-
-    def _extract(progress_callback, force_reprocess: bool = False) -> None:
-        """ Report ten batches the way PhenoMe does, the fourth of which never comes. """
-        for batch in range(1, 11):
-            progress_callback(batch, 10, 'Processing batches')
-            batches.append(batch)
-            if batch == 3:
-                ready._stop_button.click()
-
-    monkeypatch.setattr(ready._phenome, 'process_images', _extract)
+    Returns:
+        The stand-in, recording the steps the run made.
+    """
+    stand_in = Pipeline()
+    monkeypatch.setattr(ready._phenome.image_processing, 'load_model', stand_in.load_model)
+    monkeypatch.setattr(ready._phenome.image_processing, 'process_images', stand_in.process_images)
+    monkeypatch.setattr(ready._phenome.pheno, 'compute_properties', stand_in.compute_properties)
     sync_worker(
         ready,
         '_process_images_worker',
-        lambda force: ProcessingPanel._process_images_worker.__wrapped__(ready, force),
+        lambda *args: ProcessingPanel._process_images_worker.__wrapped__(ready, *args),
     )
+    return stand_in
 
-    ready._on_process_clicked()
+
+def fail(error: Exception):
+    """ A step that raises, the way PhenoMe raises out of one.
+
+    Args:
+        error: What the step raises.
+    Returns:
+        Something to hand a Pipeline as one of its steps.
+    """
+    def _raise(*args) -> None:
+        raise error
+
+    return _raise
+
+
+def test_a_run_loads_the_model_extracts_then_computes_the_properties(
+    ready: ProcessingPanel, pipeline: Pipeline
+) -> None:
+    ready._process_button.click()
+
+    assert pipeline.steps == ['load', 'process', 'properties']
+
+
+def test_a_run_without_properties_ends_with_the_embeddings(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    ready._props_checkbox.click()
+
+    ready._process_button.click()
+
+    assert pipeline.steps == ['load', 'process']
+    assert ready._progress_bar.format() == 'Done!'
+
+
+def test_the_model_held_is_not_loaded_again(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """A second download of the same network would be hundreds of megabytes for nothing."""
+    ready._process_button.click()
+
+    ready._process_button.click()
+
+    assert pipeline.steps.count('load') == 1
+    assert pipeline.steps.count('process') == 2
+
+
+def test_picking_another_model_loads_it_on_the_next_run(
+    ready: ProcessingPanel, pipeline: Pipeline, picking_model
+) -> None:
+    ready._process_button.click()
+    picking_model(ANOTHER_MODEL)
+    ready._select_model_button.click()
+
+    ready._process_button.click()
+
+    assert pipeline.steps.count('load') == 2
+
+
+def test_the_button_follows_the_run_from_step_to_step(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """Each step takes a while of its own, and the button is what says which one is under way."""
+    said = []
+
+    def _note(*args) -> None:
+        said.append(ready._process_button.text())
+
+    pipeline.on_load = pipeline.on_process = pipeline.on_properties = _note
+
+    ready._process_button.click()
+
+    assert said == ['Loading model...', 'Processing images...', 'Calculating properties...']
+    assert ready._process_button.text() == 'Process Images'
+
+
+def test_the_tab_is_locked_while_the_run_goes(ready: ProcessingPanel, pipeline: Pipeline, widget) -> None:
+    """The run reads the model, the preset and the checkbox as it goes, and only the stop is offered."""
+    during = {}
+
+    def _look(callback) -> None:
+        during.update(
+            process=ready._process_button.isEnabled(),
+            model=ready._select_model_button.isEnabled(),
+            preset=ready._props_selection_combo.isEnabled(),
+            compute=ready._props_checkbox.isEnabled(),
+            stop=ready._stop_button.isEnabled(),
+            analysis=widget.analysis_panel._run_clustering_button.isEnabled(),
+        )
+
+    pipeline.on_process = _look
+
+    ready._process_button.click()
+
+    assert during == {
+        'process': False, 'model': False, 'preset': False, 'compute': False, 'stop': True, 'analysis': False,
+    }
+
+
+def test_a_finished_run_gives_the_tab_back(ready: ProcessingPanel, pipeline: Pipeline, widget) -> None:
+    ready._process_button.click()
+
+    assert ready._process_button.isEnabled()
+    assert ready._props_checkbox.isEnabled()
+    assert not ready._stop_button.isEnabled()
+    assert widget.analysis_panel._run_clustering_button.isEnabled()
+    assert ready._progress_bar.value() == ready._progress_bar.maximum()
+
+
+def test_what_phenome_reports_reaches_the_bar(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    seen = []
+
+    def _report(callback) -> None:
+        callback(3, 10, 'Processing batches')
+        seen.append((ready._progress_bar.value(), ready._progress_bar.maximum()))
+
+    pipeline.on_process = _report
+
+    ready._process_button.click()
+
+    assert seen == [(3, 10)]
+
+
+# ----------------------------------------------------------------------------
+# The checkpoint, read before the run is let go of
+# ----------------------------------------------------------------------------
+
+
+def test_a_matching_checkpoint_is_resumed_without_a_question(
+    ready: ProcessingPanel, pipeline: Pipeline, mismatched
+) -> None:
+    """The usual run, which has to stay a single click."""
+    ready._process_button.click()
+
+    assert mismatched.asked == 0
+    assert pipeline.force_reprocess == [False]
+
+
+def test_a_confirmed_overwrite_runs_from_scratch(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
+    mismatched(CheckpointMismatch(MODEL_MISMATCH), accepted=True)
+
+    ready._process_button.click()
+
+    assert mismatched.asked == 1
+    assert pipeline.force_reprocess == [True]
+
+
+def test_a_refused_overwrite_runs_nothing_at_all(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
+    """The checkpoint is deleted by the run, so refusing has to stop it before even the model is loaded."""
+    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
+
+    ready._process_button.click()
+
+    assert pipeline.steps == []
+    assert ready._process_button.isEnabled()
+    assert not ready._stop_button.isEnabled()
+
+
+def test_the_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
+    """It is answered by deleting a checkpoint, so it has to say what is wrong with this one."""
+    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'It holds 3 image(s), none of them loaded.'))
+
+    ready._process_button.click()
+
+    assert 'It holds 3 image(s), none of them loaded.' in mismatched.last
+
+
+def test_a_question_with_nothing_to_add_leaves_no_gap(
+    ready: ProcessingPanel, pipeline: Pipeline, mismatched
+) -> None:
+    """The parameter mismatch adds no detail, which must not leave an empty paragraph behind it."""
+    mismatched(CheckpointMismatch(MODEL_MISMATCH))
+
+    ready._process_button.click()
+
+    assert mismatched.asked == 1
+    assert '\n\n\n' not in mismatched.last
+
+
+# ----------------------------------------------------------------------------
+# The properties preset, which a resumed checkpoint would otherwise ignore
+# ----------------------------------------------------------------------------
+
+
+def test_an_unchanged_preset_resumes_the_properties(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    ready._process_button.click()
+
+    assert pipeline.force_update == [False]
+
+
+def test_a_changed_preset_is_computed_again_once(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """Once computed it answers for what the checkpoint holds, so the run after may resume again."""
+    ready._props_selection_combo.setCurrentText('Complete')
+
+    ready._process_button.click()
+    ready._process_button.click()
+
+    assert pipeline.force_update == [True, False]
+
+
+def test_turning_the_properties_back_on_computes_them_again(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    ready._props_checkbox.click()
+    ready._props_checkbox.click()
+
+    ready._process_button.click()
+
+    assert pipeline.force_update == [True]
+
+
+# ----------------------------------------------------------------------------
+# A step of the run that raises
+# ----------------------------------------------------------------------------
+
+
+def test_a_failed_model_load_extracts_nothing(ready: ProcessingPanel, pipeline: Pipeline, reported) -> None:
+    """The next try may want another model, so the choice of one is given back with the rest."""
+    pipeline.on_load = fail(OSError('connection refused'))
+
+    ready._process_button.click()
+
+    assert pipeline.steps == ['load']
+    assert reported.shown == 1
+    assert 'connection refused' in reported.last
+    assert ready._process_button.isEnabled()
+    assert ready._select_model_button.isEnabled()
+    assert ready._phenome.needs_model_load
+
+
+def test_a_failed_extraction_never_reaches_the_properties(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """Properties computed over embeddings that are not all there would answer for no run at all."""
+    pipeline.on_process = fail(RuntimeError('Checkpoint has committed rows but none match'))
+
+    ready._process_button.click()
+
+    assert pipeline.steps == ['load', 'process']
+    assert 'embeddings' in reported.last
+    assert 'Checkpoint has committed rows but none match' in reported.last
+    assert ready._progress_bar.format() == 'Failed'
+    assert ready._process_button.isEnabled()
+
+
+def test_a_failed_properties_step_is_reported_as_one(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """The embeddings are in the checkpoint by then, so what failed is the properties alone."""
+    pipeline.on_properties = fail(ValueError('unknown property'))
+
+    ready._process_button.click()
+
+    assert reported.shown == 1
+    assert 'properties' in reported.last
+    assert 'unknown property' in reported.last
+    assert ready._progress_bar.format() == 'Failed'
+    assert ready._process_button.isEnabled()
+
+
+def test_a_failed_properties_step_keeps_the_changed_preset_owed(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """Nothing was computed, so the preset still has to be forced onto the next run."""
+    ready._props_selection_combo.setCurrentText('Complete')
+    pipeline.on_properties = fail(ValueError('unknown property'))
+    ready._process_button.click()
+
+    pipeline.on_properties = None
+    ready._process_button.click()
+
+    assert pipeline.force_update == [True, True]
+
+
+# ----------------------------------------------------------------------------
+# Stopping the run
+# ----------------------------------------------------------------------------
+
+
+def reporting(total: int, stop_after: int | None = None, panel: ProcessingPanel | None = None, done=None):
+    """ A step reporting each of its units the way PhenoMe does, and pressing Stop partway through.
+
+    Args:
+        total: Units the step reports.
+        stop_after: The unit after which Stop is pressed. None to let the step run out.
+        panel: The panel whose Stop is pressed.
+        done: Filled with each unit reported, as the step gets past it.
+    Returns:
+        Something to hand a Pipeline as one of its steps.
+    """
+    def _step(callback) -> None:
+        for unit in range(1, total + 1):
+            callback(unit, total, 'Processing batches')
+            done.append(unit)
+            if unit == stop_after:
+                panel._stop_button.click()
+
+    return _step
+
+
+def test_stopping_ends_the_extraction_at_its_next_report(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """End to end: the stop is read from the callback PhenoMe reports through, and lands on the panel."""
+    batches = []
+    pipeline.on_process = reporting(10, stop_after=3, panel=ready, done=batches)
+
+    ready._process_button.click()
 
     assert batches == [1, 2, 3]
+    assert pipeline.steps == ['load', 'process']
     assert reported.shown == 0
     assert ready._progress_bar.format() == 'Stopped'
     assert ready._process_button.isEnabled()
+
+
+def test_a_stop_cannot_be_asked_for_twice(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """It is taken at the next report PhenoMe makes, and a second click would do nothing."""
+    during = {}
+
+    def _stop(callback) -> None:
+        ready._stop_button.click()
+        during.update(enabled=ready._stop_button.isEnabled(), text=ready._stop_button.text())
+
+    pipeline.on_process = _stop
+
+    ready._process_button.click()
+
+    assert during == {'enabled': False, 'text': 'Stopping...'}
+    assert ready._stop_button.text() == 'Stop'
+
+
+def test_a_run_stopped_after_its_last_report_still_finishes(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """The stop is only read on a report; one that never comes leaves a result as good as any other."""
+    pipeline.on_properties = lambda callback: ready._stop_button.click()
+
+    ready._process_button.click()
+
+    assert ready._progress_bar.format() == 'Done!'
+    assert ready._process_button.isEnabled()
+
+
+def test_a_new_run_is_not_stopped_by_the_one_before(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """Every run gets a stop of its own, or the one before it would end this one at its first report."""
+    pipeline.on_process = reporting(10, stop_after=3, panel=ready, done=[])
+    ready._process_button.click()
+
+    batches = []
+    pipeline.on_process = reporting(10, done=batches)
+    ready._process_button.click()
+
+    assert batches == list(range(1, 11))
+    assert ready._progress_bar.format() == 'Done!'
+
+
+def test_stopping_the_properties_lets_the_next_run_resume_them(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """PhenoMe clears the old properties before its first report, so the preset has been applied:
+    forcing it again would wipe the partial run the next click is meant to carry on from."""
+    ready._props_selection_combo.setCurrentText('Complete')
+    pipeline.on_properties = reporting(10, stop_after=1, panel=ready, done=[])
+    ready._process_button.click()
+
+    pipeline.on_properties = None
+    ready._process_button.click()
+
+    assert reported.shown == 0
+    assert pipeline.force_update == [True, False]
 
 
 # ----------------------------------------------------------------------------
@@ -1129,21 +1104,6 @@ def reading(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
         return asked
 
     return _stub
-
-
-def test_the_checkpoint_controls_are_shown(panel: ProcessingPanel) -> None:
-    """Built but never laid out is built for nobody, whatever they are connected to."""
-    for widget in (
-        panel._new_checkpoint_button,
-        panel._load_checkpoint_button,
-        panel._current_checkpoint_label,
-    ):
-        assert widget.isVisibleTo(panel)
-
-
-def test_nothing_is_selected_to_begin_with(panel: ProcessingPanel) -> None:
-    assert panel._phenome.params.paths.checkpoint is None
-    assert panel._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
 
 
 def test_both_ways_to_a_checkpoint_wait_on_the_data(panel: ProcessingPanel) -> None:

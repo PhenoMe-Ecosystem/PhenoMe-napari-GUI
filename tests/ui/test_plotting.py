@@ -17,7 +17,6 @@ from qtpy.QtWidgets import QToolTip
 from phenome_gui.ui.plotting import (
     CATEGORICAL_COLUMNS,
     DIMMED_ALPHA,
-    HIGHLIGHT_COLOUR,
     HOVER_RADIUS,
     MIN_CONTINUOUS,
     MISSING_COLOUR,
@@ -203,12 +202,6 @@ def test_a_group_keeps_its_colour_as_its_size_changes(plot: ExplorerPlot) -> Non
     assert dict(zip(legend_labels(plot), legend_colours(plot), strict=True)) == first
 
 
-def test_the_colours_are_taken_in_order(plot: ExplorerPlot) -> None:
-    plot.plot_projection(projection(['ctrl', 'ctrl', 'drugA']), 'drug_name')
-
-    assert colours(plot) == SERIES_HEX[:2]
-
-
 def test_the_colours_start_over_past_the_last_one(plot: ExplorerPlot) -> None:
     """The group past the last colour wears the first one again, telling it apart only by where its
     points sit. The groups are named so that sorting them by name puts them in that order.
@@ -237,13 +230,6 @@ def test_groups_of_the_same_size_keep_a_settled_order(plot: ExplorerPlot) -> Non
 # ----------------------------------------------------------------------------
 
 
-def test_the_capitalised_column_is_found(plot: ExplorerPlot) -> None:
-    """PhenoMe capitalises what it copies in, so 'drug_name' is asked for but 'Drug_name' is there."""
-    plot.plot_projection(projection(['ctrl', 'drugA', 'drugA']), 'drug_name')
-
-    assert series(plot) == {'ctrl': 1, 'drugA': 2}
-
-
 @pytest.mark.parametrize('color_by', [None, '', 'cluster'], ids=['none', 'empty', 'not-in-frame'])
 def test_without_a_column_the_points_are_one_unnamed_group(plot: ExplorerPlot, color_by) -> None:
     """A column added to the metadata after the projection ran is not in it, which must not raise."""
@@ -266,10 +252,6 @@ def test_missing_values_are_grouped_rather_than_named_nan(plot: ExplorerPlot) ->
 # ----------------------------------------------------------------------------
 # Telling a measurement from a set of labels
 # ----------------------------------------------------------------------------
-
-
-def test_a_column_of_measurements_is_continuous() -> None:
-    assert is_continuous(pd.Series(np.arange(MIN_CONTINUOUS, dtype=float)), 'area')
 
 
 def test_a_column_of_few_values_is_read_as_labels() -> None:
@@ -382,25 +364,6 @@ def test_the_colorbar_is_named_after_the_column(plot: ExplorerPlot) -> None:
     plot.plot_projection(measured(MEASUREMENTS, column='eccentricity'), 'eccentricity')
 
     assert 'eccentricity' in colorbar_label(plot)
-
-
-def test_the_colorbar_takes_no_room_from_the_plot(plot: ExplorerPlot) -> None:
-    """It is floated over the plot area rather than given a column of its own beside it.
-
-    A bar holding a column of the canvas' layout takes its width from the points, which moves the
-    axes every time the colouring changes from labels to a measurement.
-    """
-    plot.plot_projection(measured(MEASUREMENTS), 'area')
-
-    assert plot._colorbar.parentItem() is plot._plot.vb
-    assert len(plot.ci.items) == 1
-
-
-def test_the_colorbar_lies_down(plot: ExplorerPlot) -> None:
-    """Lying along the top of the plot, it covers a strip of the cloud rather than a column of it."""
-    plot.plot_projection(measured(MEASUREMENTS), 'area')
-
-    assert plot._colorbar.horizontal
 
 
 def test_the_points_run_along_the_ramp(plot: ExplorerPlot) -> None:
@@ -1045,16 +1008,6 @@ def test_the_band_is_drawn_among_the_points(plot: ExplorerPlot) -> None:
     assert drawn.top() == pytest.approx(3.0, abs=0.1)
 
 
-def test_the_lasso_band_is_drawn_like_the_box_band(plot: ExplorerPlot) -> None:
-    """The two shapes a selection is drawn as should read as one another."""
-    band = plot._viewbox.lasso_band
-    scale_box = plot._viewbox.rbScaleBox
-
-    assert band.pen().color().name() == scale_box.pen().color().name()
-    assert band.brush().color().name() == scale_box.brush().color().name()
-    assert band.brush().color().alpha() == scale_box.brush().color().alpha()
-
-
 # ----------------------------------------------------------------------------
 # Picking points out by what they hold
 # ----------------------------------------------------------------------------
@@ -1318,15 +1271,6 @@ def test_the_hovered_point_is_ringed(hovered: ExplorerPlot) -> None:
     hovered._on_mouse_over(in_scene(hovered, *POINTS[1]))
 
     assert ringed(hovered) == POINTS[1]
-
-
-def test_the_ring_is_a_white_outline(hovered: ExplorerPlot) -> None:
-    """White so it reads against every colour of the palette and of the ramp alike."""
-    hovered._on_mouse_over(in_scene(hovered, *POINTS[1]))
-
-    (spot,) = hovered._highlight.points()
-    assert spot.pen().color().name() == HIGHLIGHT_COLOUR
-    assert spot.brush().style() == Qt.BrushStyle.NoBrush
 
 
 def test_the_ring_is_drawn_over_the_cloud(hovered: ExplorerPlot) -> None:

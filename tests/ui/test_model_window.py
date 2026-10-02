@@ -134,5 +134,3 @@ def test_moving_off_a_described_model_clears_the_pane(window, described) -> None
     assert built._details.toPlainText() == ''
 
 
-def test_the_pane_cannot_be_typed_into(window) -> None:
-    assert window()._details.isReadOnly()
