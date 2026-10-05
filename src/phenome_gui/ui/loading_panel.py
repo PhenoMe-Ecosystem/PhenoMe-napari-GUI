@@ -348,7 +348,7 @@ class LoadingPanel(QWidget):
         load()
 
     def _on_load_finished(self) -> None:
-        """ Show the dataset just loaded, and outline the buttons by whether any file was found. """
+        """ Show the dataset just loaded, and outline the group by whether any file was found. """
         # The interface drops the previous results before it reads a single file, so whoever shows
         # them is told whether or not the load itself got as far as finding any.
         self.results_cleared.emit()
@@ -370,14 +370,13 @@ class LoadingPanel(QWidget):
 
         logger.error('Could not load the data: %s', error)
         notifications.show_error(f'Could not load data: {error}')
-        self._set_loading(False, STYLESHEETS['STYLE_ERROR'])
+        self._set_loading(False, GROUP_STYLESHEETS['STYLE_ERROR'])
 
     def _set_loading(self, loading: bool, outcome: str = '') -> None:
-        """ Lock the tab while a load runs, and outline the buttons by how it is going.
+        """ Lock the tab while a load runs, and outline the group by how it is going.
 
         The paths are read on the worker as the load starts, so the boxes and the structure are held
-        for the length of it rather than changed underneath it. A locked button keeps its outline,
-        which is what shows the load is still going.
+        for the length of it rather than changed underneath it.
 
         Args:
             loading: True as a load starts, False once it has finished.

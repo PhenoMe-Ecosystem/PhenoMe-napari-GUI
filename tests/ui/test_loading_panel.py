@@ -11,7 +11,7 @@ from qtpy.QtWidgets import QFileDialog
 
 from phenome_gui.ui import loading_panel as loading_panel_module
 from phenome_gui.ui.loading_panel import LoadingPanel
-from phenome_gui.ui.styles import STYLESHEETS
+from phenome_gui.ui.styles import GROUP_STYLESHEETS, STYLESHEETS
 from phenome_gui.utils.image_viewer import ImageViewer
 
 
@@ -639,10 +639,14 @@ def test_a_folder_dropped_on_the_masks_writes_them(panel: LoadingPanel, tmp_path
 # ----------------------------------------------------------------------------
 
 
-def outlines(panel: LoadingPanel) -> list[str]:
-    """ How both Load Data buttons are outlined: 'ok', 'bad', 'wait', or 'none'. """
-    names = {STYLESHEETS['STYLE_OK']: 'ok', STYLESHEETS['STYLE_ERROR']: 'bad', STYLESHEETS['STYLE_WAIT']: 'wait'}
-    return [names.get(button.styleSheet(), 'none') for button in (panel._csv_load_data_btn, panel._path_load_data_btn)]
+def outline(panel: LoadingPanel) -> str:
+    """ How the data loading group is outlined: 'ok', 'bad', 'wait', or 'none'. """
+    names = {
+        GROUP_STYLESHEETS['STYLE_OK']: 'ok',
+        GROUP_STYLESHEETS['STYLE_ERROR']: 'bad',
+        GROUP_STYLESHEETS['STYLE_WAIT']: 'wait',
+    }
+    return names.get(panel._loading_group.styleSheet(), 'none')
 
 
 @pytest.fixture
@@ -667,7 +671,7 @@ def held_load(panel: LoadingPanel, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.real_load_worker
-def test_the_buttons_wait_while_the_load_runs(panel: LoadingPanel, held_load, qtbot) -> None:
+def test_the_group_waits_while_the_load_runs(panel: LoadingPanel, held_load, qtbot) -> None:
     """On the real worker thread: the waiting outline is drawn while the files are still being found.
 
     On the GUI thread it never could be - nothing is painted until the load returns, by which time
@@ -678,19 +682,19 @@ def test_the_buttons_wait_while_the_load_runs(panel: LoadingPanel, held_load, qt
     panel._csv_load_data_btn.click()
 
     try:
-        assert outlines(panel) == ['wait', 'wait']
+        assert outline(panel) == 'wait'
         assert not panel._loading_group.isEnabled()
         assert not panel._structure_group.isEnabled()
     finally:
         held_load.set()
 
-    qtbot.waitUntil(lambda: outlines(panel) == ['ok', 'ok'], timeout=5000)
+    qtbot.waitUntil(lambda: outline(panel) == 'ok', timeout=5000)
     assert panel._loading_group.isEnabled()
     assert panel._csv_load_data_btn.isEnabled()
     assert panel._metadata_table.native.rowCount() == 6
 
 
-def test_calling_the_load_off_leaves_the_buttons_as_they_were(panel: LoadingPanel, confirmation, processed) -> None:
+def test_calling_the_load_off_leaves_the_outline_as_it_was(panel: LoadingPanel, confirmation, processed) -> None:
     """Asked before anything changes colour, so a load called off is not left waiting for good."""
     panel._on_load_data_csv()
     processed(panel._phenome, 6)
@@ -698,14 +702,14 @@ def test_calling_the_load_off_leaves_the_buttons_as_they_were(panel: LoadingPane
 
     panel._on_load_data_csv()
 
-    assert outlines(panel) == ['ok', 'ok']
+    assert outline(panel) == 'ok'
     assert panel._loading_group.isEnabled()
 
 
 def test_a_load_that_finds_files_ends_green(panel: LoadingPanel) -> None:
     panel._on_load_data_csv()
 
-    assert outlines(panel) == ['ok', 'ok']
+    assert outline(panel) == 'ok'
 
 
 def test_a_load_that_finds_nothing_ends_red(panel: LoadingPanel, tmp_path: Path, shown_errors: list) -> None:
@@ -714,16 +718,16 @@ def test_a_load_that_finds_nothing_ends_red(panel: LoadingPanel, tmp_path: Path,
 
     panel._on_load_data_csv()
 
-    assert outlines(panel) == ['bad', 'bad']
+    assert outline(panel) == 'bad'
 
 
 def test_a_load_that_raises_ends_red_and_unlocked(panel: LoadingPanel, shown_errors: list) -> None:
-    """Without the failure handler the tab would stay locked, its buttons waiting for good."""
+    """Without the failure handler the tab would stay locked, its outline waiting for good."""
     panel._phenome.params.paths.metadata = Path('no_such_file.csv')
 
     panel._on_load_data_csv()
 
-    assert outlines(panel) == ['bad', 'bad']
+    assert outline(panel) == 'bad'
     assert panel._loading_group.isEnabled()
     assert panel._structure_group.isEnabled()
 
@@ -735,6 +739,6 @@ def test_unlocking_keeps_a_red_box_closing_its_load(panel: LoadingPanel, tmp_pat
     panel._mask_dir_dialog.path = tmp_path / 'missing'
 
     panel._set_loading(True)
-    panel._set_loading(False, STYLESHEETS['STYLE_OK'])
+    panel._set_loading(False, GROUP_STYLESHEETS['STYLE_OK'])
 
     assert not panel._csv_load_data_btn.isEnabled()
