@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 from phenome import PhenoMe
+from phenome.io import CheckpointManager
 from phenome.utils import ProgressCallback
 
 from ..registries.models import get_model
@@ -84,6 +85,52 @@ class ImageProcessing:
             checkpoint_path: Path of the .hdf5 file to read.
         """
         self.pheno.load_results(checkpoint_path, lazy_checkpoint=True)
+
+    def checkpoint_coverage(self, checkpoint_path: str) -> tuple[int, int, int]:
+        """ How a checkpoint's images line up with the ones currently loaded, without loading it.
+
+        PhenoMe never refuses a checkpoint filled from other images: it keeps the rows it can match to
+        the files currently found, and drops the rest without a word, down to none at all. The match is
+        made here the same way, by loading the checkpoint into a pipeline of its own that is given the
+        same files, so a dataset moved to another folder still matches where its paths no longer do.
+        That pipeline is let go of afterwards, leaving this one exactly as it was. Only the metadata is
+        read, the embeddings staying on disk.
+
+        Reaches for PhenoMe's private file table, which set_file_df() takes back as it is: it is the
+        only way to hand another pipeline the same files, and it is kept here beside the other PhenoMe
+        calls so there is one place to change should PhenoMe offer it publicly.
+
+        Args:
+            checkpoint_path: Path of the .hdf5 file to compare.
+        Returns:
+            The images the checkpoint holds, how many of them match a loaded file, and how many files
+            are loaded.
+        Raises:
+            RuntimeError: No dataset has been loaded, so there are no files to match against.
+            FileNotFoundError: The file does not exist.
+            ValueError: The file is not a checkpoint.
+            OSError: The file could not be read, or is held open by another process.
+        """
+        file_df = self.pheno._file_df
+        if file_df is None:
+            raise RuntimeError('No dataset is loaded to match the checkpoint against.')
+
+        held = CheckpointManager(str(checkpoint_path), lazy=True)
+        try:
+            n_held = held.n_committed
+        finally:
+            held.close()
+
+        scratch = PhenoMe()
+        try:
+            scratch.set_file_df(file_df)
+            scratch.load_results(str(checkpoint_path), lazy_checkpoint=True)
+            n_matched = scratch.results.n_images
+        finally:
+            # Closes the checkpoint it opened, which the real load opens again straight after
+            scratch.reset()
+
+        return n_held, n_matched, len(file_df)
 
     def get_properties(self) -> pd.DataFrame:
         """ The properties the pipeline currently holds, as a frame.

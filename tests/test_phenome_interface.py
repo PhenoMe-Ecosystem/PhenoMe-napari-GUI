@@ -322,6 +322,8 @@ def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
 
     Neither half is let near a real file: writing one means embeddings, which means a model, and what
     is being checked is what the interface does with the two answers rather than PhenoMe's reading.
+    The checkpoint answers for the dataset in full, its match being checked against real files in the
+    tests of its own.
 
     Returns:
         Called as loading(properties=...), returning a record of what PhenoMe
@@ -334,6 +336,7 @@ def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
             record['loaded'].append(path)
             phenome.pheno.results.properties = properties or []
 
+        monkeypatch.setattr(phenome.image_processing, 'checkpoint_coverage', lambda path: (6, 6, 6))
         monkeypatch.setattr(phenome.image_processing, 'load_results', _load)
         monkeypatch.setattr(
             phenome.image_processing, 'get_properties', lambda: pd.DataFrame({'area': [1.0, 2.0]})
@@ -634,6 +637,91 @@ def test_a_failed_save_keeps_the_checkpoint_selected_before(
         loaded.save_checkpoint(tmp_path / 'saved.hdf5')
 
     assert loaded.params.paths.checkpoint == tmp_path / 'previous.hdf5'
+
+
+# ----------------------------------------------------------------------------
+# Loading a checkpoint, which has to answer for exactly the dataset loaded
+# ----------------------------------------------------------------------------
+
+
+def load_copy(interface: PhenoMeInterface, copy: dict[str, Path]) -> PhenoMeInterface:
+    """ Load a copy of the test dataset into an interface, as the loading tab would.
+
+    Args:
+        interface: The interface to load into.
+        copy: The images directory, the masks directory and the metadata file of the copy.
+    Returns:
+        The same interface, holding the copy.
+    """
+    interface.params.paths.images = copy['images']
+    interface.params.paths.masks = copy['masks']
+    interface.params.paths.metadata = copy['metadata']
+    interface.load_data_csv()
+    return interface
+
+
+def test_a_checkpoint_of_another_dataset_is_refused(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """PhenoMe would load it as holding none of the images, which reads as a load that did nothing."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset(renamed=True))
+
+    with pytest.raises(ValueError, match='different dataset'):
+        loaded.load_checkpoint(path)
+
+
+def test_a_refused_checkpoint_leaves_the_results_alone(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset, extracted, tmp_path: Path
+) -> None:
+    """Refused before anything is read into the pipeline, so what was there is still there."""
+    path = written_checkpoint(loaded, name='other.hdf5')
+    load_copy(loaded, copied_dataset(renamed=True))
+    extracted(loaded)
+    loaded.params.paths.checkpoint = tmp_path / 'kept.hdf5'
+
+    with pytest.raises(ValueError):
+        loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == 6
+    assert loaded.pheno.results.embeddings is not None
+    assert loaded.params.paths.checkpoint == tmp_path / 'kept.hdf5'
+
+
+def test_a_checkpoint_of_more_images_than_are_loaded_is_refused(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """Loaded, it would quietly answer for part of what it holds."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+
+    with pytest.raises(ValueError, match=r'does not match.*6 image\(s\), 3 of which.*3 currently loaded'):
+        loaded.load_checkpoint(path)
+
+
+def test_a_checkpoint_of_fewer_images_than_are_loaded_is_refused(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """Loaded, it would leave some of the loaded images without embeddings."""
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+    path = written_checkpoint(loaded, name='part.hdf5')
+    load_copy(loaded, copied_dataset())
+
+    with pytest.raises(ValueError, match=r'does not match.*3 image\(s\), 3 of which.*6 currently loaded'):
+        loaded.load_checkpoint(path)
+
+
+def test_a_checkpoint_of_the_same_dataset_moved_elsewhere_still_loads(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """PhenoMe matches a checkpoint to the files by what they are, not where they sit."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset())
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == 6
+    assert loaded.params.paths.checkpoint == path
 
 
 # ----------------------------------------------------------------------------

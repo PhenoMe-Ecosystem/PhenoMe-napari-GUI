@@ -709,8 +709,10 @@ class ProcessingPanel(QWidget):
         """ Say the run has moved on from its model to the images, once the worker has the model.
 
         Runs on the main thread via the model_ready signal. Repeats the state the click left where no
-        load was needed, which is harmless.
+        load was needed, which is harmless. The embeddings group is outlined as waiting until they are
+        extracted.
         """
+        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self._process_button.setText('Processing images...')
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setFormat('Preparing...')
@@ -720,7 +722,11 @@ class ProcessingPanel(QWidget):
 
         Runs on the main thread via the properties_started signal, which lands before the first
         property report and before any failure of the step, so the end of the task is read against it.
+        The embeddings are done by then, and their group is outlined as such; the properties group is
+        outlined as waiting until they are computed.
         """
+        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
+        self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self._computing_properties = True
         self._process_button.setText('Calculating properties...')
 
@@ -847,15 +853,18 @@ class ProcessingPanel(QWidget):
         self._process_button.setText('Process Images')
         self._set_processing_task_running(False)
 
+        # The step the run was on did not finish, whether it was stopped or failed. Outlined after the
+        # unlock, which outlines the groups from what the pipeline holds.
+        unfinished = self._properties_group if self._computing_properties else self._embeddings_group
+        unfinished.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
+
         if isinstance(error, TaskStopped):
             self._settle_bar('Stopped')
             if self._computing_properties:
                 self._preset_changed = False
                 logger.info('The properties calculation was stopped.')
-                self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
             else:
                 logger.info('The extraction was stopped.')
-                self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
             return
 
         self._settle_bar('Failed')
@@ -903,22 +912,21 @@ class ProcessingPanel(QWidget):
                 again, which a preset changed since the last run needs. The embeddings in the same
                 file are left where they are.
         """
+        # No widget is touched from here: this runs off the GUI thread, where Qt cannot restyle or
+        # repaint one. Each step is announced through a signal, and the panel shows it on its own thread.
         self._phenome.ensure_model_loaded()
         self.model_ready.emit()
 
-        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self._phenome.process_images(
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
             ),
             force_reprocess=force_reprocess
         )
-        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
         if not self._phenome.params.properties.compute:
             return
 
-        self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self.properties_started.emit()
         self._phenome.compute_properties(
             progress_callback=StoppableProgress(
@@ -926,7 +934,6 @@ class ProcessingPanel(QWidget):
             ),
             force_update=force_update
         )
-        self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
     def _on_properties_changed(self) -> None:
         """ Update the properties preset parameter when the selection changes.

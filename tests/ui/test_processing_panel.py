@@ -4,6 +4,7 @@ Nothing here loads a model or extracts embeddings: the pipeline state is stubbed
 being a sentinel object, and the load and the extraction stand-ins where a run is driven.
 """
 
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,7 @@ from phenome_gui.ui.processing_panel import (
     NO_CHECKPOINT_TEXT,
     ProcessingPanel,
 )
+from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (
     DATASET_MISMATCH,
@@ -655,10 +657,8 @@ class Pipeline:
 
 
 @pytest.fixture
-def pipeline(
-    ready: ProcessingPanel, mismatched, sync_worker, monkeypatch: pytest.MonkeyPatch
-) -> Pipeline:
-    """ Have the Process button run its real worker inline, on a stand-in for PhenoMe.
+def stubbed_phenome(ready: ProcessingPanel, mismatched, monkeypatch: pytest.MonkeyPatch) -> Pipeline:
+    """ Put a stand-in for PhenoMe under the Process button, leaving its worker as it is.
 
     A checkpoint is selected, as `ready` leaves it, but the run writes to it only under `lazy`. When
     it does, the checkpoint reads as matching unless a test says otherwise through `mismatched`.
@@ -670,12 +670,24 @@ def pipeline(
     monkeypatch.setattr(ready._phenome.image_processing, 'load_model', stand_in.load_model)
     monkeypatch.setattr(ready._phenome.image_processing, 'process_images', stand_in.process_images)
     monkeypatch.setattr(ready._phenome.pheno, 'compute_properties', stand_in.compute_properties)
+    return stand_in
+
+
+@pytest.fixture
+def pipeline(ready: ProcessingPanel, stubbed_phenome: Pipeline, sync_worker) -> Pipeline:
+    """ Have the Process button run its real worker inline, on a stand-in for PhenoMe.
+
+    Inline rather than on a thread, so a test can watch the panel from inside each step.
+
+    Returns:
+        The stand-in, recording the steps the run made.
+    """
     sync_worker(
         ready,
         '_process_images_worker',
         lambda *args: ProcessingPanel._process_images_worker.__wrapped__(ready, *args),
     )
-    return stand_in
+    return stubbed_phenome
 
 
 @pytest.fixture
@@ -797,6 +809,122 @@ def test_what_phenome_reports_reaches_the_bar(ready: ProcessingPanel, pipeline: 
     ready._process_button.click()
 
     assert seen == [(3, 10)]
+
+
+# ----------------------------------------------------------------------------
+# The outline of each step's group, following the run from step to step
+# ----------------------------------------------------------------------------
+
+
+def outline(group) -> str:
+    """ How a group is outlined: 'ok', 'wait', 'bad', or 'none' for one left unstyled. """
+    names = {
+        GROUP_STYLESHEETS['STYLE_OK']: 'ok',
+        GROUP_STYLESHEETS['STYLE_WAIT']: 'wait',
+        GROUP_STYLESHEETS['STYLE_ERROR']: 'bad',
+    }
+    return names.get(group.styleSheet(), 'none')
+
+
+def outlines(panel: ProcessingPanel) -> dict[str, str]:
+    """ How the embeddings and the properties groups are outlined. """
+    return {
+        'embeddings': outline(panel._embeddings_group),
+        'properties': outline(panel._properties_group),
+    }
+
+
+def test_the_groups_follow_the_run_from_step_to_step(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """The step under way is outlined as waiting, and the one before it as done."""
+    during = {}
+    pipeline.on_process = lambda callback: during.update(extracting=outlines(ready))
+    pipeline.on_properties = lambda callback: during.update(computing=outlines(ready))
+
+    ready._process_button.click()
+
+    assert during['extracting']['embeddings'] == 'wait'
+    assert during['computing'] == {'embeddings': 'ok', 'properties': 'wait'}
+
+
+def test_a_finished_run_outlines_both_groups_as_done(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    ready._process_button.click()
+
+    assert outlines(ready) == {'embeddings': 'ok', 'properties': 'ok'}
+
+
+def test_a_run_without_properties_never_outlines_them_as_waiting(
+    ready: ProcessingPanel, pipeline: Pipeline
+) -> None:
+    seen = []
+    pipeline.on_process = lambda callback: seen.append(outline(ready._properties_group))
+    ready._props_checkbox.click()
+
+    ready._process_button.click()
+
+    assert 'wait' not in seen
+    assert outline(ready._properties_group) != 'wait'
+    assert outline(ready._embeddings_group) == 'ok'
+
+
+def test_a_failed_extraction_outlines_the_embeddings_as_failed(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    pipeline.on_process = fail(RuntimeError('nope'))
+
+    ready._process_button.click()
+
+    assert outline(ready._embeddings_group) == 'bad'
+
+
+def test_a_failed_properties_step_outlines_only_the_properties_as_failed(
+    ready: ProcessingPanel, pipeline: Pipeline, reported
+) -> None:
+    """The embeddings were extracted before the properties step began, and are done."""
+    pipeline.on_properties = fail(ValueError('unknown property'))
+
+    ready._process_button.click()
+
+    assert outlines(ready) == {'embeddings': 'ok', 'properties': 'bad'}
+
+
+@pytest.mark.parametrize('step', ['on_process', 'on_properties'])
+def test_a_stopped_step_is_outlined_as_stopped(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, step: str
+) -> None:
+    setattr(pipeline, step, reporting(10, stop_after=2, panel=ready, done=[]))
+
+    ready._process_button.click()
+
+    stopped = ready._embeddings_group if step == 'on_process' else ready._properties_group
+    assert outline(stopped) == 'bad'
+
+
+def test_a_run_on_its_own_thread_leaves_the_widgets_to_the_gui_thread(
+    ready: ProcessingPanel, stubbed_phenome: Pipeline, qtbot, qtlog
+) -> None:
+    """On the real worker thread: a widget may only be touched from the GUI thread.
+
+    Restyling a group from the worker is what made Qt warn about timers started from another thread,
+    but only for some of them, so each restyle is also checked for the thread it is made on.
+    """
+    restyled_from = []
+    for group in (ready._embeddings_group, ready._properties_group):
+        restyle = group.setStyleSheet
+
+        def _noting(sheet: str, restyle=restyle) -> None:
+            restyled_from.append(threading.current_thread() is threading.main_thread())
+            restyle(sheet)
+
+        group.setStyleSheet = _noting
+
+    ready._process_button.click()
+
+    qtbot.waitUntil(lambda: ready._process_button.isEnabled(), timeout=5000)
+
+    assert stubbed_phenome.steps == ['load', 'process', 'properties']
+    assert restyled_from
+    assert all(restyled_from)
+    assert [record.message for record in qtlog.records if 'another thread' in record.message] == []
 
 
 # ----------------------------------------------------------------------------
@@ -1310,6 +1438,30 @@ def test_a_checkpoint_that_will_not_open_is_not_announced(
 
     with qtbot.assertNotEmitted(loaded.checkpoint_loaded):
         loaded._load_checkpoint_button.click()
+
+
+def test_a_checkpoint_of_another_dataset_is_reported_and_not_loaded(
+    loaded: ProcessingPanel, picking, reported, written_checkpoint, copied_dataset, qtbot
+) -> None:
+    """End to end, on real files: PhenoMe would load it as holding none of the images, without a word."""
+    path = written_checkpoint(loaded._phenome)
+    other = copied_dataset(renamed=True)
+    loaded._phenome.params.paths.images = other['images']
+    loaded._phenome.params.paths.masks = other['masks']
+    loaded._phenome.params.paths.metadata = other['metadata']
+    loaded._phenome.load_data_csv()
+    loaded.refresh_buttons()
+    picking(path)
+
+    with qtbot.assertNotEmitted(loaded.checkpoint_loaded):
+        loaded._load_checkpoint_button.click()
+
+    assert reported.shown == 1
+    assert 'different dataset' in reported.last
+    assert loaded._phenome.params.paths.checkpoint is None
+    assert loaded._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
+    assert not loaded._phenome.has_processed_images
+    assert not loaded._save_checkpoint_button.isEnabled()
 
 
 def test_loading_a_checkpoint_waits_on_the_data(panel: ProcessingPanel) -> None:

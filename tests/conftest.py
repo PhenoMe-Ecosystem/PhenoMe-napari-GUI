@@ -10,6 +10,7 @@ import os
 # developer free to force a real one when debugging.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+import shutil  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -59,6 +60,49 @@ def dataset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     metadata.to_csv(metadata_csv, index=False)
 
     return {'images': images_dir, 'masks': masks_dir, 'metadata': metadata_csv}
+
+
+@pytest.fixture
+def copied_dataset(dataset: dict[str, Path], tmp_path: Path):
+    """ Return a hook copying the test dataset elsewhere, whole, in part, or as another dataset.
+
+    A copy left whole is the same dataset moved to another folder, which a checkpoint still answers
+    for. A part of it is a subset of the images, and a renamed copy is images of another experiment
+    altogether, whose names and metadata no checkpoint of the original answers for.
+
+    Returns:
+        Called as copied_dataset(indices=[0, 1, 2], renamed=False), returning the
+        images directory, the masks directory and the metadata file of the copy.
+    """
+    copies = []
+
+    def _copy(indices: list[int] | None = None, renamed: bool = False) -> dict[str, Path]:
+        root = tmp_path / f'copy_{len(copies)}'
+        copies.append(root)
+        images_dir = root / 'images'
+        masks_dir = root / 'masks'
+        images_dir.mkdir(parents=True)
+        masks_dir.mkdir()
+
+        metadata = pd.read_csv(dataset['metadata'])
+        if indices is not None:
+            metadata = metadata.iloc[indices].reset_index(drop=True)
+
+        names = list(metadata['filename'])
+        if renamed:
+            metadata['filename'] = [f'other_{i:03d}' for i in range(len(metadata))]
+            metadata['drug_name'] = 'unrelated'
+
+        for old, new in zip(names, metadata['filename'], strict=True):
+            shutil.copy(dataset['images'] / f'{old}.tif', images_dir / f'{new}.tif')
+            shutil.copy(dataset['masks'] / f'{old}.tif', masks_dir / f'{new}.tif')
+
+        metadata_csv = root / 'metadata.csv'
+        metadata.to_csv(metadata_csv, index=False)
+
+        return {'images': images_dir, 'masks': masks_dir, 'metadata': metadata_csv}
+
+    return _copy
 
 
 @pytest.fixture(scope='session')

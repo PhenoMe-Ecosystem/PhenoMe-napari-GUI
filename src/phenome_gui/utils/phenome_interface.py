@@ -66,6 +66,28 @@ def _without_cluster(criteria: dict[str, list] | None) -> dict[str, list] | None
     return kept or None
 
 
+def _coverage_mismatch(held: int, matched: int, loaded: int) -> str:
+    """ Say how a checkpoint fails to answer for the dataset loaded.
+
+    Args:
+        held: The images the checkpoint holds.
+        matched: How many of them match a loaded file.
+        loaded: How many files are loaded.
+    Returns:
+        One sentence naming the mismatch, with the counts it was read from.
+    """
+    if matched == 0:
+        return (
+            f'It was filled from a different dataset: it holds {held} image(s), none of them among '
+            f'the {loaded} currently loaded.'
+        )
+
+    return (
+        f'It does not match the loaded dataset: it holds {held} image(s), {matched} of which are '
+        f'among the {loaded} currently loaded.'
+    )
+
+
 def _as_phenome_path(path: Path | None) -> str | None:
     """ A directory as PhenoMe takes it, or None when none was named.
 
@@ -433,12 +455,23 @@ class PhenoMeInterface:
         filled under, and the disagreement is the run's to find - by which time the settings may have
         been picked again anyway.
 
+        A checkpoint has to answer for exactly the dataset loaded, every image it holds matching a file
+        found and every file found being in it. PhenoMe would otherwise load the part that matches and
+        drop the rest without a word - nothing at all for a checkpoint of another dataset - so the match
+        is checked first, and a checkpoint failing it is refused before anything is read into the
+        pipeline.
+
         Args:
             path: The checkpoint file to read.
         Raises:
+            ValueError: The checkpoint does not answer for the dataset loaded, or is not a checkpoint.
             RuntimeError: No dataset has been loaded, so there are no files to resolve against.
             OSError: The file could not be read, or is held open by another process.
         """
+        held, matched, loaded = self.image_processing.checkpoint_coverage(str(path))
+        if not held == matched == loaded:
+            raise ValueError(_coverage_mismatch(held, matched, loaded))
+
         self.image_processing.load_results(str(path))
 
         # Read back rather than left to the next run: the frame is what every property-based step
