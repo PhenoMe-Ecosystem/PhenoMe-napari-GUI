@@ -35,7 +35,7 @@ class ImageProcessing:
         """
         return get_model(model_name, device=device)
 
-    def process_images(self, model_wrapper: "ModelWrapper", checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose | None" = None, **kwargs) -> None:
+    def process_images(self, model_wrapper: "ModelWrapper", checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose | None" = None, lazy_checkpoint: bool=False, **kwargs) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
         Args:
@@ -44,13 +44,31 @@ class ImageProcessing:
             progress_callback: Hook called as (current, total, desc) after each batch. PhenoMe reports the
                 1-based batch index and the total number of batches, and disables its tqdm bar when set.
                 If None, PhenoMe keeps its default tqdm bar.
+            custom_transformations: The transformations the images are prepared with, or None for
+                PhenoMe's own.
+            lazy_checkpoint: Whether the embeddings are left in the checkpoint and read as they are
+                needed, rather than loaded into memory once the run is done. Only read when
+                checkpoint_path is set.
             **kwargs: Any arguments included in the PhenoMe process_images() method.
         """
         self.pheno.process_images(model_wrapper=model_wrapper,
                                   checkpoint_path=checkpoint_path,
                                   progress_callback=progress_callback,
                                   custom_transformations=custom_transformations,
+                                  lazy_checkpoint=lazy_checkpoint,
                                   **kwargs)
+
+    def save_results(self, checkpoint_path: str) -> None:
+        """ Write everything the pipeline holds - embeddings, properties and processing parameters - to a checkpoint.
+
+        PhenoMe copies the checkpoint it is reading from when one is open, which is what a loaded
+        checkpoint leaves behind, adding the properties computed in memory since. Otherwise it writes
+        the results held in memory, replacing whatever file is already at the path.
+
+        Args:
+            checkpoint_path: Path of the .hdf5 file to write.
+        """
+        self.pheno.save_results(path=str(checkpoint_path))
 
     def load_results(self, checkpoint_path: str) -> None:
         """ Load an existing checkpoint's results into the PhenoMe pipeline.
@@ -81,7 +99,7 @@ class ImageProcessing:
         """
         return self.pheno._build_properties_dataframe()
 
-    def compute_properties(self, property_preset: str, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, **kwargs) -> pd.DataFrame:
+    def compute_properties(self, property_preset: str, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, lazy_checkpoint: bool=False, **kwargs) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Also saves them in-place in the PhenoMe object.
 
         Args:
@@ -90,6 +108,8 @@ class ImageProcessing:
             progress_callback: Hook called as (current, total, desc) after each image. PhenoMe reports the
                 number of images computed and the total number of images to compute, and disables its
                 tqdm bar when set. If None, PhenoMe keeps its default tqdm bar.
+            lazy_checkpoint: Whether the checkpoint is kept open once the step is done, rather than read
+                into memory and closed. Only read when checkpoint_path is set.
             **kwargs: Any arguments included in the PhenoMe compute_properties() method.
         Returns:
             One row per image, holding the image path and the computed properties.
@@ -97,4 +117,5 @@ class ImageProcessing:
         return self.pheno.compute_properties(property_preset=property_preset,
                                              checkpoint_path=checkpoint_path,
                                              progress_callback=progress_callback,
+                                             lazy_checkpoint=lazy_checkpoint,
                                              **kwargs)

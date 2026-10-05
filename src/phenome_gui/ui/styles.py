@@ -19,6 +19,11 @@ STYLESHEETS = {
             border-radius: 4px;
             padding: 2px;
         }}
+        #parentGroup {{
+            border: 2px solid {COLOR_OK};
+            border-radius: 4px;
+            padding: 2px;
+        }}
     """,
 
     "STYLE_WAIT": f"""
@@ -32,6 +37,11 @@ STYLESHEETS = {
             border-radius: 4px;
             padding: 2px;
         }}
+        #parentGroup {{
+            border: 2px solid {COLOR_WAIT};
+            border-radius: 4px;
+            padding: 2px;
+        }}
     """,
 
     "STYLE_ERROR": f"""
@@ -41,6 +51,37 @@ STYLESHEETS = {
             padding: 2px;
         }}
         QPushButton {{
+            border: 2px solid {COLOR_ERROR};
+            border-radius: 4px;
+            padding: 2px;
+        }}
+        #parentGroup {{
+            border: 2px solid {COLOR_ERROR};
+            border-radius: 4px;
+            padding: 2px;
+        }}
+    """,
+}
+
+GROUP_STYLESHEETS = {
+    "STYLE_OK": f"""
+        QGroupBox#parentGroup {{
+            border: 2px solid {COLOR_OK};
+            border-radius: 4px;
+            padding: 2px;
+        }}
+    """,
+
+    "STYLE_WAIT": f"""
+        QGroupBox#parentGroup {{
+            border: 2px solid {COLOR_WAIT};
+            border-radius: 4px;
+            padding: 2px;
+        }}
+    """,
+
+    "STYLE_ERROR": f"""
+        QGroupBox#parentGroup {{
             border: 2px solid {COLOR_ERROR};
             border-radius: 4px;
             padding: 2px;

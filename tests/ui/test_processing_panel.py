@@ -17,6 +17,7 @@ from phenome_gui.ui.processing_panel import (
     NO_CHECKPOINT_TEXT,
     ProcessingPanel,
 )
+from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (
     DATASET_MISMATCH,
     MODEL_MISMATCH,
@@ -102,9 +103,11 @@ class Mismatched:
         self._mismatch = mismatch
         self.accepted = accepted
 
-    def inspect(self) -> object:
+    def inspect(self, *args) -> object:
         """ Stand in for reading the checkpoint, which no test lets reach a real file.
 
+        Args:
+            *args: The checkpoint, the run's parameters and the loaded images, of no interest here.
         Returns:
             Whatever the test asked to be found.
         """
@@ -131,8 +134,9 @@ class Mismatched:
 def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Mismatched:
     """ Decide what reading the checkpoint finds, and how the question about it is answered.
 
-    Reading is stood in for rather than pointed at a written file: the default checkpoint path is a
-    relative one, and a test left to resolve it would read whatever sits in the working directory.
+    Reading is stood in for rather than pointed at a written file. Only the reader is replaced, so
+    the interface still decides whether there is a checkpoint to read at all - none, unless lazy
+    checkpointing is on.
 
     Returns:
         The stand-in, called as mismatched(what_is_found, accepted=...).
@@ -140,39 +144,29 @@ def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Misma
     stand_in = Mismatched()
     stand_in(None)
 
-    monkeypatch.setattr(panel._phenome, 'inspect_checkpoint', stand_in.inspect)
+    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', stand_in.inspect)
     monkeypatch.setattr(QMessageBox, 'warning', stand_in.ask)
     return stand_in
 
 
 # ----------------------------------------------------------------------------
-# The extract embeddings button, which waits on the data, a checkpoint and a model
+# The process button, which waits on the data and a model
 # ----------------------------------------------------------------------------
 
 
-def test_extract_needs_the_data_and_a_checkpoint(panel: ProcessingPanel) -> None:
-    """The model is not among them: the default counts as selected, and the run loads it itself."""
-    assert not panel._process_button.isEnabled()
-    assert panel._process_button.toolTip() == (
-        'Please load data and create or load a checkpoint first.'
-    )
-
-
-def test_extract_still_waits_on_data_after_the_checkpoint(panel: ProcessingPanel, tmp_path: Path) -> None:
-    panel._phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
-    panel.refresh_buttons()
-
+def test_extract_waits_on_the_data(panel: ProcessingPanel) -> None:
+    """The model is not waited on: the default counts as selected, and the run loads it itself."""
     assert not panel._process_button.isEnabled()
     assert panel._process_button.toolTip() == 'Please load data first.'
 
 
-def test_extract_still_waits_on_a_checkpoint(panel: ProcessingPanel, widget) -> None:
-    """The embeddings are written to it, so a run without one would have nowhere to put them."""
+def test_extract_opens_on_the_data_alone(panel: ProcessingPanel, widget) -> None:
+    """No checkpoint is waited on: the run keeps its results in memory until they are saved."""
     widget.loading_panel._on_load_data_csv()
-    panel.refresh_buttons()
 
-    assert not panel._process_button.isEnabled()
-    assert panel._process_button.toolTip() == 'Please create or load a checkpoint first.'
+    assert panel._phenome.params.paths.checkpoint is None
+    assert panel._process_button.isEnabled()
+    assert panel._process_button.toolTip() == ''
 
 
 def test_extract_waits_on_a_model_the_registry_no_longer_offers(ready: ProcessingPanel) -> None:
@@ -190,11 +184,6 @@ def test_extract_opens_without_a_loaded_model(ready: ProcessingPanel) -> None:
     ready.refresh_buttons()
 
     assert ready._process_button.isEnabled()
-
-
-def test_extract_opens_once_all_three_are_there(ready: ProcessingPanel) -> None:
-    assert ready._process_button.isEnabled()
-    assert ready._process_button.toolTip() == ''
 
 
 # ----------------------------------------------------------------------------
@@ -294,16 +283,6 @@ def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
     panel._props_selection_combo.setCurrentText('Complete')
 
     assert panel._phenome.params.properties.preset == 'Complete'
-
-
-def test_the_checkpoint_path_writes_the_parameter(
-    panel: ProcessingPanel, naming, tmp_path: Path
-) -> None:
-    naming(tmp_path / 'run.hdf5')
-
-    panel._on_new_checkpoint_pressed()
-
-    assert panel._phenome.params.paths.checkpoint == tmp_path / 'run.hdf5'
 
 
 # ----------------------------------------------------------------------------
@@ -598,6 +577,11 @@ class Pipeline:
         self.steps: list[str] = []
         self.force_reprocess: list[bool] = []
         self.force_update: list[bool] = []
+
+        # What each extraction and properties step was told to write to, in the order they came
+        self.checkpoints: list = []
+        self.lazy: list[bool] = []
+
         self.on_load = None
         self.on_process = None
         self.on_properties = None
@@ -617,7 +601,13 @@ class Pipeline:
         return object(), None, {}
 
     def process_images(
-        self, model, checkpoint_path, progress_callback=None, force_reprocess: bool = False, **kwargs
+        self,
+        model,
+        checkpoint_path,
+        progress_callback=None,
+        force_reprocess: bool = False,
+        lazy_checkpoint: bool = False,
+        **kwargs,
     ) -> None:
         """ Stand in for the extraction, handing its progress callback to the test.
 
@@ -626,15 +616,23 @@ class Pipeline:
             checkpoint_path: The checkpoint the embeddings would be written to.
             progress_callback: What the extraction reports its batches through.
             force_reprocess: Whether the checkpoint would be deleted and filled again.
+            lazy_checkpoint: Whether the embeddings would be left in the checkpoint.
             **kwargs: The run's other arguments, of no interest here.
         """
         self.steps.append('process')
         self.force_reprocess.append(force_reprocess)
+        self.checkpoints.append(checkpoint_path)
+        self.lazy.append(lazy_checkpoint)
         if self.on_process is not None:
             self.on_process(progress_callback)
 
     def compute_properties(
-        self, property_preset: str, checkpoint_path=None, progress_callback=None, force_update: bool = False
+        self,
+        property_preset: str,
+        checkpoint_path=None,
+        progress_callback=None,
+        force_update: bool = False,
+        lazy_checkpoint: bool = False,
     ) -> pd.DataFrame:
         """ Stand in for the properties step, handing its progress callback to the test.
 
@@ -643,11 +641,14 @@ class Pipeline:
             checkpoint_path: The checkpoint the properties would be written to.
             progress_callback: What the step reports its images through.
             force_update: Whether the properties the checkpoint holds would be computed again.
+            lazy_checkpoint: Whether the checkpoint would be kept open afterwards.
         Returns:
             A frame of properties, one image's worth.
         """
         self.steps.append('properties')
         self.force_update.append(force_update)
+        self.checkpoints.append(checkpoint_path)
+        self.lazy.append(lazy_checkpoint)
         if self.on_properties is not None:
             self.on_properties(progress_callback)
         return pd.DataFrame({'area': [1.0]})
@@ -659,7 +660,8 @@ def pipeline(
 ) -> Pipeline:
     """ Have the Process button run its real worker inline, on a stand-in for PhenoMe.
 
-    The checkpoint reads as matching unless a test says otherwise through `mismatched`.
+    A checkpoint is selected, as `ready` leaves it, but the run writes to it only under `lazy`. When
+    it does, the checkpoint reads as matching unless a test says otherwise through `mismatched`.
 
     Returns:
         The stand-in, recording the steps the run made.
@@ -674,6 +676,12 @@ def pipeline(
         lambda *args: ProcessingPanel._process_images_worker.__wrapped__(ready, *args),
     )
     return stand_in
+
+
+@pytest.fixture
+def lazy(ready: ProcessingPanel) -> None:
+    """ Have the runs write to the selected checkpoint as they go, the option not yet in the GUI. """
+    ready._phenome.params.process.lazy_checkpoint = True
 
 
 def fail(error: Exception):
@@ -792,10 +800,122 @@ def test_what_phenome_reports_reaches_the_bar(ready: ProcessingPanel, pipeline: 
 
 
 # ----------------------------------------------------------------------------
-# The checkpoint, read before the run is let go of
+# Processing again over results already there
 # ----------------------------------------------------------------------------
 
 
+@pytest.fixture
+def clustered(ready: ProcessingPanel) -> ProcessingPanel:
+    """ The panel over a session that has also been clustered, the labels sitting in the metadata. """
+    paths = list(ready._phenome.metadata_df['file_path'])
+    ready._phenome.clustering_df = pd.DataFrame({'image_path': paths, 'cluster': [0, 1] * 3})
+    ready._phenome.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+    return ready
+
+
+def test_a_run_over_existing_embeddings_asks_first(
+    ready: ProcessingPanel, pipeline: Pipeline, confirmation
+) -> None:
+    ready._process_button.click()
+
+    assert confirmation.asked == 1
+    assert pipeline.steps == ['load', 'process', 'properties']
+
+
+def test_a_first_run_asks_nothing(ready: ProcessingPanel, pipeline: Pipeline, confirmation, processed) -> None:
+    """There is nothing yet for it to replace."""
+    processed(ready._phenome, 0)
+    ready.refresh_buttons()
+
+    ready._process_button.click()
+
+    assert confirmation.asked == 0
+    assert pipeline.steps == ['load', 'process', 'properties']
+
+
+def test_refusing_runs_nothing_and_keeps_the_results(
+    clustered: ProcessingPanel, pipeline: Pipeline, confirmation, qtbot
+) -> None:
+    confirmation.accepted = False
+
+    with qtbot.assertNotEmitted(clustered.analysis_cleared):
+        clustered._process_button.click()
+
+    assert pipeline.steps == []
+    assert clustered._phenome.clustering_df is not None
+    assert 'cluster' in clustered._phenome.metadata_df.columns
+    assert clustered._process_button.isEnabled()
+    assert not clustered._stop_button.isEnabled()
+
+
+def test_confirming_drops_the_analysis_before_the_run(clustered: ProcessingPanel, pipeline: Pipeline) -> None:
+    """Computed from the embeddings the run replaces, so they would answer for none it produces."""
+    announced = []
+    clustered.analysis_cleared.connect(lambda: announced.append(list(pipeline.steps)))
+
+    clustered._process_button.click()
+
+    assert announced == [[]]
+    assert clustered._phenome.clustering_df is None
+    assert 'cluster' not in clustered._phenome.metadata_df.columns
+    assert pipeline.steps == ['load', 'process', 'properties']
+
+
+@pytest.mark.usefixtures('lazy')
+def test_refusing_the_checkpoint_overwrite_keeps_the_results_too(
+    clustered: ProcessingPanel, pipeline: Pipeline, mismatched, confirmation
+) -> None:
+    """The results question was answered yes, but the run never started, so nothing it would replace may go."""
+    mismatched(CheckpointMismatch(MODEL_MISMATCH), accepted=False)
+
+    clustered._process_button.click()
+
+    assert confirmation.asked == 1
+    assert mismatched.asked == 1
+    assert pipeline.steps == []
+    assert clustered._phenome.clustering_df is not None
+    assert 'cluster' in clustered._phenome.metadata_df.columns
+
+
+# ----------------------------------------------------------------------------
+# The checkpoint a run writes to: none by default, the selected one when lazy
+# ----------------------------------------------------------------------------
+
+
+def test_a_run_writes_to_no_checkpoint_by_default(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+    """The results stay in memory until saved, even with a checkpoint selected from a save or a load."""
+    assert ready._phenome.params.paths.checkpoint is not None
+
+    ready._process_button.click()
+
+    assert pipeline.checkpoints == [None, None]
+    assert pipeline.lazy == [False, False]
+
+
+def test_a_run_by_default_asks_nothing_of_the_selected_checkpoint(
+    ready: ProcessingPanel, pipeline: Pipeline, mismatched
+) -> None:
+    """It is never written to, so what it holds is no reason to stop the run or delete the file."""
+    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
+
+    ready._process_button.click()
+
+    assert mismatched.asked == 0
+    assert pipeline.steps == ['load', 'process', 'properties']
+
+
+def test_a_lazy_run_writes_to_the_selected_checkpoint(
+    ready: ProcessingPanel, pipeline: Pipeline, lazy
+) -> None:
+    checkpoint = ready._phenome.params.paths.checkpoint
+
+    ready._process_button.click()
+
+    assert pipeline.checkpoints == [checkpoint, checkpoint]
+    assert pipeline.lazy == [True, True]
+
+
+@pytest.mark.usefixtures('lazy')
 def test_a_matching_checkpoint_is_resumed_without_a_question(
     ready: ProcessingPanel, pipeline: Pipeline, mismatched
 ) -> None:
@@ -806,6 +926,7 @@ def test_a_matching_checkpoint_is_resumed_without_a_question(
     assert pipeline.force_reprocess == [False]
 
 
+@pytest.mark.usefixtures('lazy')
 def test_a_confirmed_overwrite_runs_from_scratch(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
     mismatched(CheckpointMismatch(MODEL_MISMATCH), accepted=True)
 
@@ -815,6 +936,7 @@ def test_a_confirmed_overwrite_runs_from_scratch(ready: ProcessingPanel, pipelin
     assert pipeline.force_reprocess == [True]
 
 
+@pytest.mark.usefixtures('lazy')
 def test_a_refused_overwrite_runs_nothing_at_all(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
     """The checkpoint is deleted by the run, so refusing has to stop it before even the model is loaded."""
     mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
@@ -826,6 +948,7 @@ def test_a_refused_overwrite_runs_nothing_at_all(ready: ProcessingPanel, pipelin
     assert not ready._stop_button.isEnabled()
 
 
+@pytest.mark.usefixtures('lazy')
 def test_the_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
     """It is answered by deleting a checkpoint, so it has to say what is wrong with this one."""
     mismatched(CheckpointMismatch(DATASET_MISMATCH, 'It holds 3 image(s), none of them loaded.'))
@@ -835,6 +958,7 @@ def test_the_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipe
     assert 'It holds 3 image(s), none of them loaded.' in mismatched.last
 
 
+@pytest.mark.usefixtures('lazy')
 def test_a_question_with_nothing_to_add_leaves_no_gap(
     ready: ProcessingPanel, pipeline: Pipeline, mismatched
 ) -> None:
@@ -852,12 +976,14 @@ def test_a_question_with_nothing_to_add_leaves_no_gap(
 # ----------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures('lazy')
 def test_an_unchanged_preset_resumes_the_properties(ready: ProcessingPanel, pipeline: Pipeline) -> None:
     ready._process_button.click()
 
     assert pipeline.force_update == [False]
 
 
+@pytest.mark.usefixtures('lazy')
 def test_a_changed_preset_is_computed_again_once(ready: ProcessingPanel, pipeline: Pipeline) -> None:
     """Once computed it answers for what the checkpoint holds, so the run after may resume again."""
     ready._props_selection_combo.setCurrentText('Complete')
@@ -868,6 +994,7 @@ def test_a_changed_preset_is_computed_again_once(ready: ProcessingPanel, pipelin
     assert pipeline.force_update == [True, False]
 
 
+@pytest.mark.usefixtures('lazy')
 def test_turning_the_properties_back_on_computes_them_again(ready: ProcessingPanel, pipeline: Pipeline) -> None:
     ready._props_checkbox.click()
     ready._props_checkbox.click()
@@ -926,6 +1053,7 @@ def test_a_failed_properties_step_is_reported_as_one(
     assert ready._process_button.isEnabled()
 
 
+@pytest.mark.usefixtures('lazy')
 def test_a_failed_properties_step_keeps_the_changed_preset_owed(
     ready: ProcessingPanel, pipeline: Pipeline, reported
 ) -> None:
@@ -1023,6 +1151,7 @@ def test_a_new_run_is_not_stopped_by_the_one_before(
     assert ready._progress_bar.format() == 'Done!'
 
 
+@pytest.mark.usefixtures('lazy')
 def test_stopping_the_properties_lets_the_next_run_resume_them(
     ready: ProcessingPanel, pipeline: Pipeline, reported
 ) -> None:
@@ -1040,7 +1169,7 @@ def test_stopping_the_properties_lets_the_next_run_resume_them(
 
 
 # ----------------------------------------------------------------------------
-# Coming by a checkpoint, which is what everything else waits on
+# Loading a checkpoint, which picks a dataset up where it was left
 # ----------------------------------------------------------------------------
 
 
@@ -1104,77 +1233,6 @@ def reading(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
         return asked
 
     return _stub
-
-
-def test_both_ways_to_a_checkpoint_wait_on_the_data(panel: ProcessingPanel) -> None:
-    """Both read the images currently found, so neither has anything to work against before a load."""
-    for button in (panel._new_checkpoint_button, panel._load_checkpoint_button):
-        assert not button.isEnabled()
-        assert button.toolTip() == 'Please load data first.'
-
-
-def test_loading_data_opens_both_ways_to_a_checkpoint(loaded: ProcessingPanel) -> None:
-    for button in (loaded._new_checkpoint_button, loaded._load_checkpoint_button):
-        assert button.isEnabled()
-        assert button.toolTip() == ''
-
-
-def test_a_free_path_is_taken_up_as_it_stands(
-    loaded: ProcessingPanel, naming, tmp_path: Path
-) -> None:
-    """The ordinary way one is created: PhenoMe writes the file itself when the first run reaches it."""
-    checkpoint = tmp_path / 'new.hdf5'
-    naming(checkpoint)
-
-    loaded._new_checkpoint_button.click()
-
-    assert loaded._phenome.params.paths.checkpoint == checkpoint
-    assert loaded._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='new.hdf5')
-
-
-def test_the_whole_path_is_a_hover_away(
-    loaded: ProcessingPanel, naming, tmp_path: Path
-) -> None:
-    """The label names the file alone, where two runs kept apart by their directory would read alike."""
-    checkpoint = tmp_path / 'new.hdf5'
-    naming(checkpoint)
-
-    loaded._new_checkpoint_button.click()
-
-    assert loaded._current_checkpoint_label.toolTip() == str(checkpoint)
-
-
-def test_a_name_given_without_an_extension_is_spelled_out(
-    loaded: ProcessingPanel, naming, tmp_path: Path
-) -> None:
-    """Not every dialog applies the filter, and PhenoMe refuses to read back a file without one."""
-    naming(tmp_path / 'bare')
-
-    loaded._new_checkpoint_button.click()
-
-    assert loaded._phenome.params.paths.checkpoint == tmp_path / 'bare.hdf5'
-
-
-def test_closing_the_save_dialog_selects_nothing(loaded: ProcessingPanel, naming) -> None:
-    naming('')
-
-    loaded._new_checkpoint_button.click()
-
-    assert loaded._phenome.params.paths.checkpoint is None
-    assert loaded._current_checkpoint_label.text() == NO_CHECKPOINT_TEXT
-
-
-def test_a_created_checkpoint_opens_the_extraction(
-    loaded: ProcessingPanel, naming, tmp_path: Path
-) -> None:
-    loaded._phenome.model = object()
-    loaded.refresh_buttons()
-    assert not loaded._process_button.isEnabled()
-
-    naming(tmp_path / 'new.hdf5')
-    loaded._new_checkpoint_button.click()
-
-    assert loaded._process_button.isEnabled()
 
 
 def test_a_loaded_checkpoint_is_named_on_the_label(
@@ -1254,78 +1312,217 @@ def test_a_checkpoint_that_will_not_open_is_not_announced(
         loaded._load_checkpoint_button.click()
 
 
+def test_loading_a_checkpoint_waits_on_the_data(panel: ProcessingPanel) -> None:
+    """It resolves the paths it stores against the images currently found, so there have to be some."""
+    assert not panel._load_checkpoint_button.isEnabled()
+    assert panel._load_checkpoint_button.toolTip() == 'Please load data first.'
+
+
 # ----------------------------------------------------------------------------
-# Naming a path that already holds a checkpoint
+# What the Save button waits on: something extracted to save, and no task running
 # ----------------------------------------------------------------------------
 
 
-def existing_checkpoint(tmp_path: Path, name: str = 'already.hdf5') -> Path:
-    """ A file standing where a checkpoint would be, which is all the panel reads of it. """
-    path = tmp_path / name
-    path.write_bytes(b'')
-    return path
+def test_loading_data_opens_the_load_but_not_the_save(loaded: ProcessingPanel) -> None:
+    """There is a dataset to resolve a checkpoint against, but nothing extracted yet to save."""
+    assert loaded._load_checkpoint_button.isEnabled()
+    assert not loaded._save_checkpoint_button.isEnabled()
+    assert loaded._save_checkpoint_button.toolTip() == 'Please extract embeddings first.'
 
 
-def test_naming_an_existing_file_replaces_it(
-    loaded: ProcessingPanel, naming, tmp_path: Path
+def test_a_finished_run_opens_the_save(ready: ProcessingPanel, pipeline: Pipeline, processed) -> None:
+    processed(ready._phenome, 0)
+    ready.refresh_buttons()
+    assert not ready._save_checkpoint_button.isEnabled()
+    pipeline.on_process = lambda callback: processed(ready._phenome, 6)
+
+    ready._process_button.click()
+
+    assert ready._save_checkpoint_button.isEnabled()
+    assert ready._save_checkpoint_button.toolTip() == ''
+
+
+def test_a_loaded_checkpoint_opens_the_save(loaded: ProcessingPanel, written_checkpoint) -> None:
+    """Its embeddings are results like any other, and can be saved to another file."""
+    loaded._load_checkpoint(written_checkpoint(loaded._phenome))
+
+    assert loaded._save_checkpoint_button.isEnabled()
+
+
+def test_a_running_task_holds_the_save(ready: ProcessingPanel) -> None:
+    """The run would be replacing the very results being written out."""
+    ready._set_processing_task_running(True)
+
+    assert not ready._save_checkpoint_button.isEnabled()
+    assert ready._save_checkpoint_button.toolTip() == 'Please wait for the running task to finish.'
+
+
+# ----------------------------------------------------------------------------
+# Saving a checkpoint
+# ----------------------------------------------------------------------------
+
+
+class Saved:
+    """ Stands in for PhenoMe writing a checkpoint, recording where it was asked to write.
+
+    Stubbed where the GUI hands over to PhenoMe, so the panel, its worker and the interface run as
+    they do for real. The write itself is covered against real files in the interface tests.
+    """
+
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+        self.on_save = None
+
+    def save_results(self, checkpoint_path: str) -> None:
+        """ Take note of a checkpoint written, doing whatever the test asked meanwhile.
+
+        Args:
+            checkpoint_path: Where the checkpoint would be written.
+        """
+        self.paths.append(Path(checkpoint_path))
+        if self.on_save is not None:
+            self.on_save()
+
+
+@pytest.fixture
+def saving(ready: ProcessingPanel, sync_worker, monkeypatch: pytest.MonkeyPatch) -> Saved:
+    """ Have the Save button run its real worker inline, on a stand-in for PhenoMe's write.
+
+    Returns:
+        The stand-in, recording where each save was written.
+    """
+    stand_in = Saved()
+    monkeypatch.setattr(ready._phenome.image_processing, 'save_results', stand_in.save_results)
+    sync_worker(
+        ready,
+        '_save_checkpoint_worker',
+        lambda path: ProcessingPanel._save_checkpoint_worker.__wrapped__(ready, path),
+    )
+    return stand_in
+
+
+def test_saving_writes_to_the_picked_file(ready: ProcessingPanel, saving: Saved, naming, tmp_path: Path) -> None:
+    naming(tmp_path / 'saved.hdf5')
+
+    ready._save_checkpoint_button.click()
+
+    assert saving.paths == [tmp_path / 'saved.hdf5']
+
+
+def test_the_saved_file_becomes_the_selected_checkpoint(
+    ready: ProcessingPanel, saving: Saved, naming, tmp_path: Path
 ) -> None:
-    """The save dialog asked whether to replace it and was told yes, which is the whole question."""
-    checkpoint = existing_checkpoint(tmp_path)
-    naming(checkpoint)
+    """The label names the file alone, and the whole path is a hover away: runs kept apart by their
+    directory would otherwise read alike."""
+    path = tmp_path / 'saved.hdf5'
+    naming(path)
 
-    loaded._new_checkpoint_button.click()
+    ready._save_checkpoint_button.click()
 
-    assert not checkpoint.exists()
-    assert loaded._phenome.params.paths.checkpoint == checkpoint
+    assert ready._phenome.params.paths.checkpoint == path
+    assert ready._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='saved.hdf5')
+    assert ready._current_checkpoint_label.toolTip() == str(path)
 
 
-def test_naming_a_checkpoint_asks_nothing_of_its_own(
-    loaded: ProcessingPanel, naming, mismatched, tmp_path: Path
+def test_a_name_given_without_an_extension_is_spelled_out(
+    ready: ProcessingPanel, saving: Saved, naming, tmp_path: Path
 ) -> None:
-    """The dialog's own question is the only one: reading an existing one is the Load button's job."""
-    naming(existing_checkpoint(tmp_path))
+    """Not every dialog applies the filter, and PhenoMe refuses to read back a file without one."""
+    naming(tmp_path / 'bare')
 
-    loaded._new_checkpoint_button.click()
+    ready._save_checkpoint_button.click()
 
-    assert mismatched.asked == 0
+    assert saving.paths == [tmp_path / 'bare.hdf5']
 
 
-def test_a_completed_name_leaves_the_file_it_lands_on_alone(
-    loaded: ProcessingPanel, naming, tmp_path: Path
+def test_closing_the_save_dialog_saves_nothing(ready: ProcessingPanel, saving: Saved, naming) -> None:
+    """Reaching for a file and thinking better of it must not cost the checkpoint already selected."""
+    before = ready._phenome.params.paths.checkpoint
+    naming('')
+
+    ready._save_checkpoint_button.click()
+
+    assert saving.paths == []
+    assert ready._phenome.params.paths.checkpoint == before
+
+
+@pytest.mark.parametrize('accepted', [False, True], ids=['refused', 'confirmed'])
+def test_a_completed_name_landing_on_a_file_is_asked_about(
+    ready: ProcessingPanel, saving: Saved, naming, confirmation, tmp_path: Path, accepted: bool
 ) -> None:
-    """The dialog asked about 'already', where the extension put us on 'already.hdf5' - another file."""
-    checkpoint = existing_checkpoint(tmp_path)
+    """The dialog asked about 'already', where the extension put the save on 'already.hdf5' - another file."""
+    existing = tmp_path / 'already.hdf5'
+    existing.write_bytes(b'')
+    confirmation.accepted = accepted
     naming(tmp_path / 'already')
 
-    loaded._new_checkpoint_button.click()
+    ready._save_checkpoint_button.click()
 
-    assert checkpoint.exists()
-    assert loaded._phenome.params.paths.checkpoint == checkpoint
+    assert confirmation.asked == 1
+    assert saving.paths == ([existing] if accepted else [])
 
 
-def test_cancelling_leaves_the_file_and_the_selection_alone(
-    loaded: ProcessingPanel, naming, tmp_path: Path
+def test_a_file_the_dialog_asked_about_is_not_asked_about_again(
+    ready: ProcessingPanel, saving: Saved, naming, confirmation, tmp_path: Path
 ) -> None:
-    """Closing the dialog is refusing the replacement along with everything else."""
-    checkpoint = existing_checkpoint(tmp_path)
-    naming('')
+    """The dialog asked whether to replace it and was told yes, which is the whole question."""
+    existing = tmp_path / 'already.hdf5'
+    existing.write_bytes(b'')
+    naming(existing)
 
-    loaded._new_checkpoint_button.click()
+    ready._save_checkpoint_button.click()
 
-    assert checkpoint.exists()
-    assert loaded._phenome.params.paths.checkpoint is None
+    assert confirmation.asked == 0
+    assert saving.paths == [existing]
 
 
-def test_cancelling_leaves_the_checkpoint_in_hand_selected(
-    loaded: ProcessingPanel, naming, tmp_path: Path
+def test_the_tab_is_held_while_saving(
+    ready: ProcessingPanel, saving: Saved, naming, widget, tmp_path: Path
 ) -> None:
-    """Reaching for another file and thinking better of it must not cost the one being written to."""
-    selected = tmp_path / 'chosen.hdf5'
-    naming(selected)
-    loaded._new_checkpoint_button.click()
+    """A run started meanwhile would replace the results being written, and a save cannot be stopped halfway."""
+    during = {}
+    saving.on_save = lambda: during.update(
+        process=ready._process_button.isEnabled(),
+        save=ready._save_checkpoint_button.isEnabled(),
+        model=ready._select_model_button.isEnabled(),
+        stop=ready._stop_button.isEnabled(),
+        analysis=widget.analysis_panel._run_clustering_button.isEnabled(),
+    )
+    naming(tmp_path / 'saved.hdf5')
 
-    naming('')
-    loaded._new_checkpoint_button.click()
+    ready._save_checkpoint_button.click()
 
-    assert loaded._phenome.params.paths.checkpoint == selected
-    assert loaded._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='chosen.hdf5')
+    assert during == {'process': False, 'save': False, 'model': False, 'stop': False, 'analysis': False}
+    assert ready._process_button.isEnabled()
+    assert ready._save_checkpoint_button.isEnabled()
+    assert widget.analysis_panel._run_clustering_button.isEnabled()
+
+
+def test_a_failed_save_is_reported_and_keeps_the_previous_checkpoint(
+    ready: ProcessingPanel, saving: Saved, naming, reported, tmp_path: Path
+) -> None:
+    previous = ready._phenome.params.paths.checkpoint
+    saving.on_save = fail(OSError('disk full'))
+    naming(tmp_path / 'saved.hdf5')
+
+    ready._save_checkpoint_button.click()
+
+    assert reported.shown == 1
+    assert 'disk full' in reported.last
+    assert ready._phenome.params.paths.checkpoint == previous
+    assert ready._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name=previous.name)
+    assert ready._progress_bar.format() == 'Failed'
+    assert ready._process_button.isEnabled()
+    assert ready._save_checkpoint_button.isEnabled()
+
+
+def test_a_save_leaves_the_next_run_writing_nowhere(
+    ready: ProcessingPanel, saving: Saved, naming, pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """Saving is a step of its own: the runs after it still keep their results in memory."""
+    naming(tmp_path / 'saved.hdf5')
+    ready._save_checkpoint_button.click()
+
+    ready._process_button.click()
+
+    assert pipeline.checkpoints == [None, None]

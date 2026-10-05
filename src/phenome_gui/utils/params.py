@@ -56,10 +56,10 @@ class PathParams(ParamsBase):
     `template` is a filename pattern rather than a path, and is typed as such so it is never coerced
     into a Path. Empty means no metadata, the same as an empty metadata file.
 
-    `checkpoint` is None until one has been created or loaded, and goes back to None whenever another
+    `checkpoint` is None until one has been saved or loaded, and goes back to None whenever another
     dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
-    no others. Nothing is processed while it is None, which is the whole of the gate - the embeddings
-    and the properties are written to it, so a run without one would have nowhere to put them.
+    no others. A run only writes to it while it goes when `ProcessParams.lazy_checkpoint` is on;
+    otherwise it names the file last saved or loaded, and nothing waits on it.
     """
 
     images: Path | None = None
@@ -87,6 +87,11 @@ class ProcessParams(ParamsBase):
     run waits on all of them before its first batch, which is most of the wait before a run appears to
     start. Worth raising where starting a process is cheap and the images are slow to read, which is
     why the choice is offered rather than settled here.
+
+    `lazy_checkpoint` says whether a run writes its embeddings and properties into the selected
+    checkpoint as it goes, resuming from what the file already holds and leaving the embeddings on
+    disk. Off by default, the results staying in memory until they are saved; not yet offered in the
+    GUI.
     """
 
     model: str = 'DINOv2 - Small'
@@ -94,6 +99,7 @@ class ProcessParams(ParamsBase):
     channel_mode: ChannelMode = 'split'
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
+    lazy_checkpoint: bool = False
 
 
 class PropertiesParams(ParamsBase):

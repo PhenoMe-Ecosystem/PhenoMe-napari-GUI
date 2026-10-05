@@ -137,6 +137,32 @@ def confirmation(monkeypatch: pytest.MonkeyPatch) -> Confirmation:
     return stand_in
 
 
+def _unexpected_message_box(parent, title, text, *args, **kwargs) -> None:
+    """ Fail on a message box no test asked for, rather than wait on it.
+
+    Args:
+        parent: The widget the message would be shown over.
+        title: Its title bar.
+        text: What it says, which is what the failure reports.
+        *args: The buttons offered, of no interest here.
+        **kwargs: As above.
+    Raises:
+        AssertionError: Always, naming the message that would have been shown.
+    """
+    raise AssertionError(f'Unexpected message box {title!r}: {text}')
+
+
+@pytest.fixture(autouse=True)
+def no_unexpected_message_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ Turn an error or warning box no test was waiting for into a failure.
+
+    A real one is modal, so a test reaching one by mistake would hang the whole suite instead of
+    failing. A test expecting one replaces it with a stand-in of its own, which takes precedence.
+    """
+    monkeypatch.setattr(QMessageBox, 'critical', _unexpected_message_box)
+    monkeypatch.setattr(QMessageBox, 'warning', _unexpected_message_box)
+
+
 class StubResults:
     """ Stands in for the PhenoMe results, so a pipeline can look processed without running a model. """
 
@@ -180,45 +206,68 @@ CHECKPOINT_PROPERTIES = ('area', 'intensity_mean')
 EMBEDDING_DIM = 8
 
 
+def results_for(interface: PhenoMeInterface, properties: bool = True) -> PhenoMeResults:
+    """ Real PhenoMe results for the dataset an interface currently holds, as an extraction leaves them.
+
+    No model is needed: embeddings are an array like any other. The dataset has to have been loaded
+    first, the paths and the metadata being read off it.
+
+    Args:
+        interface: The interface whose loaded dataset the results answer for.
+        properties: Whether the results carry properties, as a run computing them leaves them.
+    Returns:
+        One row per loaded image, with embeddings and, if asked for, properties.
+    """
+    metadata_df = interface.metadata_df
+    paths = list(metadata_df['file_path'])
+
+    # The metadata as PhenoMe holds it, which is what a load matches its own files against: a
+    # checkpoint whose keys do not answer for them is read as holding none of them.
+    keys = [column for column in metadata_df.columns if column not in ('file_path', 'mask_path')]
+    metadata = [{key: row[key] for key in keys} for _, row in metadata_df.iterrows()]
+
+    return PhenoMeResults(
+        img_path=paths,
+        metadata=metadata,
+        properties=[
+            {name: float(row) for name in CHECKPOINT_PROPERTIES} for row in range(len(paths))
+        ] if properties else [],
+        embeddings=np.random.default_rng(0).random((len(paths), EMBEDDING_DIM)).astype('float32'),
+    )
+
+
+@pytest.fixture
+def extracted():
+    """ Return a hook leaving real results in an interface's pipeline, as a run without a checkpoint does.
+
+    Returns:
+        Called as extracted(interface, properties=False).
+    """
+    def _apply(interface: PhenoMeInterface, properties: bool = True) -> None:
+        interface.pheno.results = results_for(interface, properties)
+
+    return _apply
+
+
 @pytest.fixture
 def written_checkpoint(tmp_path: Path):
     """ Return a hook writing a real checkpoint for the dataset an interface currently holds.
 
-    Writing one takes no model: CheckpointManager.write_results_to_hdf5 takes a results object, and
-    embeddings are an array like any other. Written rather than stubbed wherever what is being
-    checked is the reading itself - PhenoMe resolves the paths a checkpoint stores against the files
-    currently found, which no stand-in can answer for.
-
-    The dataset has to have been loaded first, the paths and the metadata being read off it.
+    Written rather than stubbed wherever what is being checked is the reading itself - PhenoMe
+    resolves the paths a checkpoint stores against the files currently found, which no stand-in can
+    answer for.
 
     Returns:
         Called as written_checkpoint(interface, properties=False), returning
         the path it was written to.
     """
     def _write(interface: PhenoMeInterface, properties: bool = True, name: str = 'previous.hdf5') -> Path:
-        metadata_df = interface.metadata_df
-        paths = list(metadata_df['file_path'])
-
-        # The metadata as PhenoMe holds it, which is what the load matches its own files against: a
-        # checkpoint whose keys do not answer for them is read as holding none of them.
-        keys = [column for column in metadata_df.columns if column not in ('file_path', 'mask_path')]
-        metadata = [{key: row[key] for key in keys} for _, row in metadata_df.iterrows()]
-
-        results = PhenoMeResults(
-            img_path=paths,
-            metadata=metadata,
-            properties=[
-                {name: float(row) for name in CHECKPOINT_PROPERTIES} for row in range(len(paths))
-            ] if properties else [],
-            embeddings=np.random.default_rng(0).random((len(paths), EMBEDDING_DIM)).astype('float32'),
-        )
-
         path = tmp_path / name
 
         # The arguments the checkpoint is written under are the ones the interface would run with, so
         # it agrees with the run and the extraction has nothing to ask about
         CheckpointManager.write_results_to_hdf5(
-            results, str(path), processing_params=interface.processing_params()
+            results_for(interface, properties), str(path), processing_params=interface.processing_params()
         )
         return path
 

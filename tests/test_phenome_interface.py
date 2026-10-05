@@ -118,7 +118,7 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
     passed = {}
 
     def _capture(model, checkpoint_path, **kwargs) -> None:
-        passed.update(kwargs)
+        passed.update(kwargs, checkpoint_path=checkpoint_path)
 
     monkeypatch.setattr(phenome.image_processing, 'process_images', _capture)
     return passed
@@ -452,11 +452,188 @@ def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
         read_with.update(processing_params)
 
     monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', _capture)
+    phenome.params.process.lazy_checkpoint = True
+    phenome.params.paths.checkpoint = Path('run.hdf5')
     phenome.params.process.channel_mode = 'combined'
 
     phenome.inspect_checkpoint()
 
     assert read_with['channel_mode'] == 'combined'
+
+
+# ----------------------------------------------------------------------------
+# Where a run writes: nowhere by default, the selected checkpoint when lazy
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def properties_step(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """ Catch the arguments the properties step would be run under, rather than running it.
+
+    Returns:
+        Filled with the checkpoint and the keyword arguments handed down, once the step has been asked for.
+    """
+    passed = {}
+
+    def _capture(preset, checkpoint_path, **kwargs) -> pd.DataFrame:
+        passed.update(kwargs, checkpoint_path=checkpoint_path)
+        return pd.DataFrame({'area': [1.0]})
+
+    monkeypatch.setattr(phenome.image_processing, 'compute_properties', _capture)
+    return passed
+
+
+def test_a_run_writes_to_no_checkpoint_by_default(
+    phenome: PhenoMeInterface, extraction: dict, properties_step: dict, tmp_path: Path
+) -> None:
+    """The results stay in memory until saved, even with a checkpoint selected from a save or a load."""
+    phenome.params.paths.checkpoint = tmp_path / 'previous.hdf5'
+
+    phenome.process_images()
+    phenome.compute_properties()
+
+    for passed in (extraction, properties_step):
+        assert passed['checkpoint_path'] is None
+        assert passed['lazy_checkpoint'] is False
+
+
+def test_a_lazy_run_writes_to_the_selected_checkpoint(
+    phenome: PhenoMeInterface, extraction: dict, properties_step: dict, tmp_path: Path
+) -> None:
+    phenome.params.process.lazy_checkpoint = True
+    phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
+
+    phenome.process_images()
+    phenome.compute_properties()
+
+    for passed in (extraction, properties_step):
+        assert passed['checkpoint_path'] == tmp_path / 'run.hdf5'
+        assert passed['lazy_checkpoint'] is True
+
+
+def test_a_run_writing_nowhere_has_no_checkpoint_to_disagree_with(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is read either: a file the run never touches has nothing to say about it."""
+    read = []
+    monkeypatch.setattr(
+        phenome_interface, 'inspect_checkpoint',
+        lambda *args: read.append(args) or CheckpointMismatch(MODEL_MISMATCH),
+    )
+    phenome.params.paths.checkpoint = tmp_path / 'other.hdf5'
+
+    assert phenome.inspect_checkpoint() is None
+    assert read == []
+
+
+def test_a_lazy_run_reads_the_checkpoint_it_writes_to(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    read = []
+    monkeypatch.setattr(
+        phenome_interface, 'inspect_checkpoint',
+        lambda path, *args: read.append(path) or CheckpointMismatch(MODEL_MISMATCH),
+    )
+    phenome.params.process.lazy_checkpoint = True
+    phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
+
+    assert phenome.inspect_checkpoint().reason == MODEL_MISMATCH
+    assert read == [tmp_path / 'run.hdf5']
+
+
+# ----------------------------------------------------------------------------
+# Saving a checkpoint, real files throughout
+# ----------------------------------------------------------------------------
+
+
+def test_saved_results_are_read_back_whole(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    """The point of a checkpoint: the embeddings and properties of a run come back in a later session."""
+    extracted(loaded, properties=True)
+    path = tmp_path / 'saved.hdf5'
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_a_save_becomes_the_selected_checkpoint(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    extracted(loaded)
+
+    loaded.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert loaded.params.paths.checkpoint == tmp_path / 'saved.hdf5'
+
+
+def test_saving_without_properties_reads_back_without_them(
+    loaded: PhenoMeInterface, extracted, tmp_path: Path
+) -> None:
+    """A run with the properties left out saves as the half-done run it is."""
+    extracted(loaded, properties=False)
+    path = tmp_path / 'saved.hdf5'
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+    assert loaded.properties_df is None
+
+
+def test_a_loaded_checkpoint_saves_to_a_copy_that_reads_back_whole(
+    loaded: PhenoMeInterface, written_checkpoint, tmp_path: Path
+) -> None:
+    """Its embeddings are still in the file it came from, which PhenoMe copies rather than writes out."""
+    original = written_checkpoint(loaded, properties=True)
+    loaded.load_checkpoint(original)
+    copy = tmp_path / 'copy.hdf5'
+
+    loaded.save_checkpoint(copy)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(copy)
+
+    assert original.is_file()
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_saving_over_a_file_replaces_it(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    path = tmp_path / 'saved.hdf5'
+    path.write_bytes(b'not a checkpoint')
+    extracted(loaded)
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+
+
+def test_there_is_nothing_to_save_before_a_run(phenome: PhenoMeInterface, tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        phenome.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert not (tmp_path / 'saved.hdf5').exists()
+    assert phenome.params.paths.checkpoint is None
+
+
+def test_a_failed_save_keeps_the_checkpoint_selected_before(
+    loaded: PhenoMeInterface, extracted, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    extracted(loaded)
+    loaded.params.paths.checkpoint = tmp_path / 'previous.hdf5'
+
+    def _refuse(path) -> None:
+        raise OSError('disk full')
+
+    monkeypatch.setattr(loaded.image_processing, 'save_results', _refuse)
+
+    with pytest.raises(OSError):
+        loaded.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert loaded.params.paths.checkpoint == tmp_path / 'previous.hdf5'
 
 
 # ----------------------------------------------------------------------------
@@ -749,6 +926,90 @@ def test_clearing_a_fresh_interface_changes_nothing(phenome: PhenoMeInterface) -
 
     assert phenome.has_results is False
     assert phenome.metadata_df is None
+
+
+# ----------------------------------------------------------------------------
+# Letting go of the analysis when the images are processed again
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_clearing_the_analysis_drops_every_computed_frame(
+    loaded: PhenoMeInterface, processed, attribute: str
+) -> None:
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert getattr(loaded, attribute) is None
+
+
+def test_clearing_the_analysis_takes_the_cluster_labels_out_of_the_metadata(loaded: PhenoMeInterface) -> None:
+    """The labels answer for the embeddings being replaced, where the rest of the metadata answers for the files."""
+    kept = list(loaded.metadata_df.columns)
+    loaded.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+
+    loaded.clear_analysis()
+
+    assert list(loaded.metadata_df.columns) == kept
+    assert len(loaded.metadata_df) == 6
+
+
+def test_clearing_the_analysis_keeps_the_dataset_the_checkpoint_and_the_embeddings(
+    loaded: PhenoMeInterface, processed
+) -> None:
+    """The run about to start replaces the embeddings itself, and reads the dataset and the checkpoint."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert len(loaded.metadata_df) == 6
+    assert loaded.params.paths.checkpoint == Path('previous.hdf5')
+    assert loaded.has_processed_images
+
+
+def test_clearing_the_analysis_forgets_the_parameters_naming_the_clusters(loaded: PhenoMeInterface) -> None:
+    loaded.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+    loaded.params.explorer.color_by = 'cluster'
+    loaded.params.explorer.filter = {'cluster': [0], 'drug_name': ['ctrl']}
+    loaded.params.explorer.exclude = {'cluster': [1]}
+    loaded.params.prototypes.group_by = 'cluster'
+    loaded.params.outliers.group_by = 'cluster'
+
+    loaded.clear_analysis()
+
+    assert loaded.params.explorer.color_by is None
+    assert loaded.params.explorer.filter == {'drug_name': ['ctrl']}
+    assert loaded.params.explorer.exclude is None
+    assert loaded.params.prototypes.group_by is None
+    assert loaded.params.outliers.group_by is None
+
+
+def test_clearing_the_analysis_keeps_the_parameters_naming_the_metadata(
+    loaded: PhenoMeInterface, processed
+) -> None:
+    """The columns the files came with are still there, so a choice made on them still stands."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert loaded.params.explorer.color_by == 'drug_name'
+    assert loaded.params.explorer.filter == {'drug_name': ['ctrl']}
+    assert loaded.params.explorer.exclude == {'time': [24]}
+    assert loaded.params.prototypes.group_by == 'drug_name'
+    assert loaded.params.outliers.group_by == 'time'
+
+
+@pytest.mark.parametrize('section', SOURCE_SECTIONS)
+def test_clearing_the_analysis_puts_every_feature_space_back(
+    loaded: PhenoMeInterface, processed, section: str
+) -> None:
+    """The properties went with the results, and a step left on them would raise."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert getattr(loaded.params, section).source == 'embeddings'
 
 
 # ----------------------------------------------------------------------------

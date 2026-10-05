@@ -47,6 +47,24 @@ IDENTIFIER_MIN_ROWS = 10
 # the image but not its path.
 PROJECTION_INDEX_COLUMN = 'Index'
 
+# Metadata column the clustering writes its labels into, which puts them wherever the metadata goes
+CLUSTER_COLUMN = 'cluster'
+
+
+def _without_cluster(criteria: dict[str, list] | None) -> dict[str, list] | None:
+    """ A projection criterion with the cluster labels taken out of it.
+
+    Args:
+        criteria: Values picked per metadata column, or None for no criterion.
+    Returns:
+        The same criterion without the cluster labels, or None when nothing else is left of it.
+    """
+    if not criteria:
+        return None
+
+    kept = {column: values for column, values in criteria.items() if column != CLUSTER_COLUMN}
+    return kept or None
+
 
 def _as_phenome_path(path: Path | None) -> str | None:
     """ A directory as PhenoMe takes it, or None when none was named.
@@ -156,15 +174,53 @@ class PhenoMeInterface:
         self.params.prototypes.group_by = None
         self.params.outliers.group_by = None
 
-        # Each step's feature space, put back to the one needing no properties: the parameter forms
-        # close the choice when there are none, but leave whatever was picked before standing, and
-        # the step would then be run against properties that are no longer there.
+        self._reset_sources()
+
+        logger.info('Cleared the results of the previously loaded dataset.')
+
+    def clear_analysis(self) -> None:
+        """ Drop everything computed from the embeddings, which a new run is about to replace.
+
+        The dataset and the selected checkpoint stay, as does what the pipeline holds: the run replaces
+        the embeddings and the properties itself, PhenoMe emptying them as it starts. What goes is the
+        properties frame and the analysis results read off the embeddings - the cluster labels, which
+        also leave the metadata, the retrieved prototypes and outliers, and the projection - along with
+        the parameters naming them.
+        """
+        self.properties_df = None
+        self.clustering_df = None
+        self.prototypes_df = None
+        self.outliers_df = None
+        self.projection_df = None
+
+        if self.metadata_df is not None and CLUSTER_COLUMN in self.metadata_df.columns:
+            self.metadata_df = self.metadata_df.drop(columns=CLUSTER_COLUMN)
+
+        # The cluster labels were a metadata column like any other, so the parameters may name them
+        explorer = self.params.explorer
+        if explorer.color_by == CLUSTER_COLUMN:
+            explorer.color_by = None
+        explorer.filter = _without_cluster(explorer.filter)
+        explorer.exclude = _without_cluster(explorer.exclude)
+        for section in (self.params.prototypes, self.params.outliers):
+            if section.group_by == CLUSTER_COLUMN:
+                section.group_by = None
+
+        self._reset_sources()
+
+        logger.info('Cleared the analysis results computed from the previous embeddings.')
+
+    def _reset_sources(self) -> None:
+        """ Put each step's feature space back to the one needing no properties.
+
+        The parameter forms close the choice when there are no properties, but leave whatever was
+        picked before standing, and the step would then be run against properties that are no longer
+        there.
+        """
         for section in (
             self.params.clustering, self.params.prototypes, self.params.outliers, self.params.explorer
         ):
             section.source = type(section).model_fields['source'].default
-
-        logger.info('Cleared the results of the previously loaded dataset.')
 
     # ------------------------------------------------------------------
     # Data loading
@@ -309,6 +365,17 @@ class PhenoMeInterface:
         """
         return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
+    def run_checkpoint(self) -> Path | None:
+        """ The checkpoint a run writes to as it goes, if any.
+
+        Only with lazy checkpointing on: by default a run keeps its results in memory, and the
+        selected checkpoint merely names the file last saved or loaded, which the run never touches.
+
+        Returns:
+            The selected checkpoint when lazy checkpointing is on, None otherwise.
+        """
+        return self.params.paths.checkpoint if self.params.process.lazy_checkpoint else None
+
     def inspect_checkpoint(self) -> CheckpointMismatch | None:
         """ Read the checkpoint an embedding run would be written to, before the run is started.
 
@@ -321,12 +388,38 @@ class PhenoMeInterface:
         picked again between choosing a checkpoint and running against it.
 
         Returns:
-            What the checkpoint holds that this run would not put there, or
-            None when it agrees, is empty, does not exist, or could not be read.
+            What the checkpoint holds that this run would not put there, or None when it agrees, is
+            empty, does not exist, could not be read, or is not one the run writes to at all.
         """
+        checkpoint = self.run_checkpoint()
+        if checkpoint is None:
+            return None
+
         image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
-        return inspect_checkpoint(self.params.paths.checkpoint, self.processing_params(), image_paths)
+        return inspect_checkpoint(checkpoint, self.processing_params(), image_paths)
+
+    def save_checkpoint(self, path: Path | str) -> None:
+        """ Write every result the pipeline holds - embeddings and properties - to a checkpoint.
+
+        The file can be loaded back later to pick the dataset up where it was left. It becomes the
+        selected checkpoint once written, the one the panel names.
+
+        Args:
+            path: The checkpoint file to write, replaced if it already exists.
+        Raises:
+            ValueError: There are no results to save.
+            OSError: The file could not be written.
+        """
+        self.image_processing.save_results(str(path))
+
+        # Adopted last, so a save that raised leaves the previous checkpoint selected
+        self.params.paths.checkpoint = Path(path)
+
+        logger.info(
+            "Saved the checkpoint at '%s': %d image(s), properties %s.",
+            path, self.pheno.results.n_images, 'included' if self.has_stored_properties else 'not computed'
+        )
 
     def load_checkpoint(self, path: Path | str) -> None:
         """ Read an existing checkpoint into the pipeline.
@@ -382,9 +475,10 @@ class PhenoMeInterface:
             calling thread, so a caller running this in a worker thread must not touch widgets in it.
             force_reprocess: Whether to delete the checkpoint and process every image again. PhenoMe
                 removes the file rather than writing over it, so everything it held is lost: only ever
-                passed for a checkpoint the user has been asked about.
+                passed for a checkpoint the user has been asked about. Without lazy checkpointing
+                there is no checkpoint to delete, and PhenoMe ignores it.
         """
-        checkpoint_path = self.params.paths.checkpoint
+        checkpoint_path = self.run_checkpoint()
 
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
         # under are what its embeddings can be read against, and they are the registry's and the
@@ -407,6 +501,7 @@ class PhenoMeInterface:
             num_workers=num_workers,
             custom_transformations=self.transforms,
             force_reprocess=force_reprocess,
+            lazy_checkpoint=self.params.process.lazy_checkpoint,
             **arguments
         )
 
@@ -434,16 +529,21 @@ class PhenoMeInterface:
                 again, which a preset computed over a checkpoint filled under another one needs:
                 PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
                 properties are cleared, the embeddings in the same file being left where they are.
+                Without lazy checkpointing there is no checkpoint to clear, and PhenoMe ignores it.
         Returns:
             One row per image, holding the image path and the computed properties.
         """
-        checkpoint_path = self.params.paths.checkpoint
+        checkpoint_path = self.run_checkpoint()
 
         # PhenoMe only knows its presets by their lower case name, while the GUI displays them capitalized
         preset = self.params.properties.preset.lower()
 
         self.properties_df = self.image_processing.compute_properties(
-            preset, checkpoint_path, progress_callback=progress_callback, force_update=force_update
+            preset,
+            checkpoint_path,
+            progress_callback=progress_callback,
+            force_update=force_update,
+            lazy_checkpoint=self.params.process.lazy_checkpoint,
         )
         return self.properties_df
 
@@ -493,7 +593,7 @@ class PhenoMeInterface:
 
         # PhenoMe leaves the label empty for the DBSCAN noise points, which would turn the whole column
         # to floats and show the labels as '0.0'. The nullable integer type keeps them whole.
-        self.metadata_df['cluster'] = self.metadata_df['file_path'].map(labels).astype('Int64')
+        self.metadata_df[CLUSTER_COLUMN] = self.metadata_df['file_path'].map(labels).astype('Int64')
 
     def get_prototype_images(self) -> pd.DataFrame:
         """ Find the prototype images of each group using PhenoMe.find_prototypes(). Stores them in self.prototypes_df.
