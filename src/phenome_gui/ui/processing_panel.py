@@ -45,7 +45,9 @@ class ProcessingPanel(QWidget):
     """ The image processing tab of the PhenoMe widget.
 
     Holds the checkpoint the results are saved to or loaded from, the model selection, the embedding
-    extraction and the properties calculation, along with the progress bar the tasks report into.
+    extraction and the properties calculation, along with the progress bar the tasks report into. The
+    properties are computed after the embeddings when asked for, or on their own over the embeddings
+    already there.
 
     A run keeps its results in memory unless lazy checkpointing is on, in which case it writes them to
     the selected checkpoint as it goes; saving them is otherwise a step of its own.
@@ -91,8 +93,8 @@ class ProcessingPanel(QWidget):
         super().__init__(parent)
         self._phenome = phenome
 
-        # Whether the processing task is running: the extraction, and the properties after it. Read by
-        # the refresh methods to lock the controls a run reads from.
+        # Whether a processing task is running: the extraction and the properties after it, or the
+        # properties alone. Read by the refresh methods to lock the controls a run reads from.
         self._processing_task_running = False
 
         # Whether the running task has moved on from the embeddings to the properties, set from the
@@ -201,13 +203,20 @@ class ProcessingPanel(QWidget):
         self._props_selection_combo.currentTextChanged.connect(self._on_properties_changed)
 
         # Checkbox for properties calculation, computed after the embeddings when Process Images runs
-        self._props_checkbox = QCheckBox("Compute properties")
+        self._props_checkbox = QCheckBox("Compute properties after embeddings")
         self._props_checkbox.setChecked(self._phenome.params.properties.compute)
         self._props_checkbox.clicked.connect(self._on_properties_checkbox_changed)
 
         props_row.addWidget(self._props_selection_combo)
         properties_layout.addLayout(props_row)
         properties_layout.addWidget(self._props_checkbox)
+
+        # Computes the properties alone, over the embeddings already there, extracted here or read
+        # from a checkpoint. Always computed anew, so a preset picked since is never resumed past.
+        self._compute_properties_button = QPushButton("Compute Properties")
+        self._compute_properties_button.clicked.connect(self._on_compute_properties_clicked)
+        properties_layout.addWidget(self._compute_properties_button)
+        self._refresh_compute_properties_button()
 
 
         # Processing group
@@ -284,8 +293,8 @@ class ProcessingPanel(QWidget):
     def _set_processing_task_running(self, running: bool) -> None:
         """ Mark a processing task as running or finished, and lock the buttons accordingly.
 
-        Both processing buttons go through here, so starting either one disables the other until it is
-        done. The change is announced, as the analysis steps run on the embeddings the tasks produce and
+        Every task goes through here - a run, the properties alone, a checkpoint being saved - so
+        starting any one disables the others until it is done. The change is announced, as the analysis steps run on the embeddings the tasks produce and
         have to lock themselves for the duration too.
 
         Args:
@@ -323,6 +332,7 @@ class ProcessingPanel(QWidget):
         self._refresh_checkpoint()
         self._refresh_settings_controls()
         self._refresh_process_button()
+        self._refresh_compute_properties_button()
         self._refresh_stop_button()
 
     def _refresh_settings_controls(self) -> None:
@@ -408,6 +418,60 @@ class ProcessingPanel(QWidget):
         if not has_model:
             missing.append('select a model')
         self._process_button.setToolTip(f"Please {' and '.join(missing)} first." if missing else '')
+
+    def _refresh_compute_properties_button(self) -> None:
+        """ Enable the properties button only once there are embeddings to compute them over, and no task is running.
+
+        The embeddings are read from the interface, so a run made here and a checkpoint loaded with
+        them open it alike.
+        """
+        has_embeddings = self._phenome.has_processed_images
+
+        self._compute_properties_button.setEnabled(has_embeddings and not self._processing_task_running)
+
+        if self._processing_task_running:
+            self._compute_properties_button.setToolTip('Please wait for the running task to finish.')
+        else:
+            self._compute_properties_button.setToolTip(
+                '' if has_embeddings else 'Please extract embeddings or load a checkpoint first.'
+            )
+
+    def _on_compute_properties_clicked(self) -> None:
+        """ Begin the properties calculation alone, over the embeddings already there.
+
+        Nothing is asked: the embeddings stay, and so do the analysis results computed from them. The
+        properties are always computed anew rather than resumed from a checkpoint, which is what the
+        button is for when a preset has been picked since they were last computed.
+
+        The step is entered here rather than announced from the worker, so the Process button, which
+        the full run names its steps on, is left as it is.
+        """
+        self._stop_event = threading.Event()
+
+        worker = self._compute_properties_worker()
+        worker.returned.connect(self._on_finish_process)
+        worker.errored.connect(self._on_process_failed)
+
+        # The step is entered after the lock, which outlines the groups from what the pipeline holds
+        self._compute_properties_button.setText('Calculating properties...')
+        self._set_processing_task_running(True)
+        self._enter_properties_step()
+
+        worker.start()
+
+    @thread_worker
+    def _compute_properties_worker(self) -> None:
+        """ Create worker to compute the properties alone on a parallel thread.
+
+        The properties the checkpoint holds, if any, are dropped and computed again. The stop is read
+        from the progress callback, as it is for a full run.
+        """
+        self._phenome.compute_properties(
+            progress_callback=StoppableProgress(
+                ThrottledProgress(self.progress_updated.emit), self._stop_event
+            ),
+            force_update=True
+        )
 
     def _on_save_checkpoint_pressed(self) -> None:
         """ Write the embeddings and the properties extracted so far to a checkpoint, named from a dialog.
@@ -666,13 +730,19 @@ class ProcessingPanel(QWidget):
 
         Runs on the main thread via the properties_started signal, which lands before the first
         property report and before any failure of the step, so the end of the task is read against it.
+        """
+        self._process_button.setText('Calculating properties...')
+        self._enter_properties_step()
+
+    def _enter_properties_step(self) -> None:
+        """ Mark the running task as having reached the properties, whichever button started it.
+
         The embeddings are done by then, and their group is outlined as such; the properties group is
         outlined as waiting until they are computed.
         """
         self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
         self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self._computing_properties = True
-        self._process_button.setText('Calculating properties...')
 
         # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a
         # busy indicator until the first image is reported.
@@ -758,8 +828,9 @@ class ProcessingPanel(QWidget):
             self._progress_bar.setFormat(desc)
 
     def _on_finish_process(self) -> None:
-        """ Called when processing is done. Re-enables the button and changes text. """
+        """ Called when processing is done. Re-enables the buttons and changes text. """
         self._process_button.setText('Process Images')
+        self._compute_properties_button.setText('Compute Properties')
         self._set_processing_task_running(False)
 
         # The preset now answers for what the checkpoint holds, this run having just computed it
@@ -795,6 +866,7 @@ class ProcessingPanel(QWidget):
             error: The exception the task raised, as the worker caught it.
         """
         self._process_button.setText('Process Images')
+        self._compute_properties_button.setText('Compute Properties')
         self._set_processing_task_running(False)
 
         # The step the run was on did not finish, whether it was stopped or failed. Outlined after the

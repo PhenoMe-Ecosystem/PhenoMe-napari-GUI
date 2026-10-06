@@ -1267,6 +1267,175 @@ def test_stopping_the_properties_lets_the_next_run_resume_them(
 
 
 # ----------------------------------------------------------------------------
+# The Compute Properties button, running the properties alone over the embeddings there
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def computing(ready: ProcessingPanel, pipeline: Pipeline, sync_worker) -> Pipeline:
+    """ Have the Compute Properties button run its real worker inline, on a stand-in for PhenoMe.
+
+    The Process button's worker is inlined too, through `pipeline`, so a test can use both.
+
+    Returns:
+        The stand-in, recording the steps the runs made.
+    """
+    sync_worker(
+        ready,
+        '_compute_properties_worker',
+        lambda *args: ProcessingPanel._compute_properties_worker.__wrapped__(ready, *args),
+    )
+    return pipeline
+
+
+def test_computing_properties_waits_on_the_embeddings(panel: ProcessingPanel, widget) -> None:
+    """Data alone is not enough: the properties are computed over images already processed."""
+    widget.loading_panel._on_load_data_csv()
+    panel.refresh_buttons()
+
+    assert not panel._compute_properties_button.isEnabled()
+
+
+def test_computing_properties_opens_once_there_are_embeddings(ready: ProcessingPanel) -> None:
+    assert ready._compute_properties_button.isEnabled()
+
+
+def test_a_checkpoint_bringing_embeddings_opens_the_properties(
+    loaded: ProcessingPanel, picking, processed, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _load(path) -> None:
+        loaded._phenome.params.paths.checkpoint = Path(path)
+        processed(loaded._phenome, 6)
+
+    monkeypatch.setattr(loaded._phenome, 'load_checkpoint', _load)
+    picking(tmp_path / 'previous.hdf5')
+    assert not loaded._compute_properties_button.isEnabled()
+
+    loaded._load_checkpoint_button.click()
+
+    assert loaded._compute_properties_button.isEnabled()
+
+
+def test_computing_properties_runs_only_the_properties_and_forces_them(
+    ready: ProcessingPanel, computing: Pipeline, confirmation
+) -> None:
+    """No model is loaded, no image extracted again, nothing asked, and the properties never resumed."""
+    ready._compute_properties_button.click()
+
+    assert computing.steps == ['properties']
+    assert computing.force_update == [True]
+    assert confirmation.asked == 0
+    assert ready._phenome.has_properties
+
+
+def test_computing_properties_ignores_the_after_embeddings_checkbox(
+    ready: ProcessingPanel, computing: Pipeline
+) -> None:
+    ready._props_checkbox.click()
+
+    ready._compute_properties_button.click()
+
+    assert computing.steps == ['properties']
+
+
+def test_computing_properties_keeps_the_analysis(clustered: ProcessingPanel, computing: Pipeline, qtbot) -> None:
+    """The embeddings stay, and so do the results computed from them."""
+    with qtbot.assertNotEmitted(clustered.analysis_cleared):
+        clustered._compute_properties_button.click()
+
+    assert clustered._phenome.clustering_df is not None
+    assert 'cluster' in clustered._phenome.metadata_df.columns
+
+
+def test_computing_properties_locks_the_tab_until_done(ready: ProcessingPanel, computing: Pipeline) -> None:
+    during = {}
+
+    def _note(callback) -> None:
+        during.update(
+            process=ready._process_button.isEnabled(),
+            compute=ready._compute_properties_button.isEnabled(),
+            stop=ready._stop_button.isEnabled(),
+            outlines=outlines(ready),
+        )
+
+    computing.on_properties = _note
+
+    ready._compute_properties_button.click()
+
+    assert during == {
+        'process': False,
+        'compute': False,
+        'stop': True,
+        'outlines': {'embeddings': 'ok', 'properties': 'wait'},
+    }
+    assert ready._process_button.isEnabled()
+    assert ready._compute_properties_button.isEnabled()
+    assert outline(ready._properties_group) == 'ok'
+
+
+def test_computing_properties_leaves_the_process_button_alone(
+    ready: ProcessingPanel, computing: Pipeline
+) -> None:
+    """Only the full run names its steps on the Process button."""
+    before = ready._process_button.text()
+    during = []
+    computing.on_properties = lambda callback: during.append(ready._process_button.text())
+
+    ready._compute_properties_button.click()
+
+    assert during == [before]
+
+
+def test_a_failed_properties_computation_is_reported_and_gives_the_tab_back(
+    ready: ProcessingPanel, computing: Pipeline, reported
+) -> None:
+    computing.on_properties = fail(ValueError('unknown property'))
+
+    ready._compute_properties_button.click()
+
+    assert reported.shown == 1
+    assert 'unknown property' in reported.last
+    assert outlines(ready) == {'embeddings': 'ok', 'properties': 'bad'}
+    assert ready._compute_properties_button.isEnabled()
+    assert ready._progress_bar.format() == 'Failed'
+
+
+def test_a_stopped_properties_computation_is_not_reported_as_a_failure(
+    ready: ProcessingPanel, computing: Pipeline, reported
+) -> None:
+    images = []
+    computing.on_properties = reporting(10, stop_after=2, panel=ready, done=images)
+
+    ready._compute_properties_button.click()
+
+    assert images == [1, 2]
+    assert reported.shown == 0
+    assert ready._progress_bar.format() == 'Stopped'
+    assert ready._compute_properties_button.isEnabled()
+
+
+@pytest.mark.usefixtures('lazy')
+def test_computing_properties_settles_a_changed_preset(ready: ProcessingPanel, computing: Pipeline) -> None:
+    """The properties now answer for the preset, so the next run resumes them rather than computing them again."""
+    ready._props_selection_combo.setCurrentText('Complete')
+
+    ready._compute_properties_button.click()
+    ready._process_button.click()
+
+    assert computing.force_update == [True, False]
+
+
+@pytest.mark.usefixtures('lazy')
+def test_a_lazy_properties_computation_writes_to_the_selected_checkpoint(
+    ready: ProcessingPanel, computing: Pipeline
+) -> None:
+    ready._compute_properties_button.click()
+
+    assert computing.checkpoints == [ready._phenome.params.paths.checkpoint]
+    assert computing.lazy == [True]
+
+
+# ----------------------------------------------------------------------------
 # Loading a checkpoint, which picks a dataset up where it was left
 # ----------------------------------------------------------------------------
 
