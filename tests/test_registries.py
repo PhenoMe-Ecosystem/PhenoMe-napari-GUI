@@ -133,6 +133,41 @@ def test_the_sted_model_is_left_the_single_channel_it_reads() -> None:
     assert tuple(prepared.shape) == (1, 224, 224)
 
 
+def prepared_shape(resize_size: int | None, pad_size: int | None, image_shape=(64, 48, 1)) -> tuple:
+    """ The shape an image comes out of the STED-FM transforms in, for the given sizes. """
+    image = np.zeros(image_shape, dtype=np.uint8)
+    return tuple(get_stedfm_transforms(resize_size, pad_size)(image).shape)
+
+
+def test_the_sted_model_is_resized_to_the_size_picked() -> None:
+    """The size picked in the form reaches the model that prepares its images itself."""
+    assert prepared_shape(160, None) == (1, 160, 160)
+
+
+def test_the_sted_model_is_padded_before_it_is_resized() -> None:
+    """Padded up to the size first, then resized, the way PhenoMe prepares its own images."""
+    padded = get_stedfm_transforms(160, 100)
+
+    assert [type(step).__name__ for step in padded.transforms] == ['ToTensor', 'PadToSize', 'Resize']
+    assert prepared_shape(160, 100) == (1, 160, 160)
+
+
+def test_the_sted_model_is_padded_up_to_the_size_and_no_further() -> None:
+    """Padding is a minimum size, not a border: an image already that big is left as it is."""
+    assert prepared_shape(None, 100) == (1, 100, 100)
+    assert prepared_shape(None, 32) == (1, 64, 48)
+
+
+def test_the_sted_model_keeps_its_size_with_both_steps_off() -> None:
+    assert prepared_shape(None, None) == (1, 64, 48)
+
+
+@pytest.mark.parametrize(('resize_size', 'pad_size'), [(224, None), (160, 100), (None, None)])
+def test_a_dinov2_model_leaves_every_size_to_phenome(resize_size, pad_size) -> None:
+    """PhenoMe builds its own transformations from the same sizes, which the run hands it as well."""
+    assert get_dinov2_transforms(resize_size, pad_size) is None
+
+
 # ----------------------------------------------------------------------------
 # Asking the registry for a model
 # ----------------------------------------------------------------------------

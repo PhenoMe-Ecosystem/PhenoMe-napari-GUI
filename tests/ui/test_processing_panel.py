@@ -12,6 +12,7 @@ import pytest
 from qtpy.QtWidgets import QFileDialog, QMessageBox
 
 from phenome_gui.registries.models import MODEL_OPTIONS
+from phenome_gui.ui.advanced_processing_params import AdvancedProcessingParams
 from phenome_gui.ui.model_window import ModelWindow
 from phenome_gui.ui.processing_panel import (
     CHECKPOINT_TEXT,
@@ -24,10 +25,6 @@ from phenome_gui.utils.checkpoint import (
     DATASET_MISMATCH,
     MODEL_MISMATCH,
     CheckpointMismatch,
-)
-from phenome_gui.utils.params import (
-    CHANNEL_MODE_CHOICES,
-    MAX_WORKERS,
 )
 from phenome_gui.utils.progress import TaskStopped
 
@@ -292,118 +289,91 @@ def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
 # ----------------------------------------------------------------------------
 
 
-def drive_advanced_form(
-    panel: ProcessingPanel,
-    batch_size: int,
-    accepted: bool,
-    num_workers: int | None = None,
-    channel_mode: str | None = None,
-) -> None:
-    """ Open the advanced form with its exec_ replaced, so it fills the fields and settles at once.
+@pytest.fixture
+def advanced_form(monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the advanced form without showing it.
 
-    The panel builds the form on first use and keeps it, so it is built here and its instance patched,
-    leaving every other dialog alone.
+    Its exec_ is modal and would hang the test, so it fills in the fields it is given and settles at
+    once. The form is built either way, which is what keeps this a test of the panel driving a real one.
 
-    Args:
-        panel: The panel whose form is driven.
-        batch_size: The batch size to type into the form.
-        accepted: Whether the form is confirmed or cancelled.
-        num_workers: The worker count to type in, or None to leave the field as loaded.
-        channel_mode: The channel mode to pick, or None to leave the field as loaded.
+    Returns:
+        Called as advanced_form(accepted=True, batch_size=64, num_workers=2, channel_mode='combined',
+        resize_size=None, pad_size=300, l2_normalize_channels=True), any field left out keeping what
+        the form opened on, and a size of None unticking its box. Returns the values each opened form
+        showed.
     """
-    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+    shown = []
 
-    def _exec() -> int:
-        panel._batch_size_spinbox.setValue(batch_size)
-        if num_workers is not None:
-            panel._num_workers_spinbox.setValue(num_workers)
-        if channel_mode is not None:
-            panel._channel_mode_combo.setCurrentText(channel_mode)
-        return int(accepted)
+    def _answer(accepted: bool, **fields) -> list[dict]:
+        def _exec(dialog: AdvancedProcessingParams) -> int:
+            shown.append({
+                'channel_mode': dialog._channel_mode_combo.currentText(),
+                'batch_size': dialog._batch_size_spinbox.value(),
+                'num_workers': dialog._num_workers_spinbox.value(),
+            })
+            if 'channel_mode' in fields:
+                dialog._channel_mode_combo.setCurrentText(fields['channel_mode'])
+            if 'batch_size' in fields:
+                dialog._batch_size_spinbox.setValue(fields['batch_size'])
+            if 'num_workers' in fields:
+                dialog._num_workers_spinbox.setValue(fields['num_workers'])
+            for name, checkbox, spinbox in (
+                ('resize_size', dialog._resize_checkbox, dialog._resize_spinbox),
+                ('pad_size', dialog._pad_checkbox, dialog._pad_spinbox),
+            ):
+                if name in fields:
+                    checkbox.setChecked(fields[name] is not None)
+                    if fields[name] is not None:
+                        spinbox.setValue(fields[name])
+            if 'l2_normalize_channels' in fields:
+                dialog._l2_checkbox.setChecked(fields['l2_normalize_channels'])
+            return int(accepted)
 
-    panel._advanced_parameters_dialog.exec_ = _exec
-    panel._on_advanced_parameters_clicked()
+        monkeypatch.setattr(AdvancedProcessingParams, 'exec_', _exec)
+        return shown
 
-
-def test_the_advanced_form_applies_the_batch_size(panel: ProcessingPanel) -> None:
-    drive_advanced_form(panel, 128, accepted=True)
-
-    assert panel._phenome.params.process.batch_size == 128
-
-
-def test_the_advanced_form_discards_a_cancelled_edit(panel: ProcessingPanel) -> None:
-    before = panel._phenome.params.process.batch_size
-
-    drive_advanced_form(panel, 256, accepted=False)
-
-    assert panel._phenome.params.process.batch_size == before
-
-
-def test_the_advanced_form_applies_the_worker_count(panel: ProcessingPanel) -> None:
-    drive_advanced_form(panel, 32, accepted=True, num_workers=4)
-
-    assert panel._phenome.params.process.num_workers == 4
-
-
-def test_the_advanced_form_discards_a_cancelled_worker_count(panel: ProcessingPanel) -> None:
-    before = panel._phenome.params.process.num_workers
-
-    drive_advanced_form(panel, 32, accepted=False, num_workers=4)
-
-    assert panel._phenome.params.process.num_workers == before
+    return _answer
 
 
-def test_the_worker_field_offers_no_more_than_the_model_takes(panel: ProcessingPanel) -> None:
-    """A count the form can offer and the model rejects would raise on a confirmed edit."""
-    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+def test_confirming_the_advanced_form_applies_it(panel: ProcessingPanel, advanced_form) -> None:
+    """Only the fields it shows: the model and the device are the panel's own to pick."""
+    model = panel._phenome.params.process.model
+    advanced_form(
+        accepted=True, channel_mode='combined', batch_size=128, num_workers=4,
+        resize_size=None, pad_size=300, l2_normalize_channels=True,
+    )
 
-    assert panel._num_workers_spinbox.minimum() == 0
-    assert panel._num_workers_spinbox.maximum() == MAX_WORKERS
+    panel._advanced_parameters_button.click()
 
-
-def test_the_form_shows_the_worker_count_it_would_run_under(panel: ProcessingPanel) -> None:
-    """The fields are reloaded on every open, so a cancelled edit is never shown again."""
-    panel._phenome.params.process.num_workers = 6
-
-    drive_advanced_form(panel, 32, accepted=False)
-
-    assert panel._num_workers_spinbox.value() == 6
-
-
-# ----------------------------------------------------------------------------
-# The channel mode, which decides what is embedded rather than how quickly
-# ----------------------------------------------------------------------------
+    process = panel._phenome.params.process
+    assert (process.channel_mode, process.batch_size, process.num_workers) == ('combined', 128, 4)
+    assert (process.resize_size, process.pad_size, process.l2_normalize_channels) == (None, 300, True)
+    assert process.model == model
 
 
-def test_the_channel_mode_offers_the_values_the_model_accepts(panel: ProcessingPanel) -> None:
-    """Offering anything else would raise on assignment, the field being typed as a literal."""
-    panel._advanced_parameters_dialog = panel._build_advanced_parameters_dialog()
+def test_cancelling_the_advanced_form_changes_nothing(panel: ProcessingPanel, advanced_form) -> None:
+    before = panel._phenome.params.process.model_copy(deep=True)
+    advanced_form(
+        accepted=False, channel_mode='combined', batch_size=128, num_workers=4,
+        resize_size=None, pad_size=300, l2_normalize_channels=True,
+    )
 
-    combo = panel._channel_mode_combo
-    assert [combo.itemText(row) for row in range(combo.count())] == CHANNEL_MODE_CHOICES
+    panel._advanced_parameters_button.click()
 
-
-def test_the_advanced_form_applies_the_channel_mode(panel: ProcessingPanel) -> None:
-    drive_advanced_form(panel, 32, accepted=True, channel_mode='combined')
-
-    assert panel._phenome.params.process.channel_mode == 'combined'
+    assert panel._phenome.params.process == before
 
 
-def test_the_advanced_form_discards_a_cancelled_channel_mode(panel: ProcessingPanel) -> None:
-    before = panel._phenome.params.process.channel_mode
-
-    drive_advanced_form(panel, 32, accepted=False, channel_mode='combined')
-
-    assert panel._phenome.params.process.channel_mode == before
-
-
-def test_the_form_shows_the_channel_mode_it_would_run_under(panel: ProcessingPanel) -> None:
-    """The fields are reloaded on every open, so the combo opens on the stored mode rather than the first."""
+def test_the_advanced_form_opens_on_what_the_run_would_use(panel: ProcessingPanel, advanced_form) -> None:
+    """Built anew on every open, so a cancelled edit is never shown again."""
     panel._phenome.params.process.channel_mode = 'combined'
+    panel._phenome.params.process.batch_size = 64
+    panel._phenome.params.process.num_workers = 6
+    shown = advanced_form(accepted=False, batch_size=512)
+    panel._advanced_parameters_button.click()
 
-    drive_advanced_form(panel, 32, accepted=False)
+    panel._advanced_parameters_button.click()
 
-    assert panel._channel_mode_combo.currentText() == 'combined'
+    assert shown == [{'channel_mode': 'combined', 'batch_size': 64, 'num_workers': 6}] * 2
 
 
 # ----------------------------------------------------------------------------

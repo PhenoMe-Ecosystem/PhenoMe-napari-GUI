@@ -7,10 +7,7 @@ from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -18,16 +15,16 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
-from ..utils.params import CHANNEL_MODE_CHOICES, MAX_WORKERS, PRESET_CHOICES
+from ..utils.params import PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
+from .advanced_processing_params import AdvancedProcessingParams
 from .model_window import ModelWindow
 from .styles import GROUP_STYLESHEETS
 
@@ -122,7 +119,7 @@ class ProcessingPanel(QWidget):
         layout = QVBoxLayout()
 
         # Checkpoint group
-        self._checkpoint_group = QGroupBox("Checkpoint")
+        self._checkpoint_group = QGroupBox("Save / Load")
         self._checkpoint_group.setObjectName("parentGroup")
         checkpoint_layout = QVBoxLayout()
         self._checkpoint_group.setLayout(checkpoint_layout)
@@ -130,11 +127,11 @@ class ProcessingPanel(QWidget):
         # The two ways to a checkpoint: writing out the embeddings and properties extracted here, or
         # reading back ones extracted before. Named from a dialog either way rather than typed: a path
         # is only ever meant to come from one.
-        self._save_checkpoint_button = QPushButton("Save checkpoint...")
+        self._save_checkpoint_button = QPushButton("Save results...")
         self._save_checkpoint_button.clicked.connect(self._on_save_checkpoint_pressed)
         checkpoint_layout.addWidget(self._save_checkpoint_button)
 
-        self._load_checkpoint_button = QPushButton("Load checkpoint...")
+        self._load_checkpoint_button = QPushButton("Load results...")
         self._load_checkpoint_button.clicked.connect(self._on_load_checkpoint_pressed)
         checkpoint_layout.addWidget(self._load_checkpoint_button)
 
@@ -175,8 +172,7 @@ class ProcessingPanel(QWidget):
         self._select_model_button.clicked.connect(self._on_select_model_clicked)
         model_row.addWidget(self._select_model_button)
 
-        # Advanced parameters button, opening a form built on first use
-        self._advanced_parameters_dialog = None
+        # Advanced parameters button, opening a form built anew on every use
         self._advanced_parameters_button = QPushButton("Advanced options...")
         self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
         model_row.addWidget(self._advanced_parameters_button)
@@ -213,6 +209,12 @@ class ProcessingPanel(QWidget):
         properties_layout.addLayout(props_row)
         properties_layout.addWidget(self._props_checkbox)
 
+
+        # Processing group
+        self._processing_group = QGroupBox("Processing")
+        self._processing_group.setObjectName("parentGroup")
+        processing_layout = QVBoxLayout()
+
         # Process / Stop row
         process_row = QHBoxLayout()
 
@@ -239,12 +241,18 @@ class ProcessingPanel(QWidget):
         self.model_ready.connect(self._on_model_ready)
         self.properties_started.connect(self._on_properties_started)
 
-        layout.addWidget(self._checkpoint_group)
+        processing_layout.addLayout(process_row)
+        processing_layout.addWidget(self._progress_bar)
+        self._processing_group.setLayout(processing_layout)
+
         layout.addWidget(self._embeddings_group,1)
         layout.addWidget(self._properties_group,1)
+        layout.addWidget(self._processing_group)
+
         layout.addStretch(1)
-        layout.addLayout(process_row)
-        layout.addWidget(self._progress_bar)
+
+        layout.addWidget(self._checkpoint_group)
+
         self.setLayout(layout)
 
     def _on_device_changed(self) -> None:
@@ -570,79 +578,15 @@ class ProcessingPanel(QWidget):
             self._save_checkpoint_button.setToolTip('' if has_embeddings else 'Please extract embeddings first.')
 
     def _on_advanced_parameters_clicked(self) -> None:
-        """ Opens a parameter form for advanced users.
+        """ Open the parameter form for advanced users.
 
-        The form is built on first use and kept afterwards, but its fields are reloaded from the current
-        parameters every time it opens, so the values of a cancelled edit are never kept nor shown again.
-        The parameters are only written back when the form is confirmed.
-
-        For now, the advanced parameters include the channel mode, the batch size and the number of
-        loader workers.
-        TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
+        The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
+        edit is never kept nor shown again. The parameters are only written back when the form is confirmed.
         """
-        if self._advanced_parameters_dialog is None:
-            self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
+        dialog = AdvancedProcessingParams(self, self._phenome.params.process)
 
-        self._channel_mode_combo.setCurrentText(self._phenome.params.process.channel_mode)
-        self._batch_size_spinbox.setValue(self._phenome.params.process.batch_size)
-        self._num_workers_spinbox.setValue(self._phenome.params.process.num_workers)
-
-        if self._advanced_parameters_dialog.exec_():
-            self._phenome.params.process.channel_mode = self._channel_mode_combo.currentText()
-            self._phenome.params.process.batch_size = self._batch_size_spinbox.value()
-            self._phenome.params.process.num_workers = self._num_workers_spinbox.value()
-
-    def _build_advanced_parameters_dialog(self) -> QDialog:
-        """ Build the advanced processing parameters window.
-
-        Only builds the form, without filling it. The fields are loaded from the parameters by the
-        caller, which also reads them back when the form is confirmed.
-
-        Returns:
-            The parameter form, parented to the panel so it closes with it.
-        """
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Processing parameters")
-        dialog.setFixedSize(300, 160)
-
-        form_layout = QFormLayout()
-
-        # What a multi-channel image is embedded as. First of the three, being the only one that
-        # decides what is embedded rather than how quickly: the other two leave the same embeddings.
-        self._channel_mode_combo = QComboBox()
-        self._channel_mode_combo.addItems(CHANNEL_MODE_CHOICES)
-        self._channel_mode_combo.setToolTip(
-            "How a multi-channel image reaches the model. 'split' embeds each channel on its own and "
-            "joins the results; 'combined' feeds the channels as one image. A checkpoint filled under "
-            "one is not resumed under the other."
-        )
-        form_layout.addRow("Channel mode", self._channel_mode_combo)
-
-        # Number of images PhenoMe feeds to the model at once
-        self._batch_size_spinbox = QSpinBox()
-        self._batch_size_spinbox.setRange(1, 1024)
-        form_layout.addRow("Batch size", self._batch_size_spinbox)
-
-        # Number of processes the images are read in, none of them by default: a worker is a Python
-        # started from nothing, which imports torch before it reads its first image, and the run waits
-        # on all of them before its first batch. Worth raising where starting a process is cheap and
-        # the images are slow to read.
-        self._num_workers_spinbox = QSpinBox()
-        self._num_workers_spinbox.setRange(0, MAX_WORKERS)
-        self._num_workers_spinbox.setToolTip(
-            'Processes the images are read in. 0 reads them in the processing thread, which starts '
-            'right away; more can read faster once started, at a wait before every run.'
-        )
-        form_layout.addRow("Num. workers", self._num_workers_spinbox)
-
-        # OK closes the form with an accepted result, which is what tells the caller to apply the values
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        form_layout.addRow(button_box)
-
-        dialog.setLayout(form_layout)
-        return dialog
+        if dialog.exec_():
+            self._phenome.params.process = dialog.get_params()
 
     def _on_process_clicked(self) -> None:
         """ Begins the processing task: the embedding extraction, then the properties when they are asked for.

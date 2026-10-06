@@ -62,9 +62,9 @@ class PathParams(ParamsBase):
     otherwise it names the file last saved or loaded, and nothing waits on it.
     """
 
-    images: Path | None = None
-    masks: Path | None = None
-    metadata: Path | None = None
+    images: Path | None = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
+    masks: Path | None = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_masks')
+    metadata: Path | None = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/metadata.csv')
     template: str | None = '.../(drug_name)/(time)/(filename).*'
     checkpoint: Path | None = None
 
@@ -92,6 +92,14 @@ class ProcessParams(ParamsBase):
     checkpoint as it goes, resuming from what the file already holds and leaving the embeddings on
     disk. Off by default, the results staying in memory until they are saved; not yet offered in the
     GUI.
+
+    `resize_size` and `pad_size` are how an image is brought to the model's input size: padded up to
+    `pad_size` on each side when smaller, then resized to `resize_size` square. None skips the step,
+    which is what PhenoMe reads as no padding or no resizing. They apply to every model, the ones
+    preparing their images themselves being given the same two values.
+
+    `l2_normalize_channels` scales each channel's embedding to unit length before they are joined, so
+    every channel weighs the same in a 'split' embedding. Ignored in 'combined' mode.
     """
 
     model: str = 'DINOv2 - Small'
@@ -100,6 +108,9 @@ class ProcessParams(ParamsBase):
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
     lazy_checkpoint: bool = False
+    resize_size: int | None = Field(default=224, ge=1)
+    pad_size: int | None = Field(default=None, ge=1)
+    l2_normalize_channels: bool = False
 
 
 class PropertiesParams(ParamsBase):

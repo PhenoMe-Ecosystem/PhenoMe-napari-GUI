@@ -1,5 +1,6 @@
 from logging import getLogger
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from phenome import PhenoMe
@@ -8,24 +9,26 @@ from torch import cuda
 
 from ..registries.models import MODEL_OPTIONS
 from ..registries.process_options import OPTIONS_LOADERS
+from ..registries.transforms import TRANSFORMS_LOADERS
 from .analysis import PhenoMeAnalysis
 from .checkpoint import CheckpointMismatch, inspect_checkpoint
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .params import Params
 
+if TYPE_CHECKING:
+    import torchvision.transforms as T
+
 logger = getLogger(__name__)
 
 # What PhenoMe.process_images() defaults the arguments the GUI never sets to. A checkpoint is validated
 # against these alongside the ones a model brings, so they are written out here rather than left
 # implicit: reading a checkpoint before a run means comparing it against what the run will really use.
-# The channel mode is not among them, being the form's to set.
+# The channel mode, the resize and pad sizes and the channel normalisation are not among them, being the
+# form's to set.
 PROCESS_DEFAULTS = {
     'channels': None,
-    'resize_size': 224,
-    'pad_size': None,
     'force_rgb': True,
-    'l2_normalize_channels': True,
 }
 
 # The GUI names its algorithms as the papers do, where PhenoMe knows them by a plain lower case key.
@@ -129,7 +132,6 @@ class PhenoMeInterface:
         self.outliers_df = None
         self.projection_df = None
         self.model = None
-        self.transforms = None
 
         # The model and the device the network in self.model was loaded for, as (GUI name, device),
         # or None before any load. Read to tell whether a run can reuse it or has to load again.
@@ -310,13 +312,15 @@ class PhenoMeInterface:
         # Forgotten before the load rather than after it, so a load that raises leaves nothing
         # claiming to be loaded
         self._loaded_model = None
-        self.model, self.transforms, _ = self.image_processing.load_model(real_model_name, device=device)
+        # The transforms that come with it are built for the default sizes; each run builds its own
+        # from the sizes picked in the form, through model_transforms()
+        self.model, _, _ = self.image_processing.load_model(real_model_name, device=device)
         self._loaded_model = (model_name, device)
 
         logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
         logger.info(
             "Its images are prepared with %s.",
-            'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
+            'its own transformations' if self.model_transforms() is not None else "PhenoMe's own transformations",
         )
 
     @property
@@ -361,6 +365,23 @@ class PhenoMeInterface:
         options_loader = OPTIONS_LOADERS.get(real_model_name)
         return options_loader() if options_loader else {}
 
+    def model_transforms(self) -> "T.Compose | None":
+        """ The transforms the selected model's images are prepared with, for the sizes picked in the form.
+
+        Built anew for every run rather than kept from the load: the resize and pad sizes can be picked
+        again after the model was loaded, and the run has to be made with the ones picked last.
+
+        Returns:
+            The model's own transforms, or None for a model leaving the preparation to PhenoMe, which
+            builds its own from the same sizes, or for a model the registries do not know.
+        """
+        real_model_name = MODEL_OPTIONS.get(self.params.process.model)
+        transforms_loader = TRANSFORMS_LOADERS.get(real_model_name)
+        if transforms_loader is None:
+            return None
+
+        return transforms_loader(self.params.process.resize_size, self.params.process.pad_size)
+
     def process_arguments(self) -> dict:
         """ The arguments a run is made with: the model's own, under what the form settles.
 
@@ -371,7 +392,14 @@ class PhenoMeInterface:
         Returns:
             The arguments handed to PhenoMe on top of the ones the run itself names.
         """
-        return {**self.model_options(), 'channel_mode': self.params.process.channel_mode}
+        process = self.params.process
+        return {
+            **self.model_options(),
+            'channel_mode': process.channel_mode,
+            'resize_size': process.resize_size,
+            'pad_size': process.pad_size,
+            'l2_normalize_channels': process.l2_normalize_channels,
+        }
 
     def processing_params(self) -> dict:
         """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.
@@ -532,7 +560,7 @@ class PhenoMeInterface:
             progress_callback=progress_callback,
             batch_size=self.params.process.batch_size,
             num_workers=num_workers,
-            custom_transformations=self.transforms,
+            custom_transformations=self.model_transforms(),
             force_reprocess=force_reprocess,
             lazy_checkpoint=self.params.process.lazy_checkpoint,
             **arguments

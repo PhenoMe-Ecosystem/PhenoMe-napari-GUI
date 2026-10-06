@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from pydantic import ValidationError
@@ -200,8 +201,83 @@ def test_the_defaults_fill_in_what_neither_the_form_nor_the_model_sets(
     """PhenoMe fills these in itself, so a checkpoint is compared against them rather than against nothing."""
     params = phenome.processing_params()
 
-    assert params['resize_size'] == 224
+    assert params['channels'] is None
     assert params['force_rgb'] is True
+
+
+def test_the_checkpoint_is_compared_against_the_image_preparation_picked(phenome: PhenoMeInterface) -> None:
+    """Images prepared otherwise are other embeddings, which a checkpoint filled before cannot resume."""
+    phenome.params.process.resize_size = None
+    phenome.params.process.pad_size = 300
+    phenome.params.process.l2_normalize_channels = True
+
+    params = phenome.processing_params()
+
+    assert (params['resize_size'], params['pad_size'], params['l2_normalize_channels']) == (None, 300, True)
+
+
+# ----------------------------------------------------------------------------
+# How the images are prepared, which the form settles for every model
+# ----------------------------------------------------------------------------
+
+
+def preparation(passed: dict) -> tuple:
+    """ The resize size, pad size and channel normalisation an extraction was handed. """
+    return passed['resize_size'], passed['pad_size'], passed['l2_normalize_channels']
+
+
+def test_the_images_are_resized_and_left_unnormalised_by_default(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    phenome.process_images()
+
+    assert preparation(extraction) == (224, None, False)
+
+
+def test_the_image_preparation_picked_reaches_phenome(phenome: PhenoMeInterface, extraction: dict) -> None:
+    phenome.params.process.resize_size = None
+    phenome.params.process.pad_size = 300
+    phenome.params.process.l2_normalize_channels = True
+
+    phenome.process_images()
+
+    assert preparation(extraction) == (None, 300, True)
+
+
+def test_a_model_left_to_phenome_gets_no_transformations_of_its_own(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """PhenoMe then builds its own from the sizes handed to it alongside."""
+    phenome.process_images()
+
+    assert extraction['custom_transformations'] is None
+
+
+def test_a_model_preparing_its_own_images_follows_the_size_picked_last(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """Its transformations come with it when it is loaded, but the size can be picked again since."""
+    phenome.params.process.model = STEDFM_MODEL
+    phenome.params.process.resize_size = 96
+
+    phenome.process_images()
+
+    prepared = extraction['custom_transformations'](np.zeros((64, 48, 1), dtype=np.uint8))
+    assert tuple(prepared.shape) == (1, 96, 96)
+
+
+def test_a_model_no_longer_offered_has_no_transformations(phenome: PhenoMeInterface) -> None:
+    """The parameter outlives the registry, which must not raise before the load can name the model."""
+    phenome.params.process.model = 'Some - Retired Model'
+
+    assert phenome.model_transforms() is None
+
+
+@pytest.mark.parametrize('field', ['resize_size', 'pad_size'])
+def test_an_empty_size_raises(phenome: PhenoMeInterface, field: str) -> None:
+    """A size of nothing is no size; off is None."""
+    with pytest.raises(ValidationError):
+        setattr(phenome.params.process, field, 0)
 
 
 def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
