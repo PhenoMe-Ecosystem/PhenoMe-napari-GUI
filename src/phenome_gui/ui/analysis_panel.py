@@ -3,11 +3,12 @@ import logging
 import pandas as pd
 from magicgui.widgets import create_widget
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -26,6 +27,8 @@ from .styles import GROUP_STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
+
+DEFAULT_CLUSTERING_INFO = "No clustering computed yet."
 
 
 class AnalysisPanel(QWidget):
@@ -77,19 +80,31 @@ class AnalysisPanel(QWidget):
         # Group for the clustering step
         self._clustering_group = QGroupBox("Clustering")
         self._clustering_group.setObjectName("parentGroup")
-        clustering_layout = QHBoxLayout()
+        clustering_layout = QVBoxLayout()
         self._clustering_group.setLayout(clustering_layout)
+
+        run_clustering_row = QHBoxLayout()
 
         # Clustering parameters button, opening a form rebuilt on every use
         self._clustering_params_dialog = None
         self._cluster_options_button = QPushButton("Options...")
         self._cluster_options_button.clicked.connect(self._on_cluster_options_clicked)
-        clustering_layout.addWidget(self._cluster_options_button)
+        run_clustering_row.addWidget(self._cluster_options_button)
 
         # Clustering button, enabled only once the images have been processed
         self._run_clustering_button = QPushButton("Compute Clustering")
         self._run_clustering_button.clicked.connect(self._on_run_clustering_clicked)
-        clustering_layout.addWidget(self._run_clustering_button)
+        run_clustering_row.addWidget(self._run_clustering_button)
+        clustering_layout.addLayout(run_clustering_row)
+
+        # Cluster information
+        cluster_info_row = QHBoxLayout()
+        self._cluster_info_label = QLabel(DEFAULT_CLUSTERING_INFO)
+        self._cluster_value_label = QLabel("")
+        self._cluster_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        cluster_info_row.addWidget(self._cluster_info_label)
+        cluster_info_row.addWidget(self._cluster_value_label)
+        clustering_layout.addLayout(cluster_info_row)
 
         # Group for the image inspection steps
         self._images_group = QGroupBox("Image Retrieval")
@@ -150,6 +165,8 @@ class AnalysisPanel(QWidget):
         self._update_images_table(None, None)
         self._clustering_group.setStyleSheet('')
         self._images_group.setStyleSheet('')
+        self._cluster_value_label.setText('')
+        self._cluster_info_label.setText(DEFAULT_CLUSTERING_INFO)
         self._refresh_analysis_buttons()
 
     def set_task_running(self, running: bool) -> None:
@@ -233,6 +250,11 @@ class AnalysisPanel(QWidget):
         self.clustering_finished.emit()
         self._clustering_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
+        # Update the label showing the number of clusters
+        n_clusters = self._phenome.params.clustering.n_clusters
+        self._cluster_info_label.setText(f"Number of clusters:")
+        self._cluster_value_label.setText(str(n_clusters))
+
     def _on_prototype_clicked(self) -> None:
         """ Open the prototype parameter form, and begin the search once it is confirmed.
 
@@ -309,6 +331,8 @@ class AnalysisPanel(QWidget):
         """
         self._report_failure('cluster the images', error)
         self._clustering_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
+        self._cluster_value_label.setText('')
+        self._cluster_info_label.setText("An error occured while clustering.")
 
     def _on_prototypes_failed(self, error: Exception) -> None:
         """ Report a prototype search that raised.
