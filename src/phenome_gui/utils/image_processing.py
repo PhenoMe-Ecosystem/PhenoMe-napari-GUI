@@ -1,3 +1,4 @@
+import traceback
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -58,6 +59,39 @@ class ImageProcessing:
                                   custom_transformations=custom_transformations,
                                   lazy_checkpoint=lazy_checkpoint,
                                   **kwargs)
+
+    @staticmethod
+    def close_stopped_checkpoints(error: BaseException) -> None:
+        """ Close the checkpoint an extraction was writing to when it was stopped, committing what it buffered.
+
+        PhenoMe writes a lazy run through a CheckpointManager local to its extraction loop, committing
+        the batches it buffers every few of them and closing the file only once the run is done. A
+        stop unwinds the loop before either, leaving the last batches buffered and the file held open
+        until the traceback is collected. The traceback is the only handle on that manager, so it is
+        looked for there - by type rather than by the name PhenoMe gives it - and closed, which commits
+        the buffered batches and releases the file to be read back straight away.
+
+        Args:
+            error: The exception the extraction was unwound by, its traceback still attached.
+        """
+        closed = set()
+        for frame, _ in traceback.walk_tb(error.__traceback__):
+            for value in frame.f_locals.values():
+                if isinstance(value, CheckpointManager) and id(value) not in closed:
+                    closed.add(id(value))
+                    value.close()
+
+    def keep_stopped_results(self) -> None:
+        """ Make the embeddings an in-memory extraction computed before it was stopped part of the results.
+
+        PhenoMe appends the paths and the metadata to the results as it goes, but holds the embeddings
+        in a buffer it only stacks into the results once the run is done, which a stop unwinds before.
+        Stacked here instead, so the results answer for the images they name. The rows agree, a stop
+        only ever being raised once a whole batch has been appended.
+
+        Reaches for a private PhenoMe method, kept here beside the other ones for the same reason.
+        """
+        self.pheno._finalize_results()
 
     def save_results(self, checkpoint_path: str) -> None:
         """ Write everything the pipeline holds - embeddings, properties and processing parameters - to a checkpoint.

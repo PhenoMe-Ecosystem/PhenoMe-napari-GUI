@@ -58,8 +58,9 @@ class PathParams(ParamsBase):
 
     `checkpoint` is None until one has been saved or loaded, and goes back to None whenever another
     dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
-    no others. A run only writes to it while it goes when `ProcessParams.lazy_checkpoint` is on;
-    otherwise it names the file last saved or loaded, and nothing waits on it.
+    no others. A run only writes to it while it goes when `ProcessParams.lazy_checkpoint` is on, and
+    sets it to the autosave file when there was none; otherwise it names the file last saved or
+    loaded, and nothing waits on it.
     """
 
     images: Path | None = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
@@ -90,8 +91,9 @@ class ProcessParams(ParamsBase):
 
     `lazy_checkpoint` says whether a run writes its embeddings and properties into the selected
     checkpoint as it goes, resuming from what the file already holds and leaving the embeddings on
-    disk. Off by default, the results staying in memory until they are saved; not yet offered in the
-    GUI.
+    disk. With no checkpoint selected, the run autosaves to 'autosave.hdf5' in the working directory.
+    Off by default, the results staying in memory until they are saved; offered in the GUI as the
+    "Autosave/resume progress" checkbox.
 
     `resize_size` and `pad_size` are how an image is brought to the model's input size: padded up to
     `pad_size` on each side when smaller, then resized to `resize_size` square. None skips the step,
