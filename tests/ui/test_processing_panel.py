@@ -14,7 +14,7 @@ from qtpy.QtWidgets import QFileDialog, QMessageBox
 
 from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.ui.advanced_processing_params import AdvancedProcessingParams
-from phenome_gui.ui.model_window import ModelWindow
+from phenome_gui.ui.option_window import ModelWindow, PropertyWindow
 from phenome_gui.ui.processing_panel import (
     CHECKPOINT_TEXT,
     NO_CHECKPOINT_TEXT,
@@ -22,7 +22,6 @@ from phenome_gui.ui.processing_panel import (
     ProcessingPanel,
     format_elapsed,
 )
-from phenome_gui.ui.property_window import PropertyWindow
 from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (

@@ -24,8 +24,7 @@ from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
 from .advanced_processing_params import AdvancedProcessingParams
-from .model_window import ModelWindow
-from .property_window import PropertyWindow
+from .option_window import ModelWindow, PropertyWindow
 from .styles import GROUP_STYLESHEETS
 
 logger = logging.getLogger("main_logger")

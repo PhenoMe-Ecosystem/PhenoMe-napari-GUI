@@ -8,6 +8,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ..registries.model_details import get_model_details
+from ..registries.models import MODEL_OPTIONS
+from ..registries.properties_descriptions import PRESET_INFO
+from ..utils.params import PRESET_CHOICES
+
 # How the window opens: wide enough for a list and a description side by side, the description being
 # the half worth reading.
 WINDOW_WIDTH = 640
@@ -23,18 +28,16 @@ class OptionWindow(QDialog):
     """ A window one option is picked from, listing what is offered and describing what is highlighted.
 
     Picks an option and no more: nothing is acted on here, the caller reading what was picked through
-    selected_option() once the window has been accepted. What each option is described as is the
-    subclass's to say, through _describe().
+    selected_option() once the window has been accepted. A subclass names the window and its accept
+    button through `title` and `accept_text`, and says what each option is through _describe().
     """
 
-    def __init__(
-        self,
-        parent: QWidget | None,
-        options: list[str],
-        current: str | None,
-        title: str,
-        accept_text: str,
-    ) -> None:
+    # The window's title, and what its accept button reads - named rather than left as Qt's Ok, the
+    # button saying what pressing it does
+    title = 'Select'
+    accept_text = 'Select'
+
+    def __init__(self, parent: QWidget | None, options: list[str], current: str | None = None) -> None:
         """ Build the window and open it on an option.
 
         Args:
@@ -42,11 +45,9 @@ class OptionWindow(QDialog):
             options: The options offered, in the order they are listed.
             current: The option to highlight when it opens. None, or one not offered, opens on the
                 first of them: a window with nothing picked would offer an accept button meaning nothing.
-            title: The window's title.
-            accept_text: What the accept button reads, saying what pressing it does.
         """
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(self.title)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self._options = list(options)
@@ -68,9 +69,8 @@ class OptionWindow(QDialog):
 
         layout.addLayout(panes)
 
-        # Named rather than left as Qt's Ok, the button saying what pressing it does
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        buttons.addButton(accept_text, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(self.accept_text, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -120,3 +120,87 @@ class OptionWindow(QDialog):
             The option, as listed.
         """
         return self._option_list.currentItem().text()
+
+
+class ModelWindow(OptionWindow):
+    """ The window a model is picked from.
+
+    Picks a model and no more: nothing is loaded here and no PhenoMe state is held, the loading being
+    a download of some hundreds of megabytes left to the embedding extraction.
+
+    The list shows the names the GUI offers, where the descriptions are registered under the names
+    the registries use; MODEL_OPTIONS is the mapping between the two.
+    """
+
+    title = 'Select Model'
+    accept_text = 'Select Model'
+
+    def __init__(self, parent: QWidget | None, model: str | None = None) -> None:
+        """ Build the window and open it on a model.
+
+        Args:
+            parent: The widget the dialog is parented to, so it closes with it.
+            model: The model to highlight when it opens, as the GUI names it. None, or one no
+                longer offered, opens on the first of them.
+        """
+        super().__init__(parent, list(MODEL_OPTIONS), model)
+
+    def _describe(self, model: str) -> str:
+        """ Look up what is known about a model, under the name the registries know it by.
+
+        Args:
+            model: The model, as the GUI names it.
+        Returns:
+            An HTML fragment describing the model, empty for one with no description yet.
+        """
+        return get_model_details(MODEL_OPTIONS.get(model, ''))
+
+    def selected_model(self) -> str:
+        """ The model currently highlighted, for the caller to select once the window is accepted.
+
+        Returns:
+            The model as the GUI names it, which is what the process parameters hold.
+        """
+        return self.selected_option()
+
+
+class PropertyWindow(OptionWindow):
+    """ The window a properties preset is picked from.
+
+    Picks a preset and no more: nothing is computed here.
+
+    The list shows the presets as the parameters hold them, capitalised, where the descriptions are
+    registered under PhenoMe's lower case names. Only the presets the parameter accepts are offered:
+    turning the properties off is the checkbox's to do, not a preset's.
+    """
+
+    title = 'Select Properties Preset'
+    accept_text = 'Select Preset'
+
+    def __init__(self, parent: QWidget | None, preset: str | None = None) -> None:
+        """ Build the window and open it on a preset.
+
+        Args:
+            parent: The widget the dialog is parented to, so it closes with it.
+            preset: The preset to highlight when it opens, as the parameters hold it. None, or one not
+                offered, opens on the first of them.
+        """
+        super().__init__(parent, PRESET_CHOICES, preset)
+
+    def _describe(self, preset: str) -> str:
+        """ Look up what a preset computes, under the lower case name PhenoMe knows it by.
+
+        Args:
+            preset: The preset, as the parameters hold it.
+        Returns:
+            An HTML fragment describing the preset, empty for one with no description.
+        """
+        return PRESET_INFO.get(preset.lower(), {}).get('description', '')
+
+    def selected_preset(self) -> str:
+        """ The preset currently highlighted, for the caller to select once the window is accepted.
+
+        Returns:
+            The preset as the parameters hold it.
+        """
+        return self.selected_option()
