@@ -1,9 +1,10 @@
 import logging
 import threading
+import time
 from pathlib import Path
 
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -43,6 +44,22 @@ PROGRESS_TEXT = '{held}/{loaded} images'
 # given without one is spelled out under
 CHECKPOINT_FILTER = 'HDF5 Files (*.hdf5)'
 CHECKPOINT_SUFFIX = '.hdf5'
+
+# How often the elapsed time of a running task is redrawn, in milliseconds
+ELAPSED_REFRESH_MS = 1000
+
+
+def format_elapsed(seconds: float) -> str:
+    """ Spell out a duration the way a stopwatch shows it.
+
+    Args:
+        seconds: The duration, the part of a second left over being dropped.
+    Returns:
+        M:SS under an hour, H:MM:SS from an hour on.
+    """
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes}:{secs:02d}'
 
 
 class ProcessingPanel(QWidget):
@@ -112,6 +129,17 @@ class ProcessingPanel(QWidget):
         # Set from here to ask the task running on the worker thread to stop, and read there from the
         # progress callback. A fresh one is made for every run, so a stop never carries into the next.
         self._stop_event: threading.Event | None = None
+
+        # When the running task, or the last one, was started, read off the clock below. The clock is
+        # kept as an attribute so the elapsed time can be read off another one.
+        self._clock = time.monotonic
+        self._task_started: float | None = None
+
+        # Redraws the elapsed time while a task runs, from the clock rather than by counting ticks, so
+        # the display never drifts from the time really spent
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(ELAPSED_REFRESH_MS)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed)
 
         self._build_ui()
 
@@ -243,8 +271,7 @@ class ProcessingPanel(QWidget):
         self._resume_checkbox = QCheckBox("Resume progress")
         self._resume_checkbox.setChecked(self._phenome.params.process.resume_progress)
         self._resume_checkbox.setToolTip(
-            'Keep the embeddings already there - loaded from a checkpoint or left by a stopped run - and '
-            'process only the images missing. Without it, every image is processed again.'
+            'Check to resume progress on current embeddings.\nOtherwise, overwrite progress.'
         )
         self._resume_checkbox.clicked.connect(self._on_resume_checkbox_changed)
         processing_layout.addWidget(self._resume_checkbox)
@@ -278,7 +305,7 @@ class ProcessingPanel(QWidget):
         # Timer for processing
         timer_row = QHBoxLayout()
         timer_label = QLabel("Elapsed time:")
-        self._timer_value_label = QLabel("00:00")
+        self._timer_value_label = QLabel(format_elapsed(0))
         self._timer_value_label.setAlignment(Qt.AlignRight)
         timer_row.addWidget(timer_label)
         timer_row.addWidget(self._timer_value_label)
@@ -331,12 +358,30 @@ class ProcessingPanel(QWidget):
         starting any one disables the others until it is done. The change is announced, as the analysis steps run on the embeddings the tasks produce and
         have to lock themselves for the duration too.
 
+        The elapsed time is timed here too: reset as a task starts and redrawn while it runs, then left
+        at the total once it has ended, however it ended.
+
         Args:
             running: True when a task has just been started, False once it has finished.
         """
+        if running:
+            self._task_started = self._clock()
+            self._timer_value_label.setText(format_elapsed(0))
+            self._elapsed_timer.start()
+        else:
+            self._elapsed_timer.stop()
+            # Read once more, so the total is the time really spent rather than the last whole tick
+            self._refresh_elapsed()
+
         self._processing_task_running = running
         self.refresh_buttons()
         self.task_running_changed.emit(running)
+
+    def _refresh_elapsed(self) -> None:
+        """ Show the time spent on the running task, or on the last one once it has ended. """
+        if self._task_started is None:
+            return
+        self._timer_value_label.setText(format_elapsed(self._clock() - self._task_started))
 
     def clear_results(self) -> None:
         """ Let go of what the dataset loaded before produced, a new one having taken its place.

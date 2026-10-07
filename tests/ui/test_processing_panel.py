@@ -19,6 +19,7 @@ from phenome_gui.ui.processing_panel import (
     NO_CHECKPOINT_TEXT,
     PROGRESS_TEXT,
     ProcessingPanel,
+    format_elapsed,
 )
 from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils import phenome_interface
@@ -1279,6 +1280,78 @@ def test_a_new_run_is_not_stopped_by_the_one_before(
 
     assert batches == list(range(1, 11))
     assert ready._progress_bar.format() == 'Done!'
+
+
+# ----------------------------------------------------------------------------
+# The elapsed time of a running task
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(('seconds', 'shown'), [(0, '0:00'), (65.9, '1:05'), (3599, '59:59'), (3723, '1:02:03')])
+def test_a_duration_reads_as_a_stopwatch_shows_it(seconds: float, shown: str) -> None:
+    assert format_elapsed(seconds) == shown
+
+
+@pytest.fixture
+def clock(panel: ProcessingPanel) -> list[float]:
+    """ Have the panel read the elapsed time off a clock the test moves by hand.
+
+    Returns:
+        A one-item list holding the current time, which the test advances.
+    """
+    now = [1000.0]
+    panel._clock = lambda: now[0]
+    return now
+
+
+def test_starting_a_task_resets_the_elapsed_time(ready: ProcessingPanel, clock: list[float]) -> None:
+    """Whatever the task before it took is not this one's."""
+    ready._set_processing_task_running(True)
+    clock[0] += 125
+    ready._set_processing_task_running(False)
+
+    ready._set_processing_task_running(True)
+
+    assert ready._timer_value_label.text() == format_elapsed(0)
+    assert ready._elapsed_timer.isActive()
+
+
+def test_the_elapsed_time_follows_a_running_task(ready: ProcessingPanel, clock: list[float]) -> None:
+    ready._set_processing_task_running(True)
+
+    clock[0] += 42
+    ready._elapsed_timer.timeout.emit()
+
+    assert ready._timer_value_label.text() == format_elapsed(42)
+
+
+def test_a_finished_run_leaves_its_total(ready: ProcessingPanel, pipeline: Pipeline, clock: list[float]) -> None:
+    """The total is read as the task ends, rather than left at the last whole tick."""
+    def _take_a_while(callback) -> None:
+        clock[0] += 61.5
+
+    pipeline.on_process = _take_a_while
+
+    ready._process_button.click()
+
+    assert not ready._elapsed_timer.isActive()
+    assert ready._timer_value_label.text() == format_elapsed(61.5)
+
+
+@pytest.mark.parametrize('error', [TaskStopped(), RuntimeError('out of memory')])
+def test_an_interrupted_run_leaves_its_total(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, clock: list[float], error: Exception
+) -> None:
+    def _interrupted(callback) -> None:
+        clock[0] += 30
+        raise error
+
+    pipeline.on_process = _interrupted
+
+    ready._process_button.click()
+
+    assert not ready._elapsed_timer.isActive()
+    assert ready._timer_value_label.text() == format_elapsed(30)
 
 
 # ----------------------------------------------------------------------------
