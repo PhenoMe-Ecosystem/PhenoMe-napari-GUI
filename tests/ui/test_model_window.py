@@ -52,7 +52,7 @@ def described(monkeypatch: pytest.MonkeyPatch):
 
 def listed(built: ModelWindow) -> list[str]:
     """ The models the window currently offers, in the order it offers them. """
-    return [built._model_list.item(row).text() for row in range(built._model_list.count())]
+    return [built._option_list.item(row).text() for row in range(built._option_list.count())]
 
 
 # ----------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def test_a_model_no_longer_offered_falls_back(window) -> None:
 def test_the_highlighted_model_is_the_one_picked(window) -> None:
     built = window()
 
-    built._model_list.setCurrentRow(list(MODEL_OPTIONS).index(OTHER_MODEL))
+    built._option_list.setCurrentRow(list(MODEL_OPTIONS).index(OTHER_MODEL))
 
     assert built.selected_model() == OTHER_MODEL
 
@@ -105,7 +105,7 @@ def test_picking_a_model_describes_it(window, described) -> None:
     described({MODEL_OPTIONS[OTHER_MODEL]: '<p>The large one.</p>'})
     built = window()
 
-    built._model_list.setCurrentRow(list(MODEL_OPTIONS).index(OTHER_MODEL))
+    built._option_list.setCurrentRow(list(MODEL_OPTIONS).index(OTHER_MODEL))
 
     assert 'The large one.' in built._details.toPlainText()
 
@@ -129,7 +129,7 @@ def test_moving_off_a_described_model_clears_the_pane(window, described) -> None
     described({MODEL_OPTIONS[OTHER_MODEL]: '<p>The large one.</p>'})
     built = window(OTHER_MODEL)
 
-    built._model_list.setCurrentRow(0)
+    built._option_list.setCurrentRow(0)
 
     assert built._details.toPlainText() == ''
 

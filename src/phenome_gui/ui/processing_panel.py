@@ -7,7 +7,6 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -22,11 +21,11 @@ from qtpy.QtWidgets import (
 
 from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
-from ..utils.params import PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
 from .advanced_processing_params import AdvancedProcessingParams
 from .model_window import ModelWindow
+from .property_window import PropertyWindow
 from .styles import GROUP_STYLESHEETS
 
 logger = logging.getLogger("main_logger")
@@ -214,7 +213,7 @@ class ProcessingPanel(QWidget):
         current_model_row = QHBoxLayout()
         current_model_row.addWidget(QLabel("Selected model:"))
         self._current_model_label = QLabel(self._phenome.params.process.model)
-        self._current_model_label.setAlignment(Qt.AlignRight)
+        self._current_model_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         current_model_row.addWidget(self._current_model_label)
         embeddings_layout.addLayout(current_model_row)
 
@@ -224,7 +223,7 @@ class ProcessingPanel(QWidget):
         progress_label = QLabel("Current progress: ")
 
         self._progress_value_label = QLabel()
-        self._progress_value_label.setAlignment(Qt.AlignRight)
+        self._progress_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         progress_row.addWidget(progress_label)
         progress_row.addWidget(self._progress_value_label)
@@ -237,22 +236,28 @@ class ProcessingPanel(QWidget):
         properties_layout = QVBoxLayout()
         self._properties_group.setLayout(properties_layout)
 
-        # Properties selection combo box
+        # Preset row: the window the preset is picked from, and whether the properties follow a run
         props_row = QHBoxLayout()
-        props_row.addWidget(QLabel("Properties preset"))
-        self._props_selection_combo = QComboBox()
-        self._props_selection_combo.addItems(PRESET_CHOICES)
-        self._props_selection_combo.setCurrentText(self._phenome.params.properties.preset)
-        self._props_selection_combo.currentTextChanged.connect(self._on_properties_changed)
+
+        # Opens the window the preset is picked from, which says what each one computes
+        self._select_preset_button = QPushButton("Select Preset...")
+        self._select_preset_button.clicked.connect(self._on_select_preset_clicked)
+        props_row.addWidget(self._select_preset_button)
 
         # Checkbox for properties calculation, computed after the embeddings when Process Images runs
         self._props_checkbox = QCheckBox("Compute properties after embeddings")
         self._props_checkbox.setChecked(self._phenome.params.properties.compute)
         self._props_checkbox.clicked.connect(self._on_properties_checkbox_changed)
-
-        props_row.addWidget(self._props_selection_combo)
+        props_row.addWidget(self._props_checkbox)
         properties_layout.addLayout(props_row)
-        properties_layout.addWidget(self._props_checkbox)
+
+        # Current selected preset, the parameters' default until another is picked
+        current_preset_row = QHBoxLayout()
+        current_preset_row.addWidget(QLabel("Selected preset:"))
+        self._current_preset_label = QLabel(self._phenome.params.properties.preset)
+        self._current_preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        current_preset_row.addWidget(self._current_preset_label)
+        properties_layout.addLayout(current_preset_row)
 
         # Computes the properties alone, over the embeddings already there, extracted here or read
         # from a checkpoint. Always computed anew, so a preset picked since is never resumed past.
@@ -306,7 +311,7 @@ class ProcessingPanel(QWidget):
         timer_row = QHBoxLayout()
         timer_label = QLabel("Elapsed time:")
         self._timer_value_label = QLabel(format_elapsed(0))
-        self._timer_value_label.setAlignment(Qt.AlignRight)
+        self._timer_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         timer_row.addWidget(timer_label)
         timer_row.addWidget(self._timer_value_label)
 
@@ -315,8 +320,8 @@ class ProcessingPanel(QWidget):
         processing_layout.addLayout(timer_row)
         self._processing_group.setLayout(processing_layout)
 
-        layout.addWidget(self._embeddings_group,1)
-        layout.addWidget(self._properties_group,1)
+        layout.addWidget(self._embeddings_group)
+        layout.addWidget(self._properties_group)
         layout.addWidget(self._processing_group)
 
         layout.addStretch(1)
@@ -430,7 +435,7 @@ class ProcessingPanel(QWidget):
         self._select_model_button.setEnabled(idle)
         self._cpu_radio.setEnabled(idle)
         self._cuda_radio.setEnabled(idle and self._phenome.cuda_available)
-        self._props_selection_combo.setEnabled(idle)
+        self._select_preset_button.setEnabled(idle)
         self._props_checkbox.setEnabled(idle)
         self._resume_checkbox.setEnabled(idle)
 
@@ -854,20 +859,18 @@ class ProcessingPanel(QWidget):
         Returns:
             True when every image may be processed again, replacing the embeddings already there.
         """
-        made = (
-            'were extracted under different processing settings'
-            if mismatch.reason == MODEL_MISMATCH else 'name images that are not all loaded'
-        )
+        mismatched = 'model' if mismatch.reason == MODEL_MISMATCH else 'dataset'
 
-        logger.warning('The embeddings already there %s, and cannot be resumed: %s', made, mismatch.detail)
+        # The question names only what differs; how it differs goes to the log
+        logger.warning('The %s does not match the embeddings held, which cannot be resumed: %s',
+                       mismatched, mismatch.detail)
 
         answer = QMessageBox.warning(
             self,
             'Cannot resume',
-            f'The embeddings already there {made}, so they cannot be extended.\n\n'
-            f'{mismatch.detail}\n\n'
-            'Process every image again instead? The current embeddings and properties, and all results, '
-            'will be discarded.',
+            f'There is a mismatch between the {mismatched} from the checkpoint and the current one; '
+            'progress cannot be resumed.\n\n'
+            'Overwrite all results?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1014,13 +1017,21 @@ class ProcessingPanel(QWidget):
             )
         )
 
-    def _on_properties_changed(self) -> None:
-        """ Update the properties preset parameter when the selection changes.
+    def _on_select_preset_clicked(self) -> None:
+        """ Open the window a preset is picked from, and select whichever it is closed on.
 
-        Read when the properties are next computed, which is always for every image.
+        The window opens on the preset currently chosen and is rebuilt on every use. Nothing is written
+        until it is confirmed: a preset looked at and thought better of leaves the parameters as they
+        were. The preset is read when the properties are next computed, which is always for every image.
         """
-        preset = self._props_selection_combo.currentText()
-        self._phenome.params.properties.preset = preset
+        window = PropertyWindow(self, self._phenome.params.properties.preset)
+
+        if not window.exec_():
+            logger.info('No preset was picked, leaving the selected one as it is.')
+            return
+
+        self._phenome.params.properties.preset = window.selected_preset()
+        self._current_preset_label.setText(self._phenome.params.properties.preset)
 
     def _on_properties_checkbox_changed(self) -> None:
         """ Update the properties calculation parameter when the checkbox is toggled. """

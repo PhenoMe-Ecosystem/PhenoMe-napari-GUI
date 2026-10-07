@@ -4,6 +4,7 @@ Nothing here loads a model or extracts embeddings: the pipeline state is stubbed
 being a sentinel object, and the load and the extraction stand-ins where a run is driven.
 """
 
+import logging
 import threading
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from phenome_gui.ui.processing_panel import (
     ProcessingPanel,
     format_elapsed,
 )
+from phenome_gui.ui.property_window import PropertyWindow
 from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (
@@ -280,10 +282,46 @@ def test_a_cancelled_window_changes_nothing(panel: ProcessingPanel, picking_mode
     assert panel._phenome.params.process.model == before
 
 
-def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel) -> None:
-    panel._props_selection_combo.setCurrentText('Complete')
+@pytest.fixture
+def picking_preset(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
+    """ Return a hook answering the preset window with a pick, without showing it.
+
+    Its exec_ is modal and would hang the test, so it is answered outright, the window being built
+    either way.
+
+    Returns:
+        Called as picking_preset('Complete'), or with None for the window being cancelled.
+    """
+    def _answer(preset: str | None) -> None:
+        def _exec(window) -> int:
+            if preset is None:
+                return 0
+            window._select(preset)
+            return 1
+
+        monkeypatch.setattr(PropertyWindow, 'exec_', _exec)
+
+    return _answer
+
+
+def test_choosing_a_preset_writes_the_parameter(panel: ProcessingPanel, picking_preset) -> None:
+    picking_preset('Complete')
+
+    panel._select_preset_button.click()
 
     assert panel._phenome.params.properties.preset == 'Complete'
+    assert panel._current_preset_label.text() == panel._phenome.params.properties.preset
+
+
+def test_a_cancelled_preset_window_changes_nothing(panel: ProcessingPanel, picking_preset) -> None:
+    """A preset looked at and thought better of leaves the parameters as they were."""
+    before = panel._phenome.params.properties.preset
+    picking_preset(None)
+
+    panel._select_preset_button.click()
+
+    assert panel._phenome.params.properties.preset == before
+    assert panel._current_preset_label.text() == before
 
 
 # ----------------------------------------------------------------------------
@@ -719,7 +757,7 @@ def test_the_tab_is_locked_while_the_run_goes(ready: ProcessingPanel, pipeline: 
         during.update(
             process=ready._process_button.isEnabled(),
             model=ready._select_model_button.isEnabled(),
-            preset=ready._props_selection_combo.isEnabled(),
+            preset=ready._select_preset_button.isEnabled(),
             compute=ready._props_checkbox.isEnabled(),
             resume=ready._resume_checkbox.isEnabled(),
             stop=ready._stop_button.isEnabled(),
@@ -1014,12 +1052,22 @@ def test_a_confirmed_restart_processes_every_image(ready: ProcessingPanel, pipel
 
 
 @pytest.mark.usefixtures('resume')
-def test_the_restart_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, '1 of the 3 image(s) held are not among the 6 currently loaded.'))
+@pytest.mark.parametrize(('reason', 'named', 'other'), [
+    (MODEL_MISMATCH, 'model', 'dataset'), (DATASET_MISMATCH, 'dataset', 'model'),
+])
+def test_the_restart_question_names_what_differs_and_logs_how(
+    ready: ProcessingPanel, pipeline: Pipeline, mismatched, caplog, reason: str, named: str, other: str
+) -> None:
+    """The question stays short; what exactly differs is for the log."""
+    mismatched(CheckpointMismatch(reason, 'what exactly differs'))
 
-    ready._process_button.click()
+    with caplog.at_level(logging.WARNING, logger='main_logger'):
+        ready._process_button.click()
 
-    assert '1 of the 3 image(s) held are not among the 6 currently loaded.' in mismatched.last
+    assert f'the {named} from the checkpoint' in mismatched.last
+    assert other not in mismatched.last
+    assert 'what exactly differs' not in mismatched.last
+    assert 'what exactly differs' in caplog.text
 
 
 # ----------------------------------------------------------------------------

@@ -118,6 +118,32 @@ def test_a_load_finding_nothing_clears_the_table_and_says_so(
     assert any('Could not load data' in message for message in shown_errors)
 
 
+def loaded_images(panel: LoadingPanel) -> int:
+    """ The number of images the panel says are loaded. """
+    return int(panel._loaded_images_value_label.text())
+
+
+def test_no_image_is_loaded_before_a_load(panel: LoadingPanel) -> None:
+    assert loaded_images(panel) == 0
+
+
+def test_a_load_counts_the_images_it_found(panel: LoadingPanel) -> None:
+    panel._on_load_data_csv()
+
+    assert loaded_images(panel) == panel._metadata_table.native.rowCount() == 6
+
+
+def test_a_load_finding_nothing_counts_none(panel: LoadingPanel, tmp_path: Path, shown_errors: list) -> None:
+    """The images of the load before are gone with it, and are not to be counted any more."""
+    panel._on_load_data_csv()
+    panel._phenome.params.paths.images = tmp_path / 'empty'
+    (tmp_path / 'empty').mkdir()
+
+    panel._on_load_data_csv()
+
+    assert loaded_images(panel) == 0
+
+
 # ----------------------------------------------------------------------------
 # Letting go of the previous results, and the question asked before it
 # ----------------------------------------------------------------------------

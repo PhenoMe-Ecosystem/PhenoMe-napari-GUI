@@ -6,7 +6,7 @@ import pandas as pd
 from magicgui.widgets import create_widget
 from napari.qt.threading import thread_worker
 from napari.utils import notifications
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
@@ -138,7 +138,23 @@ class LoadingPanel(QWidget):
         self._path_load_data_btn = QPushButton('Load Data')
 
         self._build_loading_group()
-        self._loading_group.setLayout(self._loading_stack)
+
+        # How many images the last load found, under the page stack so it reads under whichever Load
+        # Data button is shown
+        loaded_images_row = QHBoxLayout()
+        loaded_images_label = QLabel("Loaded images:")
+
+        self._loaded_images_value_label = QLabel()
+        self._loaded_images_value_label.setAlignment(Qt.AlignRight)
+
+        loaded_images_row.addWidget(loaded_images_label)
+        loaded_images_row.addWidget(self._loaded_images_value_label)
+        self._refresh_loaded_images_label()
+
+        loading_group_layout = QVBoxLayout()
+        loading_group_layout.addLayout(self._loading_stack)
+        loading_group_layout.addLayout(loaded_images_row)
+        self._loading_group.setLayout(loading_group_layout)
 
         # What each page's load reads: the box, what it is called in a tooltip, what it has to be,
         # and whether it may be left empty. The images are the one thing a load needs. Defined
@@ -436,6 +452,8 @@ class LoadingPanel(QWidget):
         Returns:
             True if the table was updated successfully, False if the dataframe was None or empty.
         """
+        self._refresh_loaded_images_label()
+
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self.data_loaded.emit()
@@ -445,6 +463,10 @@ class LoadingPanel(QWidget):
             self._metadata_table.value = metadata_df
             self.data_loaded.emit()
             return True
+
+    def _refresh_loaded_images_label(self) -> None:
+        """ Say how many images the dataset loaded holds, none before a load or after one finding nothing. """
+        self._loaded_images_value_label.setText(str(self._phenome.n_loaded_images))
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """
