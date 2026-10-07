@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
 from ..utils.params import PRESET_CHOICES
-from ..utils.phenome_interface import AUTOSAVE_CHECKPOINT, PhenoMeInterface
+from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
 from .advanced_processing_params import AdvancedProcessingParams
 from .model_window import ModelWindow
@@ -53,9 +53,11 @@ class ProcessingPanel(QWidget):
     properties are computed after the embeddings when asked for, or on their own over the embeddings
     already there.
 
-    A run keeps its results in memory unless autosave (lazy checkpointing) is on, in which case it
-    writes them to the selected checkpoint as it goes, or to an autosave in the working directory when
-    none is selected; saving them is otherwise a step of its own.
+    A run is made in memory, writing to no checkpoint as it goes: saving the results is a step of its
+    own, and the checkpoint they were loaded from is never touched. With Resume progress ticked, a run
+    keeps the embeddings already there and processes only the images missing from them. An extraction
+    interrupted partway - stopped, or failed - is autosaved to a file of its own in the working
+    directory, to be loaded and resumed from.
     """
 
     # PhenoMe runs its progress callback on the worker thread, which must not touch widgets. Emitting
@@ -106,11 +108,6 @@ class ProcessingPanel(QWidget):
         # properties_started signal. Read when the task ends, a failure or a stop answering differently
         # for each of the two steps.
         self._computing_properties = False
-
-        # Whether the properties preset has been changed since the last run. PhenoMe resumes a
-        # checkpoint's properties rather than recomputing them, and only warns about the keys the new
-        # preset asks for and cannot find, so a changed preset has to say so or it is quietly ignored.
-        self._preset_changed = False
 
         # Set from here to ask the task running on the worker thread to stop, and read there from the
         # progress callback. A fresh one is made for every run, so a stop never carries into the next.
@@ -242,16 +239,15 @@ class ProcessingPanel(QWidget):
         self._processing_group.setObjectName("parentGroup")
         processing_layout = QVBoxLayout()
 
-        # Lazy checkpointing: the run writes to the current checkpoint as it goes and resumes from
-        # what it holds, or to an autosave in the working directory when there is none yet
-        self._autosave_checkbox = QCheckBox("Autosave/resume progress")
-        self._autosave_checkbox.setChecked(self._phenome.params.process.lazy_checkpoint)
-        self._autosave_checkbox.setToolTip(
-            'Write the results to the current checkpoint as they are computed, resuming from what it '
-            f'already holds. Without one, they are written to {AUTOSAVE_CHECKPOINT} in the working directory.'
+        # Whether a run extends the embeddings already there rather than processing every image again
+        self._resume_checkbox = QCheckBox("Resume progress")
+        self._resume_checkbox.setChecked(self._phenome.params.process.resume_progress)
+        self._resume_checkbox.setToolTip(
+            'Keep the embeddings already there - loaded from a checkpoint or left by a stopped run - and '
+            'process only the images missing. Without it, every image is processed again.'
         )
-        self._autosave_checkbox.clicked.connect(self._on_autosave_checkbox_changed)
-        processing_layout.addWidget(self._autosave_checkbox)
+        self._resume_checkbox.clicked.connect(self._on_resume_checkbox_changed)
+        processing_layout.addWidget(self._resume_checkbox)
 
         # Process / Stop row
         process_row = QHBoxLayout()
@@ -279,8 +275,17 @@ class ProcessingPanel(QWidget):
         self.model_ready.connect(self._on_model_ready)
         self.properties_started.connect(self._on_properties_started)
 
+        # Timer for processing
+        timer_row = QHBoxLayout()
+        timer_label = QLabel("Elapsed time:")
+        self._timer_value_label = QLabel("00:00")
+        self._timer_value_label.setAlignment(Qt.AlignRight)
+        timer_row.addWidget(timer_label)
+        timer_row.addWidget(self._timer_value_label)
+
         processing_layout.addLayout(process_row)
         processing_layout.addWidget(self._progress_bar)
+        processing_layout.addLayout(timer_row)
         self._processing_group.setLayout(processing_layout)
 
         layout.addWidget(self._embeddings_group,1)
@@ -341,10 +346,6 @@ class ProcessingPanel(QWidget):
         label follow it back to naming nothing. The selected model is not a result and stays where
         it is, along with the label naming it and the network loaded for it.
         """
-        # The checkpoint went with the results, so there are no properties left for a changed preset
-        # to have to be computed over
-        self._preset_changed = False
-
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
         self._progress_bar.setFormat('')
@@ -386,7 +387,7 @@ class ProcessingPanel(QWidget):
         self._cuda_radio.setEnabled(idle and self._phenome.cuda_available)
         self._props_selection_combo.setEnabled(idle)
         self._props_checkbox.setEnabled(idle)
-        self._autosave_checkbox.setEnabled(idle)
+        self._resume_checkbox.setEnabled(idle)
 
     def _refresh_stop_button(self) -> None:
         """ Offer the stop only while there is a task to stop, and only once.
@@ -500,14 +501,13 @@ class ProcessingPanel(QWidget):
     def _compute_properties_worker(self) -> None:
         """ Create worker to compute the properties alone on a parallel thread.
 
-        The properties the checkpoint holds, if any, are dropped and computed again. The stop is read
-        from the progress callback, as it is for a full run.
+        The properties held, if any, are computed again for every image. The stop is read from the
+        progress callback, as it is for a full run.
         """
         self._phenome.compute_properties(
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
-            ),
-            force_update=True
+            )
         )
 
     def _on_save_checkpoint_pressed(self) -> None:
@@ -641,9 +641,6 @@ class ProcessingPanel(QWidget):
             self._refresh_checkpoint()
             return
 
-        # The properties may have come with it, so a preset picked before is no longer unanswered for
-        self._preset_changed = False
-
         self.refresh_buttons()
 
         # The embeddings it holds are what the analysis steps run on, and nothing else would tell them
@@ -692,48 +689,42 @@ class ProcessingPanel(QWidget):
     def _on_process_clicked(self) -> None:
         """ Begins the processing task: the embedding extraction, then the properties when they are asked for.
 
-        With autosave on, the checkpoint is read before anything is started - the selected one, or the
-        autosave in the working directory when there is none: PhenoMe resumes from the one it is pointed at, and raises on one it cannot resume from, which is a long way into
-        a run to find out. Asked here, the same disagreement is put to the user while the run can still
-        be called off. Without it the run writes to no checkpoint, and there is nothing to ask.
+        With Resume progress ticked over embeddings already there, the run extends them, processing
+        only the images missing. They are checked first against the settings picked and the images
+        loaded: embeddings made another way could not be extended, and images held under paths naming
+        no loaded file would be processed again and appended twice. Either is put to the user, who can
+        have every image processed again instead, which is then the consent to replace them.
 
-        Only the disagreement is asked about. A checkpoint that agrees is handed to PhenoMe as it is,
-        which resumes it - processing the images it does not yet hold, or loading it and processing
-        nothing at all when it already holds them all.
+        Otherwise a run over embeddings already there - extracted here or read from a checkpoint -
+        asks whether they may be replaced. A resumed run replaces nothing and is not asked about.
 
-        Before either, a run over embeddings already there - extracted here or read from a checkpoint -
-        asks whether they may be replaced, as the analysis results computed from them go with them.
-        Those are only dropped once every question has been answered yes, so a run called off at any
-        of them leaves everything as it was. A run resuming the selected checkpoint replaces nothing,
-        only adding the images it does not hold yet, so it is not asked about; the analysis results
-        are dropped all the same, the embeddings they were computed from no longer being all there is.
+        Either way the analysis results are dropped once every question has been answered yes, the
+        embeddings they were computed from no longer being all there is; a run called off at any
+        question leaves everything as it was.
         """
-        replacing = self._phenome.has_processed_images
-        if replacing and not self._phenome.resumes_checkpoint and not self._confirm_replace_results():
+        held = self._phenome.has_processed_images
+        resume = self._phenome.params.process.resume_progress and held
+
+        if resume:
+            mismatch = self._phenome.inspect_resume()
+            if mismatch is not None:
+                if not self._confirm_restart(mismatch):
+                    logger.info('Processing was called off, leaving the current results as they were.')
+                    return
+                resume = False
+        elif held and not self._confirm_replace_results():
             logger.info('Processing was called off, leaving the current results as they were.')
             return
 
-        mismatch = self._phenome.inspect_checkpoint()
-
-        force_reprocess = False
-        if mismatch is not None:
-            if not self._confirm_overwrite(mismatch):
-                logger.info('Extraction was called off, leaving the checkpoint as it was.')
-                return
-            force_reprocess = True
-
-        # Computed from the embeddings the run replaces, so they would answer for none it produces
-        if replacing:
+        # Computed from embeddings the run replaces or extends, so they would not answer for its own
+        if held:
             self._phenome.clear_analysis()
             self.analysis_cleared.emit()
 
         self._stop_event = threading.Event()
         self._computing_properties = False
 
-        # A preset changed since the last run is forced onto the properties step, which would
-        # otherwise resume the properties the checkpoint holds under the preset before it
-
-        worker = self._process_images_worker(force_reprocess, self._preset_changed)
+        worker = self._process_images_worker(resume)
         worker.returned.connect(self._on_finish_process)
         worker.errored.connect(self._on_process_failed)
 
@@ -745,10 +736,11 @@ class ProcessingPanel(QWidget):
         self._process_button.setText(status)
         self._set_processing_task_running(True)
 
-        # Neither the download nor PhenoMe, while it builds the dataloader and scans the checkpoint,
-        # reports anything, so show a busy indicator until the first batch is reported.
+        # Neither the download nor PhenoMe, while it builds the dataloader, reports anything, so show a
+        # busy indicator until the first batch is reported.
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setFormat('Loading model...' if status == 'Loading model...' else 'Preparing...')
+        self._progress_bar.setToolTip('')
 
         worker.start()
 
@@ -783,8 +775,8 @@ class ProcessingPanel(QWidget):
         self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         self._computing_properties = True
 
-        # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a
-        # busy indicator until the first image is reported.
+        # PhenoMe stays silent while it resolves the image paths, so show a busy indicator until the
+        # first image is reported.
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setFormat('Preparing...')
 
@@ -806,41 +798,31 @@ class ProcessingPanel(QWidget):
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _confirm_overwrite(self, mismatch: CheckpointMismatch) -> bool:
-        """ Ask whether a checkpoint that answers for another run may be deleted and filled again.
+    def _confirm_restart(self, mismatch: CheckpointMismatch) -> bool:
+        """ Ask whether every image may be processed again, the embeddings already there not being extendable.
 
-        The only way past a checkpoint PhenoMe will not resume from, short of naming another file: it
-        removes the file rather than writing over it, so a long extraction is lost with it, and the
-        properties in the same file go with it. Asked with the refusal as its default answer, the way
-        dropping the loaded results is asked.
+        Asked with the refusal as its default answer, the way replacing the results is asked. Nothing
+        on disk is touched either way: the run is made in memory.
 
         Args:
-            mismatch: What the checkpoint holds that this run would not put there.
+            mismatch: What stands in the way of extending the embeddings already there.
         Returns:
-            True when the checkpoint may be deleted and the run made from scratch.
+            True when every image may be processed again, replacing the embeddings already there.
         """
-        # The run's checkpoint rather than the selected one, an autosave not being adopted until it starts
-        checkpoint = self._phenome.process_checkpoint()
-        filled_with = (
-            'under different processing settings, or with a different model'
-            if mismatch.reason == MODEL_MISMATCH else 'from a different dataset'
+        made = (
+            'were extracted under different processing settings'
+            if mismatch.reason == MODEL_MISMATCH else 'name images that are not all loaded'
         )
 
-        # Only the dataset mismatch has anything to add: what a run's parameters disagree on goes to
-        # the log, PhenoMe writing the whole comparison out there key by key itself.
-        detail = f'{mismatch.detail}\n\n' if mismatch.detail else ''
-
-        logger.warning(
-            "The checkpoint at '%s' was filled %s. %s", checkpoint, filled_with, mismatch.detail
-        )
+        logger.warning('The embeddings already there %s, and cannot be resumed: %s', made, mismatch.detail)
 
         answer = QMessageBox.warning(
             self,
-            'Checkpoint does not match',
-            f"The checkpoint at {checkpoint} was filled {filled_with}.\n\n"
-            f"{detail}"
-            'Overwriting deletes the file, and the properties it holds along with the embeddings.\n\n'
-            'Overwrite the checkpoint?',
+            'Cannot resume',
+            f'The embeddings already there {made}, so they cannot be extended.\n\n'
+            f'{mismatch.detail}\n\n'
+            'Process every image again instead? The current embeddings and properties, and all results, '
+            'will be discarded.',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -873,12 +855,8 @@ class ProcessingPanel(QWidget):
         self._compute_properties_button.setText('Compute Properties')
         self._set_processing_task_running(False)
 
-        # The preset now answers for what the checkpoint holds, this run having just computed it
-        if self._computing_properties:
-            self._preset_changed = False
-
-        # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
-        # here instead of relying on a final callback.
+        # A resume with nothing left to process returns without ever reporting progress, so settle the
+        # bar here instead of relying on a final callback.
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(1)
         self._progress_bar.setFormat('Done!')
@@ -888,20 +866,13 @@ class ProcessingPanel(QWidget):
 
         The worker swallows the exception into this signal, and the controls are held shut for the
         duration of a task: with nobody listening, a raise leaves them shut for good and the tab has to
-        be restarted to be used again. PhenoMe raises here for a checkpoint it cannot resume from,
-        among other things, which the run before it was asked about but which can still arrive from a
-        checkpoint written between the question and the run.
+        be restarted to be used again.
 
-        Read against the step the task had reached. A failed properties step leaves the changed preset
-        standing, this run not having computed it.
-
-        A stop arrives the same way, the run being called off by raising out of the progress callback,
-        and is not reported as a failure: it was asked for, and it is picked up by asking for the run
-        again. A stopped extraction keeps the embeddings it computed, which the interface has put in
-        the pipeline by then, so they can be saved or analysed like a partial checkpoint. A stop in the properties step answers for the preset differently: PhenoMe clears the
-        properties the checkpoint holds before it computes the first one, so a run that got as far as
-        reporting has already replaced them with the preset it was started under, and saying otherwise
-        would have the next run clear the partial properties it is meant to carry on from.
+        Read against the step the task had reached. A stop arrives the same way, the run being called
+        off by raising out of the progress callback, and is not reported as a failure: it was asked
+        for. An interrupted extraction - stopped or failed - keeps the embeddings it computed, which the
+        interface has put in the pipeline and autosaved by then, and the user is told where the
+        autosave is, it being theirs to load and resume from.
 
         Args:
             error: The exception the task raised, as the worker caught it.
@@ -916,10 +887,13 @@ class ProcessingPanel(QWidget):
         unfinished = self._properties_group if self._computing_properties else self._embeddings_group
         unfinished.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
 
+        # Only an extraction autosaves, and only the run that just ended can have
+        autosave = None if self._computing_properties else self._phenome.last_autosave
+
         if isinstance(error, TaskStopped):
-            self._settle_bar('Stopped')
+            self._settle_bar('Stopped - progress autosaved' if autosave else 'Stopped')
+            self._progress_bar.setToolTip(f'Progress saved to {autosave}' if autosave else '')
             if self._computing_properties:
-                self._preset_changed = False
                 logger.info('The properties calculation was stopped.')
             else:
                 logger.info('The extraction was stopped.')
@@ -932,7 +906,13 @@ class ProcessingPanel(QWidget):
             QMessageBox.critical(self, 'Properties failed', f'Could not compute the properties.\n\n{error}')
         else:
             logger.error('Could not extract the embeddings: %s', error)
-            QMessageBox.critical(self, 'Extraction failed', f'Could not extract the embeddings.\n\n{error}')
+            saved = (
+                f'\n\nThe progress so far was saved to {autosave}. Load it and tick Resume progress to continue.'
+                if autosave else ''
+            )
+            QMessageBox.critical(
+                self, 'Extraction failed', f'Could not extract the embeddings.\n\n{error}{saved}'
+            )
 
     def _settle_bar(self, status: str) -> None:
         """ Take the progress bar out of the busy state a task that did not run to its end left it spinning in.
@@ -945,7 +925,7 @@ class ProcessingPanel(QWidget):
         self._progress_bar.setFormat(status)
 
     @thread_worker
-    def _process_images_worker(self, force_reprocess: bool = False, force_update: bool = False) -> None:
+    def _process_images_worker(self, resume: bool = False) -> None:
         """ Create worker to load the selected model, process images and compute their properties on a parallel thread.
 
         The model is loaded first, unless the one held already answers for the selected model and
@@ -964,11 +944,8 @@ class ProcessingPanel(QWidget):
         reaching the bar.
 
         Args:
-            force_reprocess: Whether to delete the checkpoint and process every image again,
-                which is only ever passed for a checkpoint the user has been asked about.
-            force_update: Whether to drop the properties the checkpoint holds and compute them
-                again, which a preset changed since the last run needs. The embeddings in the same
-                file are left where they are.
+            resume: Whether to extend the embeddings already there rather than process every image
+                again, only ever passed once they have been checked against the run.
         """
         # No widget is touched from here: this runs off the GUI thread, where Qt cannot restyle or
         # repaint one. Each step is announced through a signal, and the panel shows it on its own thread.
@@ -979,7 +956,7 @@ class ProcessingPanel(QWidget):
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
             ),
-            force_reprocess=force_reprocess
+            resume=resume
         )
 
         if not self._phenome.params.properties.compute:
@@ -989,38 +966,24 @@ class ProcessingPanel(QWidget):
         self._phenome.compute_properties(
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
-            ),
-            force_update=force_update
+            )
         )
 
     def _on_properties_changed(self) -> None:
         """ Update the properties preset parameter when the selection changes.
 
-        A changed preset is noted, as the next run has to be told to compute its properties again
-        rather than resume the ones the checkpoint holds, which were computed under the preset picked
-        before it. Picking a preset is the whole of the signal, so nothing has to be asked.
+        Read when the properties are next computed, which is always for every image.
         """
         preset = self._props_selection_combo.currentText()
         self._phenome.params.properties.preset = preset
-        self._preset_changed = True
 
     def _on_properties_checkbox_changed(self) -> None:
-        """ Update the properties calculation parameter when the checkbox is toggled.
-
-        A changed preset is noted, as the next run has to be told to compute its properties again
-        rather than resume the ones the checkpoint holds, which were computed under the preset picked
-        before it. Toggling the checkbox is the whole of the signal, so nothing has to be asked.
-        """
+        """ Update the properties calculation parameter when the checkbox is toggled. """
         self._phenome.params.properties.compute = self._props_checkbox.isChecked()
-        self._preset_changed = True
 
-    def _on_autosave_checkbox_changed(self) -> None:
-        """ Turn lazy checkpointing on or off when the autosave checkbox is toggled.
-
-        Read when the next run starts: with a checkpoint selected the run resumes from it, otherwise
-        it writes to an autosave in the working directory and selects that.
-        """
-        self._phenome.params.process.lazy_checkpoint = self._autosave_checkbox.isChecked()
+    def _on_resume_checkbox_changed(self) -> None:
+        """ Have the next run extend the embeddings already there, or process every image again. """
+        self._phenome.params.process.resume_progress = self._resume_checkbox.isChecked()
 
     def _refresh_groups(self) -> None:
         """ Update the style of the embedding and properties groups to reflect their state.

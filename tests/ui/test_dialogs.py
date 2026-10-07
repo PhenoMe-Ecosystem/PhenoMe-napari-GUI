@@ -209,7 +209,7 @@ def test_the_buttons_settle_the_dialog(parent: QWidget, form: type, model: type,
 
 # Processing parameters other than the defaults in every field the form shows, and in some it does not
 EDITED = ProcessParams(
-    channel_mode='combined', batch_size=64, num_workers=2, device='cuda', lazy_checkpoint=True
+    channel_mode='combined', batch_size=64, num_workers=2, device="cuda", resume_progress=True
 )
 
 

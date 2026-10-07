@@ -5,7 +5,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import torch
+from phenome.core.pipeline_results import PhenoMeResults
 from phenome.io import CheckpointManager
+from phenome.utils import ModelWrapper
 from pydantic import ValidationError
 
 from phenome_gui.registries.models import MODEL_OPTIONS
@@ -122,8 +125,8 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
 
     passed = {}
 
-    def _capture(model, checkpoint_path, **kwargs) -> None:
-        passed.update(kwargs, checkpoint_path=checkpoint_path)
+    def _capture(model, **kwargs) -> None:
+        passed.update(kwargs)
 
     monkeypatch.setattr(phenome.image_processing, 'process_images', _capture)
     return passed
@@ -499,10 +502,10 @@ def test_a_written_checkpoint_without_properties_reads_back_without_them(
 def test_a_written_checkpoint_agrees_with_the_run_that_would_resume_it(
     loaded: PhenoMeInterface, written_checkpoint
 ) -> None:
-    """Written under the arguments the interface runs with, so an extraction has nothing to ask about."""
+    """Written under the arguments the interface runs with, so a resume has nothing to ask about."""
     loaded.load_checkpoint(written_checkpoint(loaded))
 
-    assert loaded.inspect_checkpoint() is None
+    assert loaded.inspect_resume() is None
 
 
 def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
@@ -515,7 +518,7 @@ def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
 
     # Whatever reading it would find is beside the point, the load never asking
     monkeypatch.setattr(
-        phenome_interface, 'inspect_checkpoint',
+        phenome_interface, 'inspect_held_embeddings',
         lambda *args: CheckpointMismatch(MODEL_MISMATCH, 'channel_mode differs')
     )
 
@@ -525,27 +528,25 @@ def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
     assert phenome.params.paths.checkpoint == checkpoint
 
 
-def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
+def test_the_picked_channel_mode_reaches_the_resume_check(
     phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What makes the overwrite prompt fire on a mode change rather than resuming the other run's embeddings."""
+    """What makes a mode change stop a resume rather than append embeddings of another kind."""
     read_with = {}
 
-    def _capture(path, processing_params, image_paths):
-        read_with.update(processing_params)
+    def _capture(held_params, held_paths, current_params, loaded_paths):
+        read_with.update(current_params)
 
-    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', _capture)
-    phenome.params.process.lazy_checkpoint = True
-    phenome.params.paths.checkpoint = Path('run.hdf5')
+    monkeypatch.setattr(phenome_interface, 'inspect_held_embeddings', _capture)
     phenome.params.process.channel_mode = 'combined'
 
-    phenome.inspect_checkpoint()
+    phenome.inspect_resume()
 
     assert read_with['channel_mode'] == 'combined'
 
 
 # ----------------------------------------------------------------------------
-# Where a run writes: nowhere by default, the selected checkpoint when lazy
+# Where a run writes: nowhere, and what a resume hands PhenoMe
 # ----------------------------------------------------------------------------
 
 
@@ -554,19 +555,37 @@ def properties_step(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) 
     """ Catch the arguments the properties step would be run under, rather than running it.
 
     Returns:
-        Filled with the checkpoint and the keyword arguments handed down, once the step has been asked for.
+        Filled with the keyword arguments handed down, once the step has been asked for.
     """
     passed = {}
 
-    def _capture(preset, checkpoint_path, **kwargs) -> pd.DataFrame:
-        passed.update(kwargs, checkpoint_path=checkpoint_path)
+    def _capture(preset, **kwargs) -> pd.DataFrame:
+        passed.update(kwargs, preset=preset)
         return pd.DataFrame({'area': [1.0]})
 
     monkeypatch.setattr(phenome.image_processing, 'compute_properties', _capture)
     return passed
 
 
-def test_a_run_writes_to_no_checkpoint_by_default(
+def held(interface: PhenoMeInterface, n_images: int, properties: bool = True) -> None:
+    """ Leave real results for the first images of the loaded dataset in the pipeline, as a stopped run does.
+
+    Args:
+        interface: The interface whose dataset the results answer for.
+        n_images: How many of the loaded images have their embeddings.
+        properties: Whether the results carry properties.
+    """
+    results = results_for(interface, properties)
+    interface.pheno.results = PhenoMeResults(
+        img_path=results.img_path[:n_images],
+        metadata=results.metadata[:n_images],
+        properties=results.properties[:n_images],
+        embeddings=results.embeddings[:n_images],
+    )
+    interface.pheno._processing_params = interface.processing_params()
+
+
+def test_a_run_never_writes_to_a_checkpoint(
     phenome: PhenoMeInterface, extraction: dict, properties_step: dict, tmp_path: Path
 ) -> None:
     """The results stay in memory until saved, even with a checkpoint selected from a save or a load."""
@@ -576,103 +595,79 @@ def test_a_run_writes_to_no_checkpoint_by_default(
     phenome.compute_properties()
 
     for passed in (extraction, properties_step):
-        assert passed['checkpoint_path'] is None
-        assert passed['lazy_checkpoint'] is False
+        assert not {'checkpoint_path', 'lazy_checkpoint', 'force_update', 'force_reprocess'} & set(passed)
 
 
-def test_a_lazy_run_writes_to_the_selected_checkpoint(
-    phenome: PhenoMeInterface, extraction: dict, properties_step: dict, tmp_path: Path
+def test_a_run_from_scratch_processes_every_image(loaded: PhenoMeInterface, extraction: dict) -> None:
+    held(loaded, 3)
+
+    loaded.process_images()
+
+    assert 'append' not in extraction
+    assert 'exclude' not in extraction
+
+
+def test_a_resume_excludes_the_images_held_and_appends_the_rest(
+    loaded: PhenoMeInterface, extraction: dict
 ) -> None:
-    phenome.params.process.lazy_checkpoint = True
-    phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
+    held(loaded, 3)
 
-    phenome.process_images()
-    phenome.compute_properties()
+    loaded.process_images(resume=True)
 
-    for passed in (extraction, properties_step):
-        assert passed['checkpoint_path'] == tmp_path / 'run.hdf5'
-        assert passed['lazy_checkpoint'] is True
+    assert extraction['append'] is True
+    assert extraction['exclude'] == {'file_path': list(loaded.metadata_df['file_path'][:3])}
 
 
-def test_a_run_writing_nowhere_has_no_checkpoint_to_disagree_with(
-    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_a_resume_drops_the_properties_held(loaded: PhenoMeInterface, extraction: dict) -> None:
+    """They would answer for the images held only, and the properties step computes them all anew."""
+    held(loaded, 3, properties=True)
+    loaded.properties_df = pd.DataFrame({'area': [1.0, 2.0, 3.0]})
+
+    loaded.process_images(resume=True)
+
+    assert not loaded.has_stored_properties
+    assert loaded.properties_df is None
+
+
+def test_a_resume_with_nothing_missing_runs_nothing(loaded: PhenoMeInterface, extraction: dict) -> None:
+    """PhenoMe would otherwise return early with the held embeddings taken out of the results."""
+    held(loaded, 6)
+
+    loaded.process_images(resume=True)
+
+    assert extraction == {}
+    assert loaded.has_all_embeddings
+
+
+def test_the_resume_check_reads_the_settings_the_embeddings_were_made_under(loaded: PhenoMeInterface) -> None:
+    held(loaded, 3)
+    assert loaded.inspect_resume() is None
+
+    loaded.params.process.channel_mode = 'combined'
+
+    assert loaded.inspect_resume().reason == MODEL_MISMATCH
+
+
+def test_the_resume_check_reads_the_images_held(loaded: PhenoMeInterface) -> None:
+    """An image the run would not recognise as done would be processed again and appended twice."""
+    held(loaded, 3)
+    loaded.pheno.results.img_path[0] = '/elsewhere/not_loaded.tif'
+
+    assert loaded.inspect_resume().reason == DATASET_MISMATCH
+
+
+def test_a_checkpoint_of_the_dataset_moved_elsewhere_can_be_resumed(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
 ) -> None:
-    """Nothing is read either: a file the run never touches has nothing to say about it."""
-    read = []
-    monkeypatch.setattr(
-        phenome_interface, 'inspect_checkpoint',
-        lambda *args: read.append(args) or CheckpointMismatch(MODEL_MISMATCH),
-    )
-    phenome.params.paths.checkpoint = tmp_path / 'other.hdf5'
+    """PhenoMe resolves the paths it stores against the files found, which is what the exclusion matches."""
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+    path = written_checkpoint(loaded, name='part.hdf5')
+    load_copy(loaded, copied_dataset())
 
-    assert phenome.inspect_checkpoint() is None
-    assert read == []
+    loaded.load_checkpoint(path)
 
-
-def test_a_lazy_run_reads_the_checkpoint_it_writes_to(
-    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    read = []
-    monkeypatch.setattr(
-        phenome_interface, 'inspect_checkpoint',
-        lambda path, *args: read.append(path) or CheckpointMismatch(MODEL_MISMATCH),
-    )
-    phenome.params.process.lazy_checkpoint = True
-    phenome.params.paths.checkpoint = tmp_path / 'run.hdf5'
-
-    assert phenome.inspect_checkpoint().reason == MODEL_MISMATCH
-    assert read == [tmp_path / 'run.hdf5']
-
-
-def test_a_lazy_run_without_a_checkpoint_autosaves_in_the_working_directory(
-    phenome: PhenoMeInterface,
-    extraction: dict,
-    properties_step: dict,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The autosave is selected as the run starts, so the properties after it land in the same file."""
-    monkeypatch.chdir(tmp_path)
-    phenome.params.process.lazy_checkpoint = True
-    autosave = tmp_path / AUTOSAVE_CHECKPOINT
-
-    phenome.process_images()
-    phenome.compute_properties()
-
-    assert phenome.params.paths.checkpoint == autosave
-    for passed in (extraction, properties_step):
-        assert passed['checkpoint_path'] == autosave
-        assert passed['lazy_checkpoint'] is True
-
-
-def test_properties_computed_alone_never_fall_back_on_the_autosave(
-    phenome: PhenoMeInterface, properties_step: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """They run over the embeddings already there, which an autosave the run never wrote would not hold."""
-    monkeypatch.chdir(tmp_path)
-    phenome.params.process.lazy_checkpoint = True
-
-    phenome.compute_properties()
-
-    assert properties_step['checkpoint_path'] is None
-    assert phenome.params.paths.checkpoint is None
-
-
-def test_a_lazy_run_without_a_checkpoint_reads_the_autosave(
-    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An autosave left by another dataset is found before the run deletes it, not halfway through."""
-    read = []
-    monkeypatch.setattr(
-        phenome_interface, 'inspect_checkpoint',
-        lambda path, *args: read.append(path) or CheckpointMismatch(DATASET_MISMATCH),
-    )
-    monkeypatch.chdir(tmp_path)
-    phenome.params.process.lazy_checkpoint = True
-
-    assert phenome.inspect_checkpoint().reason == DATASET_MISMATCH
-    assert read == [tmp_path / AUTOSAVE_CHECKPOINT]
-    assert phenome.params.paths.checkpoint is None
+    assert loaded.inspect_resume() is None
+    assert len(loaded.image_processing.loaded_paths_among(loaded.pheno.results.img_path)) == 3
 
 
 # ----------------------------------------------------------------------------
@@ -867,20 +862,6 @@ def test_an_empty_checkpoint_is_refused(phenome: PhenoMeInterface, monkeypatch: 
     assert phenome.params.paths.checkpoint is None
 
 
-@pytest.mark.parametrize(
-    ('lazy', 'checkpoint', 'resumes'),
-    [(True, Path('run.hdf5'), True), (True, None, False), (False, Path('run.hdf5'), False)],
-)
-def test_only_a_lazy_run_with_a_checkpoint_selected_resumes_it(
-    phenome: PhenoMeInterface, lazy: bool, checkpoint: Path | None, resumes: bool
-) -> None:
-    """An autosave not yet written has nothing to resume, and a run in memory replaces everything."""
-    phenome.params.process.lazy_checkpoint = lazy
-    phenome.params.paths.checkpoint = checkpoint
-
-    assert phenome.resumes_checkpoint is resumes
-
-
 def test_a_checkpoint_of_the_same_dataset_moved_elsewhere_still_loads(
     loaded: PhenoMeInterface, written_checkpoint, copied_dataset
 ) -> None:
@@ -895,113 +876,171 @@ def test_a_checkpoint_of_the_same_dataset_moved_elsewhere_still_loads(
 
 
 # ----------------------------------------------------------------------------
-# A stopped extraction keeps what it computed
+# An interrupted extraction keeps what it computed, and autosaves it
 # ----------------------------------------------------------------------------
 
 
-def stopped_after(step):
-    """ An extraction that runs a step of its own, then is stopped the way the progress callback stops it.
+def interrupted_after(step, error: Exception | None = None):
+    """ An extraction that runs a step of its own, then is interrupted.
 
     Args:
-        step: Called with no arguments before the stop, standing in for the batches processed so far.
+        step: Called with no arguments before the interruption, standing in for the batches processed.
+        error: What interrupts it, a stop unless told otherwise.
     Returns:
         Something to put in place of ImageProcessing.process_images.
     """
-    def _run(model, checkpoint_path, **kwargs) -> None:
+    def _run(model, **kwargs) -> None:
         step()
-        raise TaskStopped('Task interrupted by user')
+        raise error or TaskStopped('Task interrupted by user')
 
     return _run
 
 
-def test_a_stopped_run_in_memory_keeps_its_embeddings(
-    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def three_images_computed(interface: PhenoMeInterface):
+    """ A step leaving three images computed, the way PhenoMe leaves them partway through a run.
+
+    PhenoMe names the images in the results as it goes, but holds their embeddings apart until the end.
+    """
+    results = results_for(interface, properties=False)
+
+    def _step() -> None:
+        interface.pheno.results.img_path.extend(results.img_path[:3])
+        interface.pheno.results.metadata.extend(results.metadata[:3])
+        interface.pheno._emb_buffer.extend(results.embeddings[:3])
+
+    return _step
+
+
+@pytest.fixture
+def working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """ Run the test from a directory of its own, where an autosave would be written. """
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.mark.parametrize('error', [TaskStopped('Task interrupted by user'), RuntimeError('out of memory')])
+def test_an_interrupted_run_keeps_and_autosaves_what_it_computed(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path, error: Exception
 ) -> None:
-    """PhenoMe names the images in the results as it goes but holds their embeddings apart until the end."""
+    """A stop or a failure alike, without the autosave becoming the current checkpoint."""
     loaded.model = object()
-    results = results_for(loaded, properties=False)
+    previous = working_directory / 'previous.hdf5'
+    loaded.params.paths.checkpoint = previous
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images', interrupted_after(three_images_computed(loaded), error)
+    )
 
-    def _three_images() -> None:
-        loaded.pheno.results.img_path.extend(results.img_path[:3])
-        loaded.pheno.results.metadata.extend(results.metadata[:3])
-        loaded.pheno._emb_buffer.extend(results.embeddings[:3])
-
-    monkeypatch.setattr(loaded.image_processing, 'process_images', stopped_after(_three_images))
-
-    with pytest.raises(TaskStopped):
+    with pytest.raises(type(error)):
         loaded.process_images()
 
+    autosave = working_directory / AUTOSAVE_CHECKPOINT
+    assert loaded.last_autosave == autosave
     assert loaded.pheno.results.embeddings.shape == (3, EMBEDDING_DIM)
-    assert not loaded.has_all_embeddings
+    assert loaded.params.paths.checkpoint == previous
 
-    # What the Save button does, which used to raise for want of embeddings
-    loaded.save_checkpoint(tmp_path / 'kept.hdf5')
-    loaded.load_checkpoint(tmp_path / 'kept.hdf5')
-    assert loaded.pheno.results.n_images == 3
+    # Loaded back, it is the progress to resume from
+    loaded.load_checkpoint(autosave)
+    assert loaded.n_processed_images == 3
 
 
-def test_a_stopped_lazy_run_reads_back_every_batch_it_computed(
-    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_a_run_interrupted_before_any_batch_autosaves_nothing(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
 ) -> None:
-    """Batches buffered since the last commit included, which the stop would otherwise leave behind."""
     loaded.model = object()
-    loaded.params.process.lazy_checkpoint = True
-    path = tmp_path / 'run.hdf5'
-    loaded.params.paths.checkpoint = path
-    results = results_for(loaded, properties=False)
-
-    def _three_images_buffered(model, checkpoint_path, **kwargs) -> None:
-        # Held open and uncommitted by the frame the stop is raised from, as PhenoMe's extraction loop
-        # holds it between commits when its progress callback raises
-        checkpoint = CheckpointManager(
-            str(checkpoint_path), embedding_dim=EMBEDDING_DIM, processing_params=loaded.processing_params(),
-            lazy=True,
-        )
-        checkpoint.buffer_embeddings(results.embeddings[:3], results.img_path[:3], results.metadata[:3])
-        raise TaskStopped('Task interrupted by user')
-
-    monkeypatch.setattr(loaded.image_processing, 'process_images', _three_images_buffered)
+    monkeypatch.setattr(loaded.image_processing, 'process_images', interrupted_after(lambda: None))
 
     with pytest.raises(TaskStopped):
         loaded.process_images()
 
-    assert loaded.pheno.results.n_images == 3
-    assert not loaded.has_all_embeddings
-    assert loaded.params.paths.checkpoint == path
+    assert loaded.last_autosave is None
+    assert not (working_directory / AUTOSAVE_CHECKPOINT).exists()
 
 
-def test_a_lazy_run_stopped_before_writing_anything_keeps_nothing(
-    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_a_run_interrupted_halfway_through_a_batch_keeps_nothing(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
 ) -> None:
-    """The stop stays a stop: a checkpoint that was never written is no failure."""
+    """Paths named without their embeddings would be saved against the wrong rows."""
     loaded.model = object()
-    loaded.params.process.lazy_checkpoint = True
-    loaded.params.paths.checkpoint = tmp_path / 'never.hdf5'
-    monkeypatch.setattr(loaded.image_processing, 'process_images', stopped_after(lambda: None))
+    step = three_images_computed(loaded)
 
-    with pytest.raises(TaskStopped):
+    def _misaligned() -> None:
+        step()
+        loaded.pheno._emb_buffer.pop()
+
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images', interrupted_after(_misaligned, RuntimeError('crash'))
+    )
+
+    with pytest.raises(RuntimeError, match='crash'):
         loaded.process_images()
 
     assert not loaded.has_processed_images
+    assert loaded.last_autosave is None
 
 
-def test_a_failed_run_is_not_read_back(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only a stop was asked for: what a failure leaves behind is the failure's to report."""
-    phenome.model = object()
-    phenome.params.process.lazy_checkpoint = True
-    phenome.params.paths.checkpoint = Path('run.hdf5')
-    read = []
-    monkeypatch.setattr(phenome, 'load_checkpoint', read.append)
+def test_an_autosave_that_cannot_be_written_never_hides_the_interruption(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
+) -> None:
+    """The run's own failure is what the user is told about, and the progress stays in memory."""
+    loaded.model = object()
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images',
+        interrupted_after(three_images_computed(loaded), RuntimeError('out of memory')),
+    )
 
-    def _fail(model, checkpoint_path, **kwargs) -> None:
-        raise RuntimeError('out of memory')
+    def _full_disk(path: str) -> None:
+        raise OSError('No space left on device')
 
-    monkeypatch.setattr(phenome.image_processing, 'process_images', _fail)
+    monkeypatch.setattr(loaded.image_processing, 'save_results', _full_disk)
 
-    with pytest.raises(RuntimeError):
-        phenome.process_images()
+    with pytest.raises(RuntimeError, match='out of memory'):
+        loaded.process_images()
 
-    assert read == []
+    assert loaded.last_autosave is None
+    assert loaded.n_processed_images == 3
+
+
+class FakeModel(ModelWrapper):
+    """ A model that needs no download: each image's embedding is its mean over every pixel. """
+
+    def _get_embeddings(self, tensor: torch.Tensor) -> torch.Tensor:
+        """ Reduce a batch of images to one value per channel.
+
+        Args:
+            tensor: The batch, as (B, C, H, W).
+        Returns:
+            The embeddings, as (B, C).
+        """
+        return tensor.mean(dim=(2, 3))
+
+
+def test_a_stopped_run_autosaves_and_resumes_from_the_loaded_autosave(
+    loaded: PhenoMeInterface, working_directory: Path
+) -> None:
+    """End to end through PhenoMe itself: no image is skipped, and none is processed twice."""
+    loaded.model = FakeModel(None, device=torch.device('cpu'))
+    loaded.params.process.batch_size = 2
+
+    def _stop_after_the_first_batch(current: int, total: int, desc: str = '') -> None:
+        raise TaskStopped('Task interrupted by user')
+
+    with pytest.raises(TaskStopped):
+        loaded.process_images(progress_callback=_stop_after_the_first_batch)
+
+    autosave = working_directory / AUTOSAVE_CHECKPOINT
+    loaded.load_checkpoint(autosave)
+    assert loaded.n_processed_images == 2
+    assert loaded.inspect_resume() is None
+
+    loaded.process_images(resume=True)
+
+    assert loaded.n_processed_images == 6
+    assert loaded.pheno.get_embeddings().shape[0] == 6
+    assert len({str(path) for path in loaded.pheno.results.img_path}) == 6
+
+    # The autosave it was resumed from is left as it was loaded
+    with CheckpointManager(str(autosave), lazy=True) as written:
+        assert written.n_committed == 2
 
 
 # ----------------------------------------------------------------------------

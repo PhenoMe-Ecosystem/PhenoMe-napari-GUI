@@ -1,4 +1,3 @@
-import traceback
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -8,6 +7,7 @@ from phenome.io import CheckpointManager
 from phenome.utils import ProgressCallback
 
 from ..registries.models import get_model
+from .checkpoint import image_key
 
 if TYPE_CHECKING:
     import torchvision.transforms as T
@@ -37,61 +37,68 @@ class ImageProcessing:
         """
         return get_model(model_name, device=device)
 
-    def process_images(self, model_wrapper: "ModelWrapper", checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose | None" = None, lazy_checkpoint: bool=False, **kwargs) -> None:
+    def process_images(self, model_wrapper: "ModelWrapper", progress_callback: ProgressCallback | None=None, custom_transformations: "T.Compose | None" = None, **kwargs) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
+
+        Always run in memory: no checkpoint is written while the run goes, so the one a dataset was
+        loaded from is never touched. A run is resumed by appending to the embeddings held instead.
 
         Args:
             model_wrapper: PhenoMe wrapper of the used model.
-            checkpoint_path: Path of the .hdf5 file to save results in. If None, no checkpoint is created.
             progress_callback: Hook called as (current, total, desc) after each batch. PhenoMe reports the
                 1-based batch index and the total number of batches, and disables its tqdm bar when set.
                 If None, PhenoMe keeps its default tqdm bar.
             custom_transformations: The transformations the images are prepared with, or None for
                 PhenoMe's own.
-            lazy_checkpoint: Whether the embeddings are left in the checkpoint and read as they are
-                needed, rather than loaded into memory once the run is done. Only read when
-                checkpoint_path is set.
             **kwargs: Any arguments included in the PhenoMe process_images() method.
         """
         self.pheno.process_images(model_wrapper=model_wrapper,
-                                  checkpoint_path=checkpoint_path,
                                   progress_callback=progress_callback,
                                   custom_transformations=custom_transformations,
-                                  lazy_checkpoint=lazy_checkpoint,
                                   **kwargs)
 
-    @staticmethod
-    def close_stopped_checkpoints(error: BaseException) -> None:
-        """ Close the checkpoint an extraction was writing to when it was stopped, committing what it buffered.
+    def loaded_paths_among(self, held_paths: list) -> list:
+        """ The loaded images' paths, as PhenoMe's file table holds them, for the images among the ones held.
 
-        PhenoMe writes a lazy run through a CheckpointManager local to its extraction loop, committing
-        the batches it buffers every few of them and closing the file only once the run is done. A
-        stop unwinds the loop before either, leaving the last batches buffered and the file held open
-        until the traceback is collected. The traceback is the only handle on that manager, so it is
-        looked for there - by type rather than by the name PhenoMe gives it - and closed, which commits
-        the buffered batches and releases the file to be read back straight away.
+        What a resumed run excludes: PhenoMe filters its file table by value, so the paths are handed
+        back in the table's own form rather than in the form the results hold them in.
+
+        Reaches for PhenoMe's private file table, the only place that form is found, kept here beside
+        the other private calls.
 
         Args:
-            error: The exception the extraction was unwound by, its traceback still attached.
+            held_paths: The images embeddings are held for.
+        Returns:
+            The file table's path of every loaded image held.
         """
-        closed = set()
-        for frame, _ in traceback.walk_tb(error.__traceback__):
-            for value in frame.f_locals.values():
-                if isinstance(value, CheckpointManager) and id(value) not in closed:
-                    closed.add(id(value))
-                    value.close()
+        held = {image_key(path) for path in held_paths}
+        return [path for path in self.pheno._file_df['file_path'] if image_key(path) in held]
 
-    def keep_stopped_results(self) -> None:
-        """ Make the embeddings an in-memory extraction computed before it was stopped part of the results.
+    def keep_stopped_results(self) -> bool:
+        """ Make the embeddings an in-memory extraction computed before it was interrupted part of the results.
 
         PhenoMe appends the paths and the metadata to the results as it goes, but holds the embeddings
-        in a buffer it only stacks into the results once the run is done, which a stop unwinds before.
-        Stacked here instead, so the results answer for the images they name. The rows agree, a stop
-        only ever being raised once a whole batch has been appended.
+        in a buffer it only stacks into the results once the run is done, which an interruption unwinds
+        before. Stacked here instead, so the results answer for the images they name. The rows agree
+        when the run was unwound between two batches, which is where a stop is raised; a failure
+        caught halfway through appending one is let go of whole rather than kept misaligned.
 
-        Reaches for a private PhenoMe method, kept here beside the other ones for the same reason.
+        Reaches for PhenoMe's private buffer and finalising step, kept here beside the other ones.
+
+        Returns:
+            True when results were kept, False when there were none or they could not be kept.
         """
+        n_named = self.pheno.results.n_images
+        if n_named != len(self.pheno._emb_buffer):
+            logger.warning(
+                'Dropped what the interrupted run computed: %d image(s) named against %d embedding(s).',
+                n_named, len(self.pheno._emb_buffer)
+            )
+            self.pheno.reset()
+            return False
+
         self.pheno._finalize_results()
+        return n_named > 0
 
     def save_results(self, checkpoint_path: str) -> None:
         """ Write everything the pipeline holds - embeddings, properties and processing parameters - to a checkpoint.
@@ -180,23 +187,20 @@ class ImageProcessing:
         """
         return self.pheno._build_properties_dataframe()
 
-    def compute_properties(self, property_preset: str, checkpoint_path: str | None=None, progress_callback: ProgressCallback | None=None, lazy_checkpoint: bool=False, **kwargs) -> pd.DataFrame:
+    def compute_properties(self, property_preset: str, progress_callback: ProgressCallback | None=None, **kwargs) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Also saves them in-place in the PhenoMe object.
+
+        Always run in memory, every image's properties being computed anew.
 
         Args:
             property_preset: Name of the PhenoMe property preset to compute, e.g. 'basic'. Lower case only.
-            checkpoint_path: Path of the .hdf5 file to save results in. If None, no checkpoint is created.
             progress_callback: Hook called as (current, total, desc) after each image. PhenoMe reports the
                 number of images computed and the total number of images to compute, and disables its
                 tqdm bar when set. If None, PhenoMe keeps its default tqdm bar.
-            lazy_checkpoint: Whether the checkpoint is kept open once the step is done, rather than read
-                into memory and closed. Only read when checkpoint_path is set.
             **kwargs: Any arguments included in the PhenoMe compute_properties() method.
         Returns:
             One row per image, holding the image path and the computed properties.
         """
         return self.pheno.compute_properties(property_preset=property_preset,
-                                             checkpoint_path=checkpoint_path,
                                              progress_callback=progress_callback,
-                                             lazy_checkpoint=lazy_checkpoint,
                                              **kwargs)

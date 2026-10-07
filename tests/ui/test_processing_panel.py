@@ -87,7 +87,7 @@ def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
 
 
 class Mismatched:
-    """ Stands in for both halves of the checkpoint question: what is found, and what is answered. """
+    """ Stands in for both halves of the resume question: what is found, and what is answered. """
 
     def __init__(self) -> None:
         self.asked = 0
@@ -105,10 +105,10 @@ class Mismatched:
         self.accepted = accepted
 
     def inspect(self, *args) -> object:
-        """ Stand in for reading the checkpoint, which no test lets reach a real file.
+        """ Stand in for checking the embeddings held against the run.
 
         Args:
-            *args: The checkpoint, the run's parameters and the loaded images, of no interest here.
+            *args: The held settings and images, the run's settings and the loaded images, of no interest here.
         Returns:
             Whatever the test asked to be found.
         """
@@ -133,11 +133,10 @@ class Mismatched:
 
 @pytest.fixture
 def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Mismatched:
-    """ Decide what reading the checkpoint finds, and how the question about it is answered.
+    """ Decide what checking the held embeddings finds, and how the question about it is answered.
 
-    Reading is stood in for rather than pointed at a written file. Only the reader is replaced, so
-    the interface still decides whether there is a checkpoint to read at all - none, unless lazy
-    checkpointing is on.
+    Only the check is replaced, so the interface still decides whether there is anything to check at
+    all - nothing, unless the run resumes.
 
     Returns:
         The stand-in, called as mismatched(what_is_found, accepted=...).
@@ -145,7 +144,7 @@ def mismatched(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch) -> Misma
     stand_in = Mismatched()
     stand_in(None)
 
-    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', stand_in.inspect)
+    monkeypatch.setattr(phenome_interface, 'inspect_held_embeddings', stand_in.inspect)
     monkeypatch.setattr(QMessageBox, 'warning', stand_in.ask)
     return stand_in
 
@@ -488,21 +487,6 @@ def test_a_failed_extraction_reopens_the_model_and_device_choices(ready: Process
 
 
 # ----------------------------------------------------------------------------
-# A preset changed after the properties were computed
-# ----------------------------------------------------------------------------
-
-
-def test_loading_another_dataset_forgets_the_changed_preset(ready: ProcessingPanel) -> None:
-    """The checkpoint went with the results, so there are no properties left to compute over."""
-    ready._props_selection_combo.setCurrentText('Complete')
-
-    ready._phenome.clear_results()
-    ready.clear_results()
-
-    assert not ready._preset_changed
-
-
-# ----------------------------------------------------------------------------
 # Stopping a running task
 # ----------------------------------------------------------------------------
 
@@ -518,7 +502,7 @@ def test_there_is_still_nothing_to_stop_once_everything_is_loaded(ready: Process
 
 
 def test_a_stopped_extraction_is_not_reported_as_a_failure(ready: ProcessingPanel, reported) -> None:
-    """It was asked for, and the checkpoint holds what it had committed."""
+    """It was asked for, and what it computed is kept."""
     ready._on_process_failed(TaskStopped())
 
     assert reported.shown == 0
@@ -540,7 +524,7 @@ def test_a_stopped_extraction_settles_the_bar(ready: ProcessingPanel, reported) 
 
 
 class Pipeline:
-    """ Stands in for the three PhenoMe calls a run makes, recording them in the order they come.
+    """ Stands in for the PhenoMe calls a run makes, recording them in the order they come.
 
     Stubbed where the GUI hands over to PhenoMe, so everything in front of it - the panel, the
     interface, the progress throttle and the stop - runs as it does for real. Each step can be given
@@ -549,12 +533,13 @@ class Pipeline:
 
     def __init__(self) -> None:
         self.steps: list[str] = []
-        self.force_reprocess: list[bool] = []
-        self.force_update: list[bool] = []
 
-        # What each extraction and properties step was told to write to, in the order they came
-        self.checkpoints: list = []
-        self.lazy: list[bool] = []
+        # The keyword arguments each extraction and properties step was handed, in the order they came
+        self.extractions: list[dict] = []
+        self.properties: list[dict] = []
+
+        # Where an interrupted extraction was autosaved
+        self.autosaved: list[Path] = []
 
         self.on_load = None
         self.on_process = None
@@ -574,74 +559,62 @@ class Pipeline:
             self.on_load()
         return object(), None, {}
 
-    def process_images(
-        self,
-        model,
-        checkpoint_path,
-        progress_callback=None,
-        force_reprocess: bool = False,
-        lazy_checkpoint: bool = False,
-        **kwargs,
-    ) -> None:
+    def process_images(self, model, progress_callback=None, **kwargs) -> None:
         """ Stand in for the extraction, handing its progress callback to the test.
 
         Args:
             model: The loaded network.
-            checkpoint_path: The checkpoint the embeddings would be written to.
             progress_callback: What the extraction reports its batches through.
-            force_reprocess: Whether the checkpoint would be deleted and filled again.
-            lazy_checkpoint: Whether the embeddings would be left in the checkpoint.
-            **kwargs: The run's other arguments, of no interest here.
+            **kwargs: The run's other arguments, recorded.
         """
         self.steps.append('process')
-        self.force_reprocess.append(force_reprocess)
-        self.checkpoints.append(checkpoint_path)
-        self.lazy.append(lazy_checkpoint)
+        self.extractions.append(kwargs)
         if self.on_process is not None:
             self.on_process(progress_callback)
 
-    def compute_properties(
-        self,
-        property_preset: str,
-        checkpoint_path=None,
-        progress_callback=None,
-        force_update: bool = False,
-        lazy_checkpoint: bool = False,
-    ) -> pd.DataFrame:
+    def compute_properties(self, property_preset: str, progress_callback=None, **kwargs) -> pd.DataFrame:
         """ Stand in for the properties step, handing its progress callback to the test.
 
         Args:
             property_preset: The preset, as PhenoMe names it.
-            checkpoint_path: The checkpoint the properties would be written to.
             progress_callback: What the step reports its images through.
-            force_update: Whether the properties the checkpoint holds would be computed again.
-            lazy_checkpoint: Whether the checkpoint would be kept open afterwards.
+            **kwargs: The step's other arguments, recorded.
         Returns:
             A frame of properties, one image's worth.
         """
         self.steps.append('properties')
-        self.force_update.append(force_update)
-        self.checkpoints.append(checkpoint_path)
-        self.lazy.append(lazy_checkpoint)
+        self.properties.append(kwargs)
         if self.on_properties is not None:
             self.on_properties(progress_callback)
         return pd.DataFrame({'area': [1.0]})
+
+    def save_results(self, checkpoint_path: str) -> None:
+        """ Take note of an interrupted run being autosaved.
+
+        Args:
+            checkpoint_path: Where it would be written.
+        """
+        self.autosaved.append(Path(checkpoint_path))
 
 
 @pytest.fixture
 def stubbed_phenome(ready: ProcessingPanel, mismatched, monkeypatch: pytest.MonkeyPatch) -> Pipeline:
     """ Put a stand-in for PhenoMe under the Process button, leaving its worker as it is.
 
-    A checkpoint is selected, as `ready` leaves it, but the run writes to it only under `lazy`. When
-    it does, the checkpoint reads as matching unless a test says otherwise through `mismatched`.
+    A resumed run finds the embeddings held matching unless a test says otherwise through `mismatched`.
+    An interrupted run keeps whatever the pipeline holds, the stand-in results having no buffer of
+    embeddings to stack, and is autosaved into the stand-in rather than to disk.
 
     Returns:
         The stand-in, recording the steps the run made.
     """
     stand_in = Pipeline()
-    monkeypatch.setattr(ready._phenome.image_processing, 'load_model', stand_in.load_model)
-    monkeypatch.setattr(ready._phenome.image_processing, 'process_images', stand_in.process_images)
+    image_processing = ready._phenome.image_processing
+    monkeypatch.setattr(image_processing, 'load_model', stand_in.load_model)
+    monkeypatch.setattr(image_processing, 'process_images', stand_in.process_images)
     monkeypatch.setattr(ready._phenome.pheno, 'compute_properties', stand_in.compute_properties)
+    monkeypatch.setattr(image_processing, 'keep_stopped_results', lambda: ready._phenome.has_processed_images)
+    monkeypatch.setattr(image_processing, 'save_results', stand_in.save_results)
     return stand_in
 
 
@@ -663,9 +636,10 @@ def pipeline(ready: ProcessingPanel, stubbed_phenome: Pipeline, sync_worker) -> 
 
 
 @pytest.fixture
-def lazy(ready: ProcessingPanel) -> None:
-    """ Have the runs write to the selected checkpoint as they go, ticking the autosave checkbox. """
-    ready._autosave_checkbox.click()
+def resume(ready: ProcessingPanel, processed) -> None:
+    """ Tick Resume progress over embeddings held for half of the loaded images. """
+    processed(ready._phenome, 3)
+    ready._resume_checkbox.click()
 
 
 def fail(error: Exception):
@@ -746,7 +720,7 @@ def test_the_tab_is_locked_while_the_run_goes(ready: ProcessingPanel, pipeline: 
             model=ready._select_model_button.isEnabled(),
             preset=ready._props_selection_combo.isEnabled(),
             compute=ready._props_checkbox.isEnabled(),
-            autosave=ready._autosave_checkbox.isEnabled(),
+            resume=ready._resume_checkbox.isEnabled(),
             stop=ready._stop_button.isEnabled(),
             analysis=widget.analysis_panel._run_clustering_button.isEnabled(),
         )
@@ -756,7 +730,7 @@ def test_the_tab_is_locked_while_the_run_goes(ready: ProcessingPanel, pipeline: 
     ready._process_button.click()
 
     assert during == {
-        'process': False, 'model': False, 'preset': False, 'compute': False, 'autosave': False, 'stop': True,
+        'process': False, 'model': False, 'preset': False, 'compute': False, 'resume': False, 'stop': True,
         'analysis': False,
     }
 
@@ -766,7 +740,7 @@ def test_a_finished_run_gives_the_tab_back(ready: ProcessingPanel, pipeline: Pip
 
     assert ready._process_button.isEnabled()
     assert ready._props_checkbox.isEnabled()
-    assert ready._autosave_checkbox.isEnabled()
+    assert ready._resume_checkbox.isEnabled()
     assert not ready._stop_button.isEnabled()
     assert widget.analysis_panel._run_clustering_button.isEnabled()
     assert ready._progress_bar.value() == ready._progress_bar.maximum()
@@ -890,7 +864,7 @@ def test_a_stopped_extraction_is_outlined_as_stopped_and_keeps_its_embeddings(
 
     assert outline(ready._embeddings_group) == 'bad'
     assert ready._save_checkpoint_button.isEnabled() is saveable
-    assert ready._progress_label.text() == PROGRESS_TEXT.format(held=kept, loaded=6)
+    assert ready._progress_value_label.text() == PROGRESS_TEXT.format(held=kept, loaded=6)
 
 
 def test_a_run_on_its_own_thread_leaves_the_widgets_to_the_gui_thread(
@@ -983,8 +957,8 @@ def test_confirming_drops_the_analysis_before_the_run(clustered: ProcessingPanel
     assert pipeline.steps == ['load', 'process', 'properties']
 
 
-@pytest.mark.usefixtures('lazy')
-def test_resuming_the_selected_checkpoint_asks_nothing_but_drops_the_analysis(
+@pytest.mark.usefixtures('resume')
+def test_resuming_asks_nothing_but_drops_the_analysis(
     clustered: ProcessingPanel, pipeline: Pipeline, confirmation, qtbot
 ) -> None:
     """Nothing is replaced, only added to, but the analysis no longer answers for every embedding there."""
@@ -994,56 +968,79 @@ def test_resuming_the_selected_checkpoint_asks_nothing_but_drops_the_analysis(
     assert confirmation.asked == 0
     assert clustered._phenome.clustering_df is None
     assert pipeline.steps == ['load', 'process', 'properties']
+    assert pipeline.extractions[0]['append'] is True
 
 
-@pytest.mark.usefixtures('lazy')
-def test_autosaving_over_results_in_memory_asks_first(
-    ready: ProcessingPanel, pipeline: Pipeline, confirmation, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_resume_progress_with_nothing_held_is_a_run_from_scratch(
+    ready: ProcessingPanel, pipeline: Pipeline, confirmation, processed
 ) -> None:
-    """With no checkpoint selected the run starts a new autosave, replacing what is in memory."""
-    monkeypatch.chdir(tmp_path)
-    ready._phenome.params.paths.checkpoint = None
+    processed(ready._phenome, 0)
+    ready._resume_checkbox.click()
 
     ready._process_button.click()
 
-    assert confirmation.asked == 1
+    assert confirmation.asked == 0
+    assert 'append' not in pipeline.extractions[0]
 
 
-@pytest.mark.usefixtures('lazy')
-def test_refusing_the_checkpoint_overwrite_keeps_the_results_too(
-    clustered: ProcessingPanel, pipeline: Pipeline, mismatched, confirmation
+@pytest.mark.usefixtures('resume')
+@pytest.mark.parametrize('reason', [MODEL_MISMATCH, DATASET_MISMATCH])
+def test_refusing_a_restart_runs_nothing_and_keeps_the_results(
+    clustered: ProcessingPanel, pipeline: Pipeline, mismatched, confirmation, reason: str
 ) -> None:
-    """The run resumes the checkpoint, so only the overwrite is asked, and refusing it keeps everything."""
-    mismatched(CheckpointMismatch(MODEL_MISMATCH), accepted=False)
+    mismatched(CheckpointMismatch(reason, 'what differs'), accepted=False)
 
     clustered._process_button.click()
 
-    assert confirmation.asked == 0
     assert mismatched.asked == 1
+    assert confirmation.asked == 0
     assert pipeline.steps == []
     assert clustered._phenome.clustering_df is not None
-    assert 'cluster' in clustered._phenome.metadata_df.columns
+    assert clustered._process_button.isEnabled()
+    assert not clustered._stop_button.isEnabled()
+
+
+@pytest.mark.usefixtures('resume')
+def test_a_confirmed_restart_processes_every_image(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
+    """The answer is the consent to replace the embeddings, so nothing more is asked."""
+    mismatched(CheckpointMismatch(MODEL_MISMATCH, 'channel_mode differs'), accepted=True)
+
+    ready._process_button.click()
+
+    assert mismatched.asked == 1
+    assert pipeline.steps == ['load', 'process', 'properties']
+    assert 'append' not in pipeline.extractions[0]
+
+
+@pytest.mark.usefixtures('resume')
+def test_the_restart_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
+    mismatched(CheckpointMismatch(DATASET_MISMATCH, '1 of the 3 image(s) held are not among the 6 currently loaded.'))
+
+    ready._process_button.click()
+
+    assert '1 of the 3 image(s) held are not among the 6 currently loaded.' in mismatched.last
 
 
 # ----------------------------------------------------------------------------
-# The checkpoint a run writes to: none by default, the selected one when lazy
+# Where a run writes: nowhere, unless it is interrupted
 # ----------------------------------------------------------------------------
 
 
-def test_a_run_writes_to_no_checkpoint_by_default(ready: ProcessingPanel, pipeline: Pipeline) -> None:
+def test_a_run_never_writes_to_a_checkpoint(ready: ProcessingPanel, pipeline: Pipeline) -> None:
     """The results stay in memory until saved, even with a checkpoint selected from a save or a load."""
     assert ready._phenome.params.paths.checkpoint is not None
 
     ready._process_button.click()
 
-    assert pipeline.checkpoints == [None, None]
-    assert pipeline.lazy == [False, False]
+    for passed in pipeline.extractions + pipeline.properties:
+        assert not {'checkpoint_path', 'lazy_checkpoint', 'force_update', 'force_reprocess'} & set(passed)
+    assert pipeline.autosaved == []
 
 
-def test_a_run_by_default_asks_nothing_of_the_selected_checkpoint(
+def test_a_run_from_scratch_asks_nothing_of_the_embeddings_held(
     ready: ProcessingPanel, pipeline: Pipeline, mismatched
 ) -> None:
-    """It is never written to, so what it holds is no reason to stop the run or delete the file."""
+    """They are replaced rather than extended, so what they were made under is no reason to stop."""
     mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
 
     ready._process_button.click()
@@ -1052,15 +1049,66 @@ def test_a_run_by_default_asks_nothing_of_the_selected_checkpoint(
     assert pipeline.steps == ['load', 'process', 'properties']
 
 
-def test_a_lazy_run_writes_to_the_selected_checkpoint(
-    ready: ProcessingPanel, pipeline: Pipeline, lazy
+@pytest.fixture
+def working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """ Run the test from a directory of its own, where an autosave would be written. """
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def test_a_stopped_run_is_autosaved_without_becoming_the_current_checkpoint(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, working_directory: Path
 ) -> None:
-    checkpoint = ready._phenome.params.paths.checkpoint
+    previous = ready._phenome.params.paths.checkpoint
+    pipeline.on_process = fail(TaskStopped())
 
     ready._process_button.click()
 
-    assert pipeline.checkpoints == [checkpoint, checkpoint]
-    assert pipeline.lazy == [True, True]
+    autosave = working_directory / AUTOSAVE_CHECKPOINT
+    assert pipeline.autosaved == [autosave]
+    assert ready._phenome.params.paths.checkpoint == previous
+    assert ready._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name=previous.name)
+    assert ready._progress_bar.format() == 'Stopped - progress autosaved'
+    assert str(autosave) in ready._progress_bar.toolTip()
+    assert reported.shown == 0
+
+
+def test_a_failed_extraction_says_where_its_progress_was_saved(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, working_directory: Path
+) -> None:
+    pipeline.on_process = fail(RuntimeError('out of memory'))
+
+    ready._process_button.click()
+
+    assert reported.shown == 1
+    assert 'out of memory' in reported.last
+    assert str(working_directory / AUTOSAVE_CHECKPOINT) in reported.last
+
+
+def test_a_stopped_properties_step_is_not_autosaved(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, working_directory: Path
+) -> None:
+    """The embeddings are all there, to be saved like any finished run's."""
+    pipeline.on_properties = fail(TaskStopped())
+
+    ready._process_button.click()
+
+    assert pipeline.autosaved == []
+    assert ready._progress_bar.format() == 'Stopped'
+
+
+def test_the_next_run_forgets_the_last_autosave(
+    ready: ProcessingPanel, pipeline: Pipeline, reported, working_directory: Path
+) -> None:
+    pipeline.on_process = fail(TaskStopped())
+    ready._process_button.click()
+
+    pipeline.on_process = None
+    pipeline.on_properties = fail(TaskStopped())
+    ready._process_button.click()
+
+    assert ready._progress_bar.format() == 'Stopped'
+    assert ready._progress_bar.toolTip() == ''
 
 
 def test_embeddings_for_part_of_the_images_are_shown_as_waiting_to_be_resumed(
@@ -1071,7 +1119,7 @@ def test_embeddings_for_part_of_the_images_are_shown_as_waiting_to_be_resumed(
     ready.refresh_buttons()
 
     assert ready._embeddings_group.styleSheet() == GROUP_STYLESHEETS['STYLE_WAIT']
-    assert ready._progress_label.text() == PROGRESS_TEXT.format(held=3, loaded=6)
+    assert ready._progress_value_label.text() == PROGRESS_TEXT.format(held=3, loaded=6)
     assert ready._current_checkpoint_label.text() == CHECKPOINT_TEXT.format(name='run.hdf5')
 
 
@@ -1079,159 +1127,26 @@ def test_embeddings_for_every_image_are_shown_as_done(ready: ProcessingPanel) ->
     ready.refresh_buttons()
 
     assert ready._embeddings_group.styleSheet() == GROUP_STYLESHEETS['STYLE_OK']
-    assert ready._progress_label.text() == PROGRESS_TEXT.format(held=6, loaded=6)
+    assert ready._progress_value_label.text() == PROGRESS_TEXT.format(held=6, loaded=6)
 
 
 def test_the_progress_counts_the_loaded_images_before_any_is_processed(panel: ProcessingPanel, widget) -> None:
     """Nothing loaded is nothing to count; a dataset loaded is all of it still to process."""
-    assert panel._progress_label.text() == PROGRESS_TEXT.format(held=0, loaded=0)
+    assert panel._progress_value_label.text() == PROGRESS_TEXT.format(held=0, loaded=0)
 
     widget.loading_panel._on_load_data_csv()
 
-    assert panel._progress_label.text() == PROGRESS_TEXT.format(held=0, loaded=6)
+    assert panel._progress_value_label.text() == PROGRESS_TEXT.format(held=0, loaded=6)
 
 
-def test_the_autosave_checkbox_turns_lazy_checkpointing_on_and_off(ready: ProcessingPanel) -> None:
-    assert ready._phenome.params.process.lazy_checkpoint is False
+def test_the_resume_checkbox_turns_resuming_on_and_off(ready: ProcessingPanel) -> None:
+    assert ready._phenome.params.process.resume_progress is False
 
-    ready._autosave_checkbox.click()
-    assert ready._phenome.params.process.lazy_checkpoint is True
+    ready._resume_checkbox.click()
+    assert ready._phenome.params.process.resume_progress is True
 
-    ready._autosave_checkbox.click()
-    assert ready._phenome.params.process.lazy_checkpoint is False
-
-
-def test_an_autosaved_run_without_a_checkpoint_writes_to_the_autosave(
-    ready: ProcessingPanel, pipeline: Pipeline, lazy, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Written in the working directory, and selected from then on so the next run resumes it."""
-    monkeypatch.chdir(tmp_path)
-    ready._phenome.params.paths.checkpoint = None
-    autosave = tmp_path / AUTOSAVE_CHECKPOINT
-
-    ready._process_button.click()
-
-    assert pipeline.checkpoints == [autosave, autosave]
-    assert pipeline.lazy == [True, True]
-    assert ready._phenome.params.paths.checkpoint == autosave
-
-
-def test_a_stopped_autosaved_run_keeps_the_autosave_selected(
-    ready: ProcessingPanel, pipeline: Pipeline, lazy, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """What the run wrote before it stopped is what the next one resumes from."""
-    monkeypatch.chdir(tmp_path)
-    ready._phenome.params.paths.checkpoint = None
-    pipeline.on_process = fail(TaskStopped())
-
-    ready._process_button.click()
-
-    assert ready._phenome.params.paths.checkpoint == tmp_path / AUTOSAVE_CHECKPOINT
-
-
-def test_a_mismatched_autosave_is_asked_about_before_it_is_selected(
-    ready: ProcessingPanel, pipeline: Pipeline, mismatched, lazy, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An autosave left by another dataset is deleted by the run, so it is put to the user like any other."""
-    monkeypatch.chdir(tmp_path)
-    ready._phenome.params.paths.checkpoint = None
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
-
-    ready._process_button.click()
-
-    assert mismatched.asked == 1
-    assert str(tmp_path / AUTOSAVE_CHECKPOINT) in mismatched.last
-    assert pipeline.steps == []
-    assert ready._phenome.params.paths.checkpoint is None
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_matching_checkpoint_is_resumed_without_a_question(
-    ready: ProcessingPanel, pipeline: Pipeline, mismatched
-) -> None:
-    """The usual run, which has to stay a single click."""
-    ready._process_button.click()
-
-    assert mismatched.asked == 0
-    assert pipeline.force_reprocess == [False]
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_confirmed_overwrite_runs_from_scratch(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
-    mismatched(CheckpointMismatch(MODEL_MISMATCH), accepted=True)
-
-    ready._process_button.click()
-
-    assert mismatched.asked == 1
-    assert pipeline.force_reprocess == [True]
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_refused_overwrite_runs_nothing_at_all(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
-    """The checkpoint is deleted by the run, so refusing has to stop it before even the model is loaded."""
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'no image in common'), accepted=False)
-
-    ready._process_button.click()
-
-    assert pipeline.steps == []
-    assert ready._process_button.isEnabled()
-    assert not ready._stop_button.isEnabled()
-
-
-@pytest.mark.usefixtures('lazy')
-def test_the_question_says_what_was_found(ready: ProcessingPanel, pipeline: Pipeline, mismatched) -> None:
-    """It is answered by deleting a checkpoint, so it has to say what is wrong with this one."""
-    mismatched(CheckpointMismatch(DATASET_MISMATCH, 'It holds 3 image(s), none of them loaded.'))
-
-    ready._process_button.click()
-
-    assert 'It holds 3 image(s), none of them loaded.' in mismatched.last
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_question_with_nothing_to_add_leaves_no_gap(
-    ready: ProcessingPanel, pipeline: Pipeline, mismatched
-) -> None:
-    """The parameter mismatch adds no detail, which must not leave an empty paragraph behind it."""
-    mismatched(CheckpointMismatch(MODEL_MISMATCH))
-
-    ready._process_button.click()
-
-    assert mismatched.asked == 1
-    assert '\n\n\n' not in mismatched.last
-
-
-# ----------------------------------------------------------------------------
-# The properties preset, which a resumed checkpoint would otherwise ignore
-# ----------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures('lazy')
-def test_an_unchanged_preset_resumes_the_properties(ready: ProcessingPanel, pipeline: Pipeline) -> None:
-    ready._process_button.click()
-
-    assert pipeline.force_update == [False]
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_changed_preset_is_computed_again_once(ready: ProcessingPanel, pipeline: Pipeline) -> None:
-    """Once computed it answers for what the checkpoint holds, so the run after may resume again."""
-    ready._props_selection_combo.setCurrentText('Complete')
-
-    ready._process_button.click()
-    ready._process_button.click()
-
-    assert pipeline.force_update == [True, False]
-
-
-@pytest.mark.usefixtures('lazy')
-def test_turning_the_properties_back_on_computes_them_again(ready: ProcessingPanel, pipeline: Pipeline) -> None:
-    ready._props_checkbox.click()
-    ready._props_checkbox.click()
-
-    ready._process_button.click()
-
-    assert pipeline.force_update == [True]
+    ready._resume_checkbox.click()
+    assert ready._phenome.params.process.resume_progress is False
 
 
 # ----------------------------------------------------------------------------
@@ -1283,21 +1198,6 @@ def test_a_failed_properties_step_is_reported_as_one(
     assert ready._process_button.isEnabled()
 
 
-@pytest.mark.usefixtures('lazy')
-def test_a_failed_properties_step_keeps_the_changed_preset_owed(
-    ready: ProcessingPanel, pipeline: Pipeline, reported
-) -> None:
-    """Nothing was computed, so the preset still has to be forced onto the next run."""
-    ready._props_selection_combo.setCurrentText('Complete')
-    pipeline.on_properties = fail(ValueError('unknown property'))
-    ready._process_button.click()
-
-    pipeline.on_properties = None
-    ready._process_button.click()
-
-    assert pipeline.force_update == [True, True]
-
-
 # ----------------------------------------------------------------------------
 # Stopping the run
 # ----------------------------------------------------------------------------
@@ -1336,7 +1236,7 @@ def test_stopping_ends_the_extraction_at_its_next_report(
     assert batches == [1, 2, 3]
     assert pipeline.steps == ['load', 'process']
     assert reported.shown == 0
-    assert ready._progress_bar.format() == 'Stopped'
+    assert ready._progress_bar.format() == 'Stopped - progress autosaved'
     assert ready._process_button.isEnabled()
 
 
@@ -1379,23 +1279,6 @@ def test_a_new_run_is_not_stopped_by_the_one_before(
 
     assert batches == list(range(1, 11))
     assert ready._progress_bar.format() == 'Done!'
-
-
-@pytest.mark.usefixtures('lazy')
-def test_stopping_the_properties_lets_the_next_run_resume_them(
-    ready: ProcessingPanel, pipeline: Pipeline, reported
-) -> None:
-    """PhenoMe clears the old properties before its first report, so the preset has been applied:
-    forcing it again would wipe the partial run the next click is meant to carry on from."""
-    ready._props_selection_combo.setCurrentText('Complete')
-    pipeline.on_properties = reporting(10, stop_after=1, panel=ready, done=[])
-    ready._process_button.click()
-
-    pipeline.on_properties = None
-    ready._process_button.click()
-
-    assert reported.shown == 0
-    assert pipeline.force_update == [True, False]
 
 
 # ----------------------------------------------------------------------------
@@ -1448,14 +1331,13 @@ def test_a_checkpoint_bringing_embeddings_opens_the_properties(
     assert loaded._compute_properties_button.isEnabled()
 
 
-def test_computing_properties_runs_only_the_properties_and_forces_them(
+def test_computing_properties_runs_only_the_properties(
     ready: ProcessingPanel, computing: Pipeline, confirmation
 ) -> None:
-    """No model is loaded, no image extracted again, nothing asked, and the properties never resumed."""
+    """No model is loaded, no image extracted again, and nothing asked."""
     ready._compute_properties_button.click()
 
     assert computing.steps == ['properties']
-    assert computing.force_update == [True]
     assert confirmation.asked == 0
     assert ready._phenome.has_properties
 
@@ -1544,27 +1426,6 @@ def test_a_stopped_properties_computation_is_not_reported_as_a_failure(
     assert reported.shown == 0
     assert ready._progress_bar.format() == 'Stopped'
     assert ready._compute_properties_button.isEnabled()
-
-
-@pytest.mark.usefixtures('lazy')
-def test_computing_properties_settles_a_changed_preset(ready: ProcessingPanel, computing: Pipeline) -> None:
-    """The properties now answer for the preset, so the next run resumes them rather than computing them again."""
-    ready._props_selection_combo.setCurrentText('Complete')
-
-    ready._compute_properties_button.click()
-    ready._process_button.click()
-
-    assert computing.force_update == [True, False]
-
-
-@pytest.mark.usefixtures('lazy')
-def test_a_lazy_properties_computation_writes_to_the_selected_checkpoint(
-    ready: ProcessingPanel, computing: Pipeline
-) -> None:
-    ready._compute_properties_button.click()
-
-    assert computing.checkpoints == [ready._phenome.params.paths.checkpoint]
-    assert computing.lazy == [True]
 
 
 # ----------------------------------------------------------------------------
@@ -1948,4 +1809,4 @@ def test_a_save_leaves_the_next_run_writing_nowhere(
 
     ready._process_button.click()
 
-    assert pipeline.checkpoints == [None, None]
+    assert 'checkpoint_path' not in pipeline.extractions[0]

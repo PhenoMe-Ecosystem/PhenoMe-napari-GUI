@@ -11,11 +11,14 @@ from ..registries.models import MODEL_OPTIONS
 from ..registries.process_options import OPTIONS_LOADERS
 from ..registries.transforms import TRANSFORMS_LOADERS
 from .analysis import PhenoMeAnalysis
-from .checkpoint import CheckpointMismatch, inspect_checkpoint
+from .checkpoint import (
+    DATASET_MISMATCH,
+    CheckpointMismatch,
+    inspect_held_embeddings,
+)
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .params import Params
-from .progress import TaskStopped
 
 if TYPE_CHECKING:
     import torchvision.transforms as T
@@ -32,7 +35,8 @@ PROCESS_DEFAULTS = {
     'force_rgb': True,
 }
 
-# The checkpoint an autosaved run writes to when none has been saved or loaded, in the working directory
+# Where an interrupted extraction writes what it computed, in the working directory. Never selected as
+# the current checkpoint: it is loaded like any other to be resumed from.
 AUTOSAVE_CHECKPOINT = 'autosave.hdf5'
 
 # The GUI names its algorithms as the papers do, where PhenoMe knows them by a plain lower case key.
@@ -147,6 +151,10 @@ class PhenoMeInterface:
         # or None before any load. Read to tell whether a run can reuse it or has to load again.
         self._loaded_model: tuple[str, str] | None = None
         self.cuda_available = cuda.is_available()
+
+        # Where the last extraction wrote what it computed before it was interrupted, or None when it
+        # was not interrupted or nothing could be written. Reset by every run, and read once it has ended.
+        self.last_autosave: Path | None = None
 
         self.data_loading = DataLoading(self.pheno)
         self.image_processing = ImageProcessing(self.pheno)
@@ -416,65 +424,43 @@ class PhenoMeInterface:
 
         The arguments the run is really made with over PhenoMe's defaults, which is how
         process_images() below hands them down: what neither the form nor the model sets, PhenoMe
-        fills in itself. Read before a run to compare a checkpoint against it, so the comparison is
-        made against what the run will really use - the channel mode included, which is the first
-        thing PhenoMe refuses to resume a checkpoint across.
+        fills in itself. Read before a resumed run to compare the held embeddings against it, so the
+        comparison is made against what the run will really use - the channel mode included, which
+        embeddings made under another could not be extended across.
 
         Returns:
             The processing parameters, whether or not a model has been loaded.
         """
         return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
-    def run_checkpoint(self) -> Path | None:
-        """ The checkpoint the properties step writes to as it goes, if any.
+    def inspect_resume(self) -> CheckpointMismatch | None:
+        """ Say whether a resumed run could extend the embeddings held, before it is started.
 
-        Only with lazy checkpointing on: by default a run keeps its results in memory, and the
-        selected checkpoint merely names the file last saved or loaded, which the run never touches.
-        The extraction reads process_checkpoint() instead, which falls back on an autosave.
+        Asked at the run rather than when the embeddings are come by, as what it compares can change
+        after the fact: the channel mode and the image preparation can be picked again between loading
+        a checkpoint and running against it. The held embeddings are compared against the settings
+        PhenoMe kept for them, and their images against the ones loaded: an image held under a path
+        naming no loaded file would not be skipped by the run, and would be appended a second time.
 
-        Returns:
-            The selected checkpoint when lazy checkpointing is on, None otherwise.
-        """
-        return self.params.paths.checkpoint if self.params.process.lazy_checkpoint else None
-
-    def process_checkpoint(self) -> Path | None:
-        """ The checkpoint an embedding run writes to as it goes, if any.
-
-        The selected checkpoint when there is one, the run resuming from what it holds. Otherwise the
-        run autosaves to AUTOSAVE_CHECKPOINT in the working directory, which it adopts as the selected
-        checkpoint once started. Only the extraction falls back on it: the properties computed alone
-        run over embeddings already there, which a fresh autosave would not hold.
+        Images read a channel at a time are named by a list of paths, which PhenoMe cannot filter on,
+        so they are never resumed: they are reported as not matching, and processed again.
 
         Returns:
-            The checkpoint to write to when lazy checkpointing is on, None otherwise.
+            What stands in the way of resuming, or None when the run can extend the held embeddings.
         """
-        if not self.params.process.lazy_checkpoint:
-            return None
+        loaded_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
-        return self.params.paths.checkpoint or Path.cwd() / AUTOSAVE_CHECKPOINT
+        if any(isinstance(path, list | tuple) for path in loaded_paths):
+            return CheckpointMismatch(
+                DATASET_MISMATCH, 'Images read a channel at a time cannot be resumed.'
+            )
 
-    def inspect_checkpoint(self) -> CheckpointMismatch | None:
-        """ Read the checkpoint an embedding run would be written to, before the run is started.
-
-        PhenoMe raises on a checkpoint it cannot resume from, from the thread the run is made on and
-        halfway through it. Asked here beforehand, the same disagreement can be put to the user while
-        there is still a choice to make about it.
-
-        Asked at the run rather than when the checkpoint is come by, as what it compares can change
-        after the fact: the model and the channel mode both reach this comparison, and either can be
-        picked again between choosing a checkpoint and running against it.
-
-        Returns:
-            What the checkpoint holds that this run would not put there, or None when it agrees, is
-            empty, does not exist, could not be read, or is not one the run writes to at all.
-        """
-        checkpoint = self.process_checkpoint()
-        if checkpoint is None:
-            return None
-
-        image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
-
-        return inspect_checkpoint(checkpoint, self.processing_params(), image_paths)
+        return inspect_held_embeddings(
+            self.pheno._processing_params,
+            list(self.pheno.results.img_path),
+            self.processing_params(),
+            loaded_paths,
+        )
 
     def save_checkpoint(self, path: Path | str) -> None:
         """ Write every result the pipeline holds - embeddings and properties - to a checkpoint.
@@ -512,7 +498,7 @@ class PhenoMeInterface:
 
         Every image a checkpoint holds has to match a file found, though not every file found has to
         be in it: a run stopped halfway leaves a checkpoint holding part of the dataset, which is
-        loaded as it is and resumed by the next run. PhenoMe would otherwise load the part that matches
+        loaded as it is and resumed by a run with Resume progress. PhenoMe would otherwise load the part that matches
         and drop the rest without a word - nothing at all for a checkpoint of another dataset - so the
         match is checked first, and a checkpoint holding images that are not loaded, or none at all,
         is refused before anything is read into the pipeline.
@@ -555,93 +541,103 @@ class PhenoMeInterface:
         """
         return self.pheno.results.has_properties
 
-    def process_images(self, progress_callback: ProgressCallback | None=None, force_reprocess: bool=False) -> None:
+    def process_images(self, progress_callback: ProgressCallback | None=None, resume: bool=False) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
-        Uses the params to feed arguments.
+        Uses the params to feed arguments. The run is made in memory, writing to no checkpoint.
+
+        A resumed run keeps the embeddings held and processes only the images missing from them,
+        appending what it computes. The properties held are let go of, no longer answering for every
+        image, and are computed anew by the properties step. A resume with no image missing has nothing
+        to run, and leaves everything as it is.
+
+        An interrupted run - stopped, or failed partway - keeps what it computed, and writes it to
+        AUTOSAVE_CHECKPOINT in the working directory before the interruption is re-raised. The file is
+        not selected as the current checkpoint: it is there to be loaded and resumed from.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
-            calling thread, so a caller running this in a worker thread must not touch widgets in it.
-            force_reprocess: Whether to delete the checkpoint and process every image again. PhenoMe
-                removes the file rather than writing over it, so everything it held is lost: only ever
-                passed for a checkpoint the user has been asked about. Without lazy checkpointing
-                there is no checkpoint to delete, and PhenoMe ignores it.
-
-        With lazy checkpointing on, the checkpoint written to is adopted as the selected one before
-        the run starts, so the properties after it write into the same file, and a run stopped or
-        failed halfway is resumed from it on the next one.
-
-        A stopped run keeps what it computed, the stop being re-raised once it has: the pipeline then
-        holds the images processed so far, to be saved, analysed, or resumed.
-
+                calling thread, so a caller running this in a worker thread must not touch widgets in it.
+            resume: Whether to extend the embeddings held rather than process every image again. Only
+                ever passed once inspect_resume() has found nothing in the way.
         Raises:
-            TaskStopped: The run was asked to stop, after what it computed has been kept.
+            Exception: Whatever interrupted the run, TaskStopped for a stop, once its progress is kept.
         """
-        checkpoint_path = self.process_checkpoint()
-        if checkpoint_path is not None:
-            self.params.paths.checkpoint = checkpoint_path
+        self.last_autosave = None
+
+        arguments = self.process_arguments()
+
+        if resume:
+            missing = self.n_loaded_images - self.n_processed_images
+            if missing <= 0:
+                logger.info('Nothing left to process: all %d image(s) have their embeddings.', self.n_processed_images)
+                return
+
+            held = list(self.pheno.results.img_path)
+            arguments.update(
+                append=True, exclude={'file_path': self.image_processing.loaded_paths_among(held)}
+            )
+
+            if self.has_stored_properties:
+                logger.info('Dropped the properties held, which the images about to be processed would not have.')
+            self.pheno.results.properties = []
+            self.properties_df = None
+
+            logger.info('Resuming: %d image(s) held, %d to process.', len(held), missing)
 
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
         # under are what its embeddings can be read against, and they are the registry's and the
         # form's rather than only what the form shows.
         num_workers = self.params.process.num_workers
-        arguments = self.process_arguments()
         logger.info(
             "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
             self.params.process.model,
             self.params.process.batch_size,
             f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
-            str(arguments)
+            str({key: value for key, value in arguments.items() if key != 'exclude'})
         )
 
         try:
             self.image_processing.process_images(
                 self.model,
-                checkpoint_path,
                 progress_callback=progress_callback,
                 batch_size=self.params.process.batch_size,
                 num_workers=num_workers,
                 custom_transformations=self.model_transforms(),
-                force_reprocess=force_reprocess,
-                lazy_checkpoint=self.params.process.lazy_checkpoint,
                 **arguments
             )
-        except TaskStopped as stop:
-            self._keep_stopped_extraction(stop, checkpoint_path)
+        except Exception:
+            self._keep_interrupted_extraction()
             raise
 
-    def _keep_stopped_extraction(self, stop: TaskStopped, checkpoint_path: Path | None) -> None:
-        """ Keep what an extraction computed before it was stopped, rather than a pipeline half filled.
+    def _keep_interrupted_extraction(self) -> None:
+        """ Keep what an interrupted extraction computed, and autosave it.
 
-        PhenoMe gathers a run's results into the pipeline only once the run is done, which a stop
-        unwinds before. A lazy run has written what it computed to the checkpoint, which is closed and
-        read back - every image it holds being among the ones loaded, a partial checkpoint loads as it
-        is. A run in memory has its embeddings stacked into the results it already named them in.
+        PhenoMe gathers a run's results into the pipeline only once the run is done, which an
+        interruption unwinds before, so the embeddings computed so far are stacked into the results
+        here. What the pipeline then holds is written to AUTOSAVE_CHECKPOINT in the working directory,
+        replacing the one before, without being selected as the current checkpoint.
 
-        A checkpoint that cannot be read back, as when the run was stopped before writing anything,
-        leaves the pipeline empty: there is nothing to keep, and the stop is not to be turned into a
-        failure for it.
-
-        Args:
-            stop: The exception the run was unwound by, its traceback still attached.
-            checkpoint_path: The checkpoint the run was writing to, None for a run in memory.
+        Nothing raised here may take the place of what interrupted the run: an autosave that cannot be
+        written is only logged.
         """
-        if checkpoint_path is None:
-            self.image_processing.keep_stopped_results()
-        else:
-            self.image_processing.close_stopped_checkpoints(stop)
-            try:
-                self.load_checkpoint(checkpoint_path)
-            except (OSError, ValueError, RuntimeError) as error:
-                logger.warning(
-                    "Kept nothing of the stopped run, its checkpoint at '%s' could not be read back: %s",
-                    checkpoint_path, error
-                )
-                return
+        if not self.image_processing.keep_stopped_results():
+            logger.info('The interrupted run left nothing to keep.')
+            return
 
+        path = Path.cwd() / AUTOSAVE_CHECKPOINT
+        try:
+            self.image_processing.save_results(str(path))
+        except Exception as error:  # noqa: BLE001 - see below
+            # Caught whole: this runs while another exception is on its way out, and is only worth
+            # doing as long as it never takes that exception's place
+            logger.warning("Could not autosave the interrupted run to '%s': %s", path, error)
+            return
+
+        self.last_autosave = path
         logger.info(
-            'Kept %d of %d image(s) processed before the stop.', self.pheno.results.n_images, self.n_loaded_images
+            "Autosaved %d of %d image(s) processed before the interruption to '%s'.",
+            self.n_processed_images, self.n_loaded_images, path
         )
 
     @property
@@ -686,46 +682,22 @@ class PhenoMeInterface:
         """
         return self.has_processed_images and self.n_processed_images >= self.n_loaded_images
 
-    @property
-    def resumes_checkpoint(self) -> bool:
-        """ Whether the next run carries on the selected checkpoint rather than replacing the results.
-
-        Only with lazy checkpointing on and a checkpoint selected: the run then processes only the
-        images the checkpoint does not hold yet, keeping the embeddings already there.
-
-        Returns:
-            True when the next run resumes the selected checkpoint.
-        """
-        return self.params.process.lazy_checkpoint and self.params.paths.checkpoint is not None
-
-    def compute_properties(self, progress_callback: ProgressCallback | None=None, force_update: bool=False) -> pd.DataFrame:
+    def compute_properties(self, progress_callback: ProgressCallback | None=None) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Stores them in self.properties_df.
 
-        Uses the params to feed arguments.
+        Uses the params to feed arguments. Computed in memory for every image, whatever properties
+        were held before.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each image. Called from the
                 calling thread, so a caller running this in a worker thread must not touch widgets in it.
-            force_update: Whether to drop the properties the checkpoint holds and compute them all
-                again, which a preset computed over a checkpoint filled under another one needs:
-                PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
-                properties are cleared, the embeddings in the same file being left where they are.
-                Without lazy checkpointing there is no checkpoint to clear, and PhenoMe ignores it.
         Returns:
             One row per image, holding the image path and the computed properties.
         """
-        checkpoint_path = self.run_checkpoint()
-
         # PhenoMe only knows its presets by their lower case name, while the GUI displays them capitalized
         preset = self.params.properties.preset.lower()
 
-        self.properties_df = self.image_processing.compute_properties(
-            preset,
-            checkpoint_path,
-            progress_callback=progress_callback,
-            force_update=force_update,
-            lazy_checkpoint=self.params.process.lazy_checkpoint,
-        )
+        self.properties_df = self.image_processing.compute_properties(preset, progress_callback=progress_callback)
         return self.properties_df
 
     # ------------------------------------------------------------------

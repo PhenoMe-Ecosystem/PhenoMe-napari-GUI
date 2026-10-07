@@ -58,9 +58,8 @@ class PathParams(ParamsBase):
 
     `checkpoint` is None until one has been saved or loaded, and goes back to None whenever another
     dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
-    no others. A run only writes to it while it goes when `ProcessParams.lazy_checkpoint` is on, and
-    sets it to the autosave file when there was none; otherwise it names the file last saved or
-    loaded, and nothing waits on it.
+    no others. It names the file last saved or loaded, which no run ever writes to: a run is made in
+    memory, and an interrupted one is autosaved to a file of its own that is not selected here.
     """
 
     images: Path | None = Path('/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images')
@@ -89,11 +88,9 @@ class ProcessParams(ParamsBase):
     start. Worth raising where starting a process is cheap and the images are slow to read, which is
     why the choice is offered rather than settled here.
 
-    `lazy_checkpoint` says whether a run writes its embeddings and properties into the selected
-    checkpoint as it goes, resuming from what the file already holds and leaving the embeddings on
-    disk. With no checkpoint selected, the run autosaves to 'autosave.hdf5' in the working directory.
-    Off by default, the results staying in memory until they are saved; offered in the GUI as the
-    "Autosave/resume progress" checkbox.
+    `resume_progress` says whether a run keeps the embeddings already held - read from a checkpoint or
+    left by a stopped run - and processes only the images missing from them, rather than every image
+    again. Either way the run is made in memory; offered in the GUI as the "Resume progress" checkbox.
 
     `resize_size` and `pad_size` are how an image is brought to the model's input size: padded up to
     `pad_size` on each side when smaller, then resized to `resize_size` square. None skips the step,
@@ -109,7 +106,7 @@ class ProcessParams(ParamsBase):
     channel_mode: ChannelMode = 'split'
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
-    lazy_checkpoint: bool = False
+    resume_progress: bool = False
     resize_size: int | None = Field(default=224, ge=1)
     pad_size: int | None = Field(default=None, ge=1)
     l2_normalize_channels: bool = False
