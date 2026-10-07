@@ -22,6 +22,7 @@ from .prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
+from .styles import GROUP_STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
@@ -74,9 +75,10 @@ class AnalysisPanel(QWidget):
         layout = QVBoxLayout()
 
         # Group for the clustering step
-        clustering_group = QGroupBox("Clustering")
+        self._clustering_group = QGroupBox("Clustering")
+        self._clustering_group.setObjectName("parentGroup")
         clustering_layout = QHBoxLayout()
-        clustering_group.setLayout(clustering_layout)
+        self._clustering_group.setLayout(clustering_layout)
 
         # Clustering parameters button, opening a form rebuilt on every use
         self._clustering_params_dialog = None
@@ -90,9 +92,10 @@ class AnalysisPanel(QWidget):
         clustering_layout.addWidget(self._run_clustering_button)
 
         # Group for the image inspection steps
-        images_group = QGroupBox("Image Retrieval")
+        self._images_group = QGroupBox("Image Retrieval")
+        self._images_group.setObjectName("parentGroup")
         images_layout = QVBoxLayout()
-        images_group.setLayout(images_layout)
+        self._images_group.setLayout(images_layout)
 
         # Prototype button, enabled only once the images have been processed. It opens the parameter
         # form rather than searching straight away, the search being what confirming the form does.
@@ -113,7 +116,7 @@ class AnalysisPanel(QWidget):
         # selection can be resolved back to a full row.
         self._images_df = None
         self._images_group_column = None
-        self._images_area = TableDockArea('Images table', images_group)
+        self._images_area = TableDockArea('Images table', self._images_group)
         self._images_table = create_widget(
             label='Images Table', widget_type='Table', options={'value': None}
         )
@@ -132,8 +135,8 @@ class AnalysisPanel(QWidget):
         # Refreshed here rather than next to each button, as it needs all of them to exist
         self._refresh_analysis_buttons()
 
-        layout.addWidget(clustering_group, 0)
-        layout.addWidget(images_group, 1)
+        layout.addWidget(self._clustering_group, 0)
+        layout.addWidget(self._images_group, 1)
         layout.addWidget(self._explorer_button, 0)
         self.setLayout(layout)
 
@@ -141,9 +144,12 @@ class AnalysisPanel(QWidget):
         """ Let go of the retrieved images, a new dataset having taken the place of the one they came from.
 
         The buttons are refreshed alongside: the embeddings they run on went with the previous dataset,
-        so every step here closes back down until the new one has been processed.
+        so every step here closes back down until the new one has been processed. Both groups go back to
+        their default outline, the results they reported on being gone.
         """
         self._update_images_table(None, None)
+        self._clustering_group.setStyleSheet('')
+        self._images_group.setStyleSheet('')
         self._refresh_analysis_buttons()
 
     def set_task_running(self, running: bool) -> None:
@@ -205,6 +211,9 @@ class AnalysisPanel(QWidget):
     def _on_run_clustering_clicked(self) -> None:
         """ Begin the clustering task."""
         logger.info("Compute Clustering clicked, with parameters %s", self._phenome.params.clustering)
+
+        self._clustering_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
+
         worker = self._compute_clustering_worker()
         worker.returned.connect(self._on_finish_clustering)
         worker.errored.connect(self._on_clustering_failed)
@@ -222,6 +231,7 @@ class AnalysisPanel(QWidget):
         read the metadata columns when they are built, and they are rebuilt on every use.
         """
         self.clustering_finished.emit()
+        self._clustering_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
     def _on_prototype_clicked(self) -> None:
         """ Open the prototype parameter form, and begin the search once it is confirmed.
@@ -237,6 +247,7 @@ class AnalysisPanel(QWidget):
             return
 
         self._phenome.params.prototypes = self._prototypes_params_dialog.get_params()
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
 
         logger.info("View Prototype Images confirmed, with parameters %s", self._phenome.params.prototypes)
         worker = self._prototypes_worker()
@@ -254,6 +265,7 @@ class AnalysisPanel(QWidget):
         prototypes_df = self._phenome.prototypes_df
         logger.info("Found %d prototype images.", 0 if prototypes_df is None else len(prototypes_df))
         self._update_images_table(prototypes_df, self._phenome.params.prototypes.group_by)
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
     def _on_outlier_clicked(self) -> None:
         """ Open the outlier parameter form, and begin the detection once it is confirmed.
@@ -269,6 +281,7 @@ class AnalysisPanel(QWidget):
             return
 
         self._phenome.params.outliers = self._outliers_params_dialog.get_params()
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
 
         logger.info("View Outlier Images confirmed, with parameters %s", self._phenome.params.outliers)
         worker = self._outliers_worker()
@@ -286,6 +299,7 @@ class AnalysisPanel(QWidget):
         outliers_df = self._phenome.outliers_df
         logger.info("Found %d outlier images.", 0 if outliers_df is None else len(outliers_df))
         self._update_images_table(outliers_df, self._phenome.params.outliers.group_by)
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
     def _on_clustering_failed(self, error: Exception) -> None:
         """ Report a clustering that raised.
@@ -294,6 +308,7 @@ class AnalysisPanel(QWidget):
             error: The exception the clustering raised, as the worker caught it.
         """
         self._report_failure('cluster the images', error)
+        self._clustering_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
 
     def _on_prototypes_failed(self, error: Exception) -> None:
         """ Report a prototype search that raised.
@@ -302,6 +317,7 @@ class AnalysisPanel(QWidget):
             error: The exception the search raised, as the worker caught it.
         """
         self._report_failure('find the prototype images', error)
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
 
     def _on_outliers_failed(self, error: Exception) -> None:
         """ Report an outlier detection that raised.
@@ -310,6 +326,7 @@ class AnalysisPanel(QWidget):
             error: The exception the detection raised, as the worker caught it.
         """
         self._report_failure('detect the outlier images', error)
+        self._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
 
     def _report_failure(self, attempted: str, error: Exception) -> None:
         """ Say that a step raised, the worker having swallowed the exception into a signal.
