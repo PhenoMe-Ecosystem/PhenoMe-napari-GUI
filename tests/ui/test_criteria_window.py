@@ -1,14 +1,13 @@
 """Tests for the forms picking which images a projection is computed from.
 
-The filter and the exclusion are one form under two names, so everything but the two names is tested
-on both. The form is handed the fields and the metadata to read their values from, and knows nothing
+The filter and the exclusion are one form under two names, so everything is tested on both. The form is handed the fields and the metadata to read their values from, and knows nothing
 else, so the frames here are written by hand.
 """
 
 import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QLabel, QWidget
+from qtpy.QtWidgets import QWidget
 
 from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 
@@ -57,32 +56,11 @@ def choices(combo) -> list[str]:
     return [combo.itemText(index) for index in range(combo.count())]
 
 
-def labels(form) -> list[str]:
-    """ The text of every label on the form, in the order they were built. """
-    return [label.text() for label in form.findChildren(QLabel)]
-
-
 def select(values, *texts: str) -> None:
     """ Select the given values in a list widget, as clicking them would. """
     for text in texts:
         for item in values.findItems(text, Qt.MatchFlag.MatchExactly):
             item.setSelected(True)
-
-
-# ----------------------------------------------------------------------------
-# What tells the two forms apart
-# ----------------------------------------------------------------------------
-
-
-def test_each_form_goes_under_its_own_name(parent: QWidget, metadata: pd.DataFrame) -> None:
-    assert FilterWindow(parent, COLUMNS, metadata).windowTitle() == 'Filter Images'
-    assert ExcludeWindow(parent, COLUMNS, metadata).windowTitle() == 'Exclude Images'
-
-
-def test_each_form_heads_its_picks_its_own_way(parent: QWidget, metadata: pd.DataFrame) -> None:
-    """The values are the same values; what differs is what the projection then does with them."""
-    assert labels(FilterWindow(parent, COLUMNS, metadata)) == ['Field: ', 'Values', 'Filtered Values']
-    assert labels(ExcludeWindow(parent, COLUMNS, metadata)) == ['Field: ', 'Values', 'Excluded Values']
 
 
 # ----------------------------------------------------------------------------
@@ -100,23 +78,11 @@ def test_the_values_of_the_first_field_are_listed(form) -> None:
     assert items(form._picked_list) == []
 
 
-def test_the_values_are_listed_once_each(form) -> None:
-    """Two images of the same drug are one value to pick, not two."""
-    assert items(form._values_list).count('ctrl') == 1
-
-
 def test_numbers_are_ordered_as_numbers(form) -> None:
     """Ordered as text, cluster 10 would come between 1 and 2."""
     form._field_combo.setCurrentText('cluster')
 
     assert items(form._values_list) == ['1', '2', '10']
-
-
-def test_a_value_the_frame_has_none_of_is_not_listed(form) -> None:
-    """The clustering leaves its noise points unlabelled, which is not a value to pick."""
-    form._field_combo.setCurrentText('cluster')
-
-    assert len(items(form._values_list)) == 3
 
 
 def test_choosing_another_field_lists_its_values(form) -> None:

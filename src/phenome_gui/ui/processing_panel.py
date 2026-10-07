@@ -1,15 +1,13 @@
 import logging
 import threading
+import time
 from pathlib import Path
 
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
+    QCheckBox,
     QFileDialog,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -17,16 +15,17 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from ..registries.models import MODEL_OPTIONS
 from ..utils.checkpoint import MODEL_MISMATCH, CheckpointMismatch
-from ..utils.params import CHANNEL_MODE_CHOICES, MAX_WORKERS, PRESET_CHOICES
 from ..utils.phenome_interface import PhenoMeInterface
 from ..utils.progress import StoppableProgress, TaskStopped, ThrottledProgress
-from .model_window import ModelWindow
+from .advanced_processing_params import AdvancedProcessingParams
+from .option_window import ModelWindow, PropertyWindow
+from .styles import GROUP_STYLESHEETS
 
 logger = logging.getLogger("main_logger")
 
@@ -35,23 +34,59 @@ logger = logging.getLogger("main_logger")
 NO_CHECKPOINT_TEXT = 'Current checkpoint: none'
 CHECKPOINT_TEXT = 'Current checkpoint: {name}'
 
+# How many of the loaded images have their embeddings, read in the Embeddings group. Part of them is what
+# a stopped run or a partial checkpoint leaves, and what the next run resumes from.
+PROGRESS_TEXT = '{held}/{loaded} images'
+
 # The file a checkpoint is picked from or written to, as both dialogs name the type, and what a name
 # given without one is spelled out under
 CHECKPOINT_FILTER = 'HDF5 Files (*.hdf5)'
 CHECKPOINT_SUFFIX = '.hdf5'
 
+# How often the elapsed time of a running task is redrawn, in milliseconds
+ELAPSED_REFRESH_MS = 1000
+
+
+def format_elapsed(seconds: float) -> str:
+    """ Spell out a duration the way a stopwatch shows it.
+
+    Args:
+        seconds: The duration, the part of a second left over being dropped.
+    Returns:
+        M:SS under an hour, H:MM:SS from an hour on.
+    """
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes}:{secs:02d}'
+
 
 class ProcessingPanel(QWidget):
     """ The image processing tab of the PhenoMe widget.
 
-    Holds the model loading, the embedding extraction and the properties calculation, along with the
-    progress bar the last two report into.
+    Holds the checkpoint the results are saved to or loaded from, the model selection, the embedding
+    extraction and the properties calculation, along with the progress bar the tasks report into. The
+    properties are computed after the embeddings when asked for, or on their own over the embeddings
+    already there.
+
+    A run is made in memory, writing to no checkpoint as it goes: saving the results is a step of its
+    own, and the checkpoint they were loaded from is never touched. With Resume progress ticked, a run
+    keeps the embeddings already there and processes only the images missing from them. An extraction
+    interrupted partway - stopped, or failed - is autosaved to a file of its own in the working
+    directory, to be loaded and resumed from.
     """
 
     # PhenoMe runs its progress callback on the worker thread, which must not touch widgets. Emitting
     # this signal from there hands (current, total, desc) back to the main thread through a queued
     # connection. Its signature matches phenome.utils.ProgressCallback, so `emit` is itself a valid callback.
     progress_updated = Signal(int, int, str)
+
+    # Emitted from the worker thread once the extraction has its model, loaded or kept, so the button
+    # can stop saying it is loading one. Queued like progress_updated, so it lands before the first batch.
+    model_ready = Signal()
+
+    # Emitted from the worker thread once the embeddings are extracted and the properties are next, so
+    # the button can say so and the end of the task be read against the right step.
+    properties_started = Signal()
 
     # Emitted when a processing task starts and again when it finishes, so the steps running on what the
     # task produces can lock themselves for the duration.
@@ -60,6 +95,11 @@ class ProcessingPanel(QWidget):
     # Emitted when a checkpoint has been loaded, which can bring embeddings and properties with it: the
     # steps running on those have no other way of hearing that they are suddenly there.
     checkpoint_loaded = Signal()
+
+    # Emitted when a run is about to replace embeddings that were already there, the analysis results
+    # computed from them having just been dropped: the panels and windows showing those results have
+    # to let go of their own share of them.
+    analysis_cleared = Signal()
 
     def __init__(
         self,
@@ -75,18 +115,29 @@ class ProcessingPanel(QWidget):
         super().__init__(parent)
         self._phenome = phenome
 
-        # Both processing tasks work on the same pipeline object and share the progress bar, so only one
-        # of them may run at a time. Read by the button refresh methods to lock the other button.
+        # Whether a processing task is running: the extraction and the properties after it, or the
+        # properties alone. Read by the refresh methods to lock the controls a run reads from.
         self._processing_task_running = False
 
-        # Whether the properties preset has been changed since the last run. PhenoMe resumes a
-        # checkpoint's properties rather than recomputing them, and only warns about the keys the new
-        # preset asks for and cannot find, so a changed preset has to say so or it is quietly ignored.
-        self._preset_changed = False
+        # Whether the running task has moved on from the embeddings to the properties, set from the
+        # properties_started signal. Read when the task ends, a failure or a stop answering differently
+        # for each of the two steps.
+        self._computing_properties = False
 
         # Set from here to ask the task running on the worker thread to stop, and read there from the
         # progress callback. A fresh one is made for every run, so a stop never carries into the next.
         self._stop_event: threading.Event | None = None
+
+        # When the running task, or the last one, was started, read off the clock below. The clock is
+        # kept as an attribute so the elapsed time can be read off another one.
+        self._clock = time.monotonic
+        self._task_started: float | None = None
+
+        # Redraws the elapsed time while a task runs, from the clock rather than by counting ticks, so
+        # the display never drifts from the time really spent
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(ELAPSED_REFRESH_MS)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed)
 
         self._build_ui()
 
@@ -98,17 +149,19 @@ class ProcessingPanel(QWidget):
         layout = QVBoxLayout()
 
         # Checkpoint group
-        checkpoint_group = QGroupBox("Checkpoint")
+        self._checkpoint_group = QGroupBox("Save / Load")
+        self._checkpoint_group.setObjectName("parentGroup")
         checkpoint_layout = QVBoxLayout()
-        checkpoint_group.setLayout(checkpoint_layout)
+        self._checkpoint_group.setLayout(checkpoint_layout)
 
-        # The two ways to come by a checkpoint, to save both embeddings AND properties. Named from a
-        # dialog either way rather than typed: a path is only ever meant to come from one.
-        self._new_checkpoint_button = QPushButton("New checkpoint...")
-        self._new_checkpoint_button.clicked.connect(self._on_new_checkpoint_pressed)
-        checkpoint_layout.addWidget(self._new_checkpoint_button)
+        # The two ways to a checkpoint: writing out the embeddings and properties extracted here, or
+        # reading back ones extracted before. Named from a dialog either way rather than typed: a path
+        # is only ever meant to come from one.
+        self._save_checkpoint_button = QPushButton("Save results...")
+        self._save_checkpoint_button.clicked.connect(self._on_save_checkpoint_pressed)
+        checkpoint_layout.addWidget(self._save_checkpoint_button)
 
-        self._load_checkpoint_button = QPushButton("Load checkpoint...")
+        self._load_checkpoint_button = QPushButton("Load results...")
         self._load_checkpoint_button.clicked.connect(self._on_load_checkpoint_pressed)
         checkpoint_layout.addWidget(self._load_checkpoint_button)
 
@@ -117,13 +170,14 @@ class ProcessingPanel(QWidget):
         self._current_checkpoint_label = QLabel(NO_CHECKPOINT_TEXT)
         checkpoint_layout.addWidget(self._current_checkpoint_label)
 
-        # Closes both ways to a checkpoint until a dataset has been loaded, which is what they read
+        # Closes the load until a dataset has been loaded, and the save until there is something to save
         self._refresh_checkpoint()
 
         # Group for embedding extraction
-        embeddings_group = QGroupBox("Embeddings")
+        self._embeddings_group = QGroupBox("Embeddings")
+        self._embeddings_group.setObjectName("parentGroup")
         embeddings_layout = QVBoxLayout()
-        embeddings_group.setLayout(embeddings_layout)
+        self._embeddings_group.setLayout(embeddings_layout)
 
         # Device selection radio buttons
         device_group = QGroupBox("Processing Device")
@@ -139,53 +193,100 @@ class ProcessingPanel(QWidget):
         device_group.setLayout(device_layout)
         embeddings_layout.addWidget(device_group)
 
-        # Opens the window the model is picked from, which is also what starts the download: the
-        # models differ in more than their names, and a list on its own could not say how.
+        # Model selection row
+        model_row = QHBoxLayout()
+
+        # Opens the window the model is picked from: the models differ in more than their names, and a
+        # list on its own could not say how. Picking only chooses; the download waits for the run.
         self._select_model_button = QPushButton("Select Model...")
         self._select_model_button.clicked.connect(self._on_select_model_clicked)
-        embeddings_layout.addWidget(self._select_model_button)
+        model_row.addWidget(self._select_model_button)
 
-        # Current loaded model
+        # Advanced parameters button, opening a form built anew on every use
+        self._advanced_parameters_button = QPushButton("Advanced options...")
+        self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
+        model_row.addWidget(self._advanced_parameters_button)
+        embeddings_layout.addLayout(model_row)
+
+        # Current selected model, the parameters' default until another is picked
         current_model_row = QHBoxLayout()
-        current_model_row.addWidget(QLabel("Loaded model:"))
-        self._current_model_label = QLabel("None")
-        self._current_model_label.setAlignment(Qt.AlignRight)
+        current_model_row.addWidget(QLabel("Selected model:"))
+        self._current_model_label = QLabel(self._phenome.params.process.model)
+        self._current_model_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         current_model_row.addWidget(self._current_model_label)
         embeddings_layout.addLayout(current_model_row)
 
-        # Advanced parameters button, opening a form built on first use
-        self._advanced_parameters_dialog = None
-        self._advanced_parameters_button = QPushButton("Advanced options...")
-        self._advanced_parameters_button.clicked.connect(self._on_advanced_parameters_clicked)
-        embeddings_layout.addWidget(self._advanced_parameters_button)
+        # How many of the loaded images have their embeddings, refreshed between tasks: the progress
+        # bar is what follows a run as it goes
+        progress_row = QHBoxLayout()
+        progress_label = QLabel("Current progress: ")
 
-        # Extract embeddings button, enabled only once both data and a model are available
-        self._process_button = QPushButton("Extract Embeddings")
-        self._process_button.clicked.connect(self._on_process_clicked)
-        embeddings_layout.addWidget(self._process_button)
-        self._refresh_process_button()
+        self._progress_value_label = QLabel()
+        self._progress_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        progress_row.addWidget(progress_label)
+        progress_row.addWidget(self._progress_value_label)
+        embeddings_layout.addLayout(progress_row)
+        self._refresh_progress_label()
 
         # Group for properties calculation
-        properties_group = QGroupBox("Properties")
+        self._properties_group = QGroupBox("Properties")
+        self._properties_group.setObjectName("parentGroup")
         properties_layout = QVBoxLayout()
-        properties_group.setLayout(properties_layout)
+        self._properties_group.setLayout(properties_layout)
 
-        # Properties selection combo box
+        # Preset row: the window the preset is picked from, and whether the properties follow a run
         props_row = QHBoxLayout()
-        props_row.addWidget(QLabel("Properties preset"))
-        self._props_selection_combo = QComboBox()
-        self._props_selection_combo.addItems(PRESET_CHOICES)
-        self._props_selection_combo.setCurrentText(self._phenome.params.properties.preset)
-        self._props_selection_combo.currentTextChanged.connect(self._on_properties_changed)
 
-        props_row.addWidget(self._props_selection_combo)
+        # Opens the window the preset is picked from, which says what each one computes
+        self._select_preset_button = QPushButton("Select Preset...")
+        self._select_preset_button.clicked.connect(self._on_select_preset_clicked)
+        props_row.addWidget(self._select_preset_button)
+
+        # Checkbox for properties calculation, computed after the embeddings when Process Images runs
+        self._props_checkbox = QCheckBox("Compute properties after embeddings")
+        self._props_checkbox.setChecked(self._phenome.params.properties.compute)
+        self._props_checkbox.clicked.connect(self._on_properties_checkbox_changed)
+        props_row.addWidget(self._props_checkbox)
         properties_layout.addLayout(props_row)
 
-        # Properties calculation button, enabled only once the images have been processed
-        self._props_button = QPushButton('Calculate Properties')
-        self._props_button.clicked.connect(self._on_properties_clicked)
-        properties_layout.addWidget(self._props_button)
-        self._refresh_props_button()
+        # Current selected preset, the parameters' default until another is picked
+        current_preset_row = QHBoxLayout()
+        current_preset_row.addWidget(QLabel("Selected preset:"))
+        self._current_preset_label = QLabel(self._phenome.params.properties.preset)
+        self._current_preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        current_preset_row.addWidget(self._current_preset_label)
+        properties_layout.addLayout(current_preset_row)
+
+        # Computes the properties alone, over the embeddings already there, extracted here or read
+        # from a checkpoint. Always computed anew, so a preset picked since is never resumed past.
+        self._compute_properties_button = QPushButton("Compute Properties")
+        self._compute_properties_button.clicked.connect(self._on_compute_properties_clicked)
+        properties_layout.addWidget(self._compute_properties_button)
+        self._refresh_compute_properties_button()
+
+
+        # Processing group
+        self._processing_group = QGroupBox("Processing")
+        self._processing_group.setObjectName("parentGroup")
+        processing_layout = QVBoxLayout()
+
+        # Whether a run extends the embeddings already there rather than processing every image again
+        self._resume_checkbox = QCheckBox("Resume progress")
+        self._resume_checkbox.setChecked(self._phenome.params.process.resume_progress)
+        self._resume_checkbox.setToolTip(
+            'Check to resume progress on current embeddings.\nOtherwise, overwrite progress.'
+        )
+        self._resume_checkbox.clicked.connect(self._on_resume_checkbox_changed)
+        processing_layout.addWidget(self._resume_checkbox)
+
+        # Process / Stop row
+        process_row = QHBoxLayout()
+
+        # Process button, enabled only once data and a model are available
+        self._process_button = QPushButton("Process Images")
+        self._process_button.clicked.connect(self._on_process_clicked)
+        self._refresh_process_button()
 
         # Stop button, calling off whichever of the two tasks is running. Sits with the progress bar
         # rather than in either group, being the one control that answers for both of them.
@@ -193,19 +294,39 @@ class ProcessingPanel(QWidget):
         self._stop_button.clicked.connect(self._on_stop_clicked)
         self._refresh_stop_button()
 
+        process_row.addWidget(self._process_button)
+        process_row.addWidget(self._stop_button)
+
         # Progress bar, driven from the worker thread through the progress_updated signal
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
         self._progress_bar.setFormat('')
         self.progress_updated.connect(self._on_progress)
+        self.model_ready.connect(self._on_model_ready)
+        self.properties_started.connect(self._on_properties_started)
 
-        layout.addWidget(checkpoint_group)
-        layout.addWidget(embeddings_group,1)
-        layout.addWidget(properties_group,1)
+        # Timer for processing
+        timer_row = QHBoxLayout()
+        timer_label = QLabel("Elapsed time:")
+        self._timer_value_label = QLabel(format_elapsed(0))
+        self._timer_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        timer_row.addWidget(timer_label)
+        timer_row.addWidget(self._timer_value_label)
+
+        processing_layout.addLayout(process_row)
+        processing_layout.addWidget(self._progress_bar)
+        processing_layout.addLayout(timer_row)
+        self._processing_group.setLayout(processing_layout)
+
+        layout.addWidget(self._embeddings_group)
+        layout.addWidget(self._properties_group)
+        layout.addWidget(self._processing_group)
+
         layout.addStretch(1)
-        layout.addWidget(self._stop_button)
-        layout.addWidget(self._progress_bar)
+
+        layout.addWidget(self._checkpoint_group)
+
         self.setLayout(layout)
 
     def _on_device_changed(self) -> None:
@@ -214,88 +335,66 @@ class ProcessingPanel(QWidget):
         self._phenome.params.process.device = device
 
     def _on_select_model_clicked(self) -> None:
-        """ Open the window a model is picked from, and load whichever it is closed on.
+        """ Open the window a model is picked from, and select whichever it is closed on.
 
         The window opens on the model currently chosen and is rebuilt on every use, the descriptions
         it shows being read as it is constructed. Nothing is written until it is confirmed: a model
         looked at and thought better of leaves the parameters as they were, the way every other form
         here behaves.
+
+        Only the parameter is written. The model is loaded when the embeddings are extracted, the
+        download being some hundreds of megabytes that a pick alone does not call for.
         """
         window = ModelWindow(self, self._phenome.params.process.model)
 
         if not window.exec_():
-            logger.info('No model was picked, leaving the loaded one as it is.')
+            logger.info('No model was picked, leaving the selected one as it is.')
             return
 
         self._phenome.params.process.model = window.selected_model()
-        self._load_model()
-
-    def _load_model(self) -> None:
-        """ Start the download of the chosen model, on a worker thread.
-
-        Hundreds of megabytes over the network, so the button is shut for the duration and says what
-        is keeping it: the one control the model is picked and loaded through.
-        """
-        worker = self._load_model_worker()
-        worker.returned.connect(self._finish_load_model)
-        worker.errored.connect(self._on_load_model_failed)
-        worker.start()
-
-        self._select_model_button.setText('Downloading model...')
-        self._select_model_button.setEnabled(False)
-
-    def _finish_load_model(self) -> None:
-        """ Called when model is finished loading. Reopens the button and displays which model is loaded. """
-        self._select_model_button.setText('Select Model...')
         self._current_model_label.setText(self._phenome.params.process.model)
-        self._select_model_button.setEnabled(True)
-        self._refresh_process_button()
-
-    def _on_load_model_failed(self, error: Exception) -> None:
-        """ Reopen the button when the load raised, so another model can be picked.
-
-        A download that fails otherwise leaves the one way to a model shut, with the label still
-        naming whichever model was loaded before it, and no way to try again.
-
-        Args:
-            error: The exception the load raised, as the worker caught it.
-        """
-        self._select_model_button.setText('Select Model...')
-        self._select_model_button.setEnabled(True)
-
-        logger.error("Could not load '%s': %s", self._phenome.params.process.model, error)
-        QMessageBox.critical(
-            self,
-            'Model loading failed',
-            f"Could not load '{self._phenome.params.process.model}'.\n\n{error}"
-        )
+        self.refresh_buttons()
 
     def _set_processing_task_running(self, running: bool) -> None:
         """ Mark a processing task as running or finished, and lock the buttons accordingly.
 
-        Both processing buttons go through here, so starting either one disables the other until it is
-        done. The change is announced, as the analysis steps run on the embeddings the tasks produce and
+        Every task goes through here - a run, the properties alone, a checkpoint being saved - so
+        starting any one disables the others until it is done. The change is announced, as the analysis steps run on the embeddings the tasks produce and
         have to lock themselves for the duration too.
+
+        The elapsed time is timed here too: reset as a task starts and redrawn while it runs, then left
+        at the total once it has ended, however it ended.
 
         Args:
             running: True when a task has just been started, False once it has finished.
         """
+        if running:
+            self._task_started = self._clock()
+            self._timer_value_label.setText(format_elapsed(0))
+            self._elapsed_timer.start()
+        else:
+            self._elapsed_timer.stop()
+            # Read once more, so the total is the time really spent rather than the last whole tick
+            self._refresh_elapsed()
+
         self._processing_task_running = running
         self.refresh_buttons()
         self.task_running_changed.emit(running)
+
+    def _refresh_elapsed(self) -> None:
+        """ Show the time spent on the running task, or on the last one once it has ended. """
+        if self._task_started is None:
+            return
+        self._timer_value_label.setText(format_elapsed(self._clock() - self._task_started))
 
     def clear_results(self) -> None:
         """ Let go of what the dataset loaded before produced, a new one having taken its place.
 
         The checkpoint is let go of along with them: the interface unselects it when it drops the
         results, a checkpoint answering only for the images it was filled from, and the field and the
-        label follow it back to naming nothing. The loaded model is not a result and stays where it
-        is, along with the label naming it.
+        label follow it back to naming nothing. The selected model is not a result and stays where
+        it is, along with the label naming it and the network loaded for it.
         """
-        # The checkpoint went with the results, so there are no properties left for a changed preset
-        # to have to be computed over
-        self._preset_changed = False
-
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
         self._progress_bar.setFormat('')
@@ -303,24 +402,52 @@ class ProcessingPanel(QWidget):
         self.refresh_buttons()
 
     def refresh_buttons(self) -> None:
-        """ Bring the checkpoint controls and both processing buttons in line with the state of the pipeline.
+        """ Bring the checkpoint controls and the task buttons in line with the state of the pipeline.
 
         Called whenever a task starts or finishes, whenever a checkpoint is come by, and from the
-        outside once data has been loaded, which is what the checkpoint controls themselves wait on.
+        outside once data has been loaded, which is what loading a checkpoint waits on.
         """
+        self._refresh_groups()
+        self._refresh_progress_label()
         self._refresh_checkpoint()
+        self._refresh_settings_controls()
         self._refresh_process_button()
-        self._refresh_props_button()
+        self._refresh_compute_properties_button()
         self._refresh_stop_button()
+
+    def _refresh_progress_label(self) -> None:
+        """ Say how many of the loaded images have their embeddings, extracted here or read from a checkpoint. """
+        self._progress_value_label.setText(
+            PROGRESS_TEXT.format(held=self._phenome.n_processed_images, loaded=self._phenome.n_loaded_images)
+        )
+
+    def _refresh_settings_controls(self) -> None:
+        """ Shut the choices a run reads from while it runs.
+
+        The extraction loads the model it starts with, so a pick made during the run would name a
+        model it never used. The properties step reads its preset and whether to run at all only once
+        the embeddings are done, so a change made meanwhile would apply halfway through. The CUDA
+        choice also stays shut where the hardware has none.
+        """
+        idle = not self._processing_task_running
+
+        self._select_model_button.setEnabled(idle)
+        self._cpu_radio.setEnabled(idle)
+        self._cuda_radio.setEnabled(idle and self._phenome.cuda_available)
+        self._select_preset_button.setEnabled(idle)
+        self._props_checkbox.setEnabled(idle)
+        self._resume_checkbox.setEnabled(idle)
 
     def _refresh_stop_button(self) -> None:
         """ Offer the stop only while there is a task to stop, and only once.
 
         A stop that has been asked for cannot be asked for again: it is honoured at the next report
         PhenoMe makes, and the button says so rather than taking a second click that would do nothing.
+        Only a run has a stop to ask for: a checkpoint being saved holds the tab too, but cannot be
+        called off halfway without leaving a broken file behind.
         """
         stop_requested = self._stop_event is not None and self._stop_event.is_set()
-        stoppable = self._processing_task_running and not stop_requested
+        stoppable = self._processing_task_running and self._stop_event is not None and not stop_requested
 
         self._stop_button.setEnabled(stoppable)
         self._stop_button.setText('Stopping...' if stop_requested and self._processing_task_running else 'Stop')
@@ -346,12 +473,15 @@ class ProcessingPanel(QWidget):
         if self._stop_event is None:
             return
 
-        logger.info('Stopping the running task. It stops at its next report, which the checkpoint holds.')
+        logger.info('Stopping the running task. It stops at its next report.')
         self._stop_event.set()
         self._refresh_stop_button()
 
     def _refresh_process_button(self) -> None:
-        """ Enable the embedding extraction button only when the data, a checkpoint and a model are in place, and no task is running.
+        """ Enable the embedding extraction button only when the data and a model are in place, and no task is running.
+
+        No checkpoint is waited on: a run keeps its results in memory, and saving them is a step of
+        its own once they are there.
 
         Reads the state from the interface rather than tracking it separately, so it stays correct
         whichever loading tab was used. Called after each loading step, whenever a checkpoint is come
@@ -359,12 +489,10 @@ class ProcessingPanel(QWidget):
         """
         metadata_df = self._phenome.metadata_df
         has_data = metadata_df is not None and not metadata_df.empty
-        has_checkpoint = self._phenome.params.paths.checkpoint is not None
-        has_model = self._phenome.model is not None
+        # Selected rather than loaded: the run loads it itself
+        has_model = self._phenome.params.process.model in MODEL_OPTIONS
 
-        self._process_button.setEnabled(
-            has_data and has_checkpoint and has_model and not self._processing_task_running
-        )
+        self._process_button.setEnabled(has_data and has_model and not self._processing_task_running)
 
         if self._processing_task_running:
             self._process_button.setToolTip('Please wait for the running task to finish.')
@@ -374,29 +502,76 @@ class ProcessingPanel(QWidget):
         missing = []
         if not has_data:
             missing.append('load data')
-        if not has_checkpoint:
-            missing.append('create or load a checkpoint')
         if not has_model:
-            missing.append('load a model')
+            missing.append('select a model')
         self._process_button.setToolTip(f"Please {' and '.join(missing)} first." if missing else '')
 
+    def _refresh_compute_properties_button(self) -> None:
+        """ Enable the properties button only once there are embeddings to compute them over, and no task is running.
+
+        The embeddings are read from the interface, so a run made here and a checkpoint loaded with
+        them open it alike.
+        """
+        has_embeddings = self._phenome.has_processed_images
+
+        self._compute_properties_button.setEnabled(has_embeddings and not self._processing_task_running)
+
+        if self._processing_task_running:
+            self._compute_properties_button.setToolTip('Please wait for the running task to finish.')
+        else:
+            self._compute_properties_button.setToolTip(
+                '' if has_embeddings else 'Please extract embeddings or load a checkpoint first.'
+            )
+
+    def _on_compute_properties_clicked(self) -> None:
+        """ Begin the properties calculation alone, over the embeddings already there.
+
+        Nothing is asked: the embeddings stay, and so do the analysis results computed from them. The
+        properties are always computed anew rather than resumed from a checkpoint, which is what the
+        button is for when a preset has been picked since they were last computed.
+
+        The step is entered here rather than announced from the worker, so the Process button, which
+        the full run names its steps on, is left as it is.
+        """
+        self._stop_event = threading.Event()
+
+        worker = self._compute_properties_worker()
+        worker.returned.connect(self._on_finish_process)
+        worker.errored.connect(self._on_process_failed)
+
+        # The step is entered after the lock, which outlines the groups from what the pipeline holds
+        self._compute_properties_button.setText('Calculating properties...')
+        self._set_processing_task_running(True)
+        self._enter_properties_step()
+
+        worker.start()
+
     @thread_worker
-    def _load_model_worker(self) -> None:
-        """ Create worker to load model on a parallel thread. """
-        self._phenome.load_model()
+    def _compute_properties_worker(self) -> None:
+        """ Create worker to compute the properties alone on a parallel thread.
 
-    def _on_new_checkpoint_pressed(self) -> None:
-        """ Name the checkpoint the runs are to be written to.
+        The properties held, if any, are computed again for every image. The stop is read from the
+        progress callback, as it is for a full run.
+        """
+        self._phenome.compute_properties(
+            progress_callback=StoppableProgress(
+                ThrottledProgress(self.progress_updated.emit), self._stop_event
+            )
+        )
 
-        A save dialog, so it puts its own question when the name it is given is already a file:
-        answering it is agreeing to replace what is there, and the file goes. Nothing is asked here
-        on top of that - reading an existing checkpoint is what the Load button is for.
+    def _on_save_checkpoint_pressed(self) -> None:
+        """ Write the embeddings and the properties extracted so far to a checkpoint, named from a dialog.
 
-        A path with no file at it is taken up as it stands, that being the ordinary way a checkpoint
-        is created: PhenoMe writes the file itself when the first run reaches it.
+        A save dialog, so it puts its own question when the name it is given is already a file, and
+        answering it is agreeing to replace what is there. Where the extension had to be filled in
+        below, the file it lands on is one the dialog never asked about, so the question is put here.
+
+        Written on a worker, the embeddings being as large as the dataset, with the tab held shut
+        meanwhile like it is for a run: a run started during the save would replace the results being
+        written.
         """
         file_path, _ = QFileDialog.getSaveFileName(
-            self, 'New checkpoint', '', CHECKPOINT_FILTER
+            self, 'Save results', 'checkpoint.hdf5', CHECKPOINT_FILTER
         )
 
         if not file_path:
@@ -408,15 +583,71 @@ class ProcessingPanel(QWidget):
         # checkpoint named without one is a file PhenoMe will refuse to read back later
         path = named if named.suffix else named.with_suffix(CHECKPOINT_SUFFIX)
 
-        # Replaced rather than resumed: the dialog asked whether to replace it and was told yes,
-        # where PhenoMe resumes whatever it finds at a path. Only the name the dialog asked about may
-        # be removed - where the extension was filled in above, whatever now sits at that path is a
-        # file nobody was asked about, and it is left alone and resumed like any other.
-        if path == named and path.is_file():
-            logger.warning("Replacing the checkpoint at '%s', which is to be filled again.", path)
-            path.unlink()
+        if path != named and path.is_file() and not self._confirm_replace(path):
+            logger.info("Saving was called off, leaving the file at '%s' as it was.", path)
+            return
 
-        self._select_checkpoint(path)
+        worker = self._save_checkpoint_worker(path)
+        worker.returned.connect(self._on_checkpoint_saved)
+        worker.errored.connect(lambda error: self._on_save_failed(path, error))
+
+        # No stop for a save: it cannot be called off halfway without leaving a broken file behind
+        self._stop_event = None
+        self._set_processing_task_running(True)
+
+        # PhenoMe writes the file in one go, with nothing to report along the way
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setFormat('Saving checkpoint...')
+
+        worker.start()
+
+    def _confirm_replace(self, path: Path) -> bool:
+        """ Ask whether a file the save dialog never asked about may be replaced.
+
+        Args:
+            path: The file the save would write over.
+        Returns:
+            True when the file may be replaced.
+        """
+        answer = QMessageBox.question(
+            self,
+            'Replace checkpoint',
+            f'{path} already exists.\n\nReplace it?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    @thread_worker
+    def _save_checkpoint_worker(self, path: Path) -> None:
+        """ Create worker to write the results to a checkpoint on a parallel thread.
+
+        Args:
+            path: The checkpoint file to write.
+        """
+        self._phenome.save_checkpoint(path)
+
+    def _on_checkpoint_saved(self) -> None:
+        """ Give the tab back once the checkpoint is written, the label now naming it. """
+        self._set_processing_task_running(False)
+        self._settle_bar('Checkpoint saved')
+
+    def _on_save_failed(self, path: Path, error: Exception) -> None:
+        """ Give the tab back when the checkpoint could not be written, and say why.
+
+        The previous checkpoint stays selected, the interface only adopting a file once it is written.
+
+        Args:
+            path: The checkpoint file that was to be written.
+            error: The exception the save raised, as the worker caught it.
+        """
+        self._set_processing_task_running(False)
+        self._settle_bar('Failed')
+
+        logger.error("Could not save the checkpoint at '%s': %s", path, error)
+        QMessageBox.critical(
+            self, 'Checkpoint saving failed', f'Could not save the checkpoint at {path}.\n\n{error}'
+        )
 
     def _on_load_checkpoint_pressed(self) -> None:
         """ Read an existing checkpoint, picked from a dialog, and work on from where it was left.
@@ -459,31 +690,17 @@ class ProcessingPanel(QWidget):
             self._refresh_checkpoint()
             return
 
-        # The properties may have come with it, so a preset picked before is no longer unanswered for
-        self._preset_changed = False
-
         self.refresh_buttons()
 
         # The embeddings it holds are what the analysis steps run on, and nothing else would tell them
         self.checkpoint_loaded.emit()
 
-    def _select_checkpoint(self, path: Path) -> None:
-        """ Take up a checkpoint to be written to, whether or not there is a file there yet.
-
-        Args:
-            path: The checkpoint the runs are to be written to.
-        """
-        self._phenome.params.paths.checkpoint = path
-        logger.info("Writing this run to the checkpoint at '%s'.", path)
-
-        self.refresh_buttons()
-
     def _refresh_checkpoint(self) -> None:
-        """ Say which checkpoint is current, and offer the two ways to come by one only once there is data.
+        """ Say which checkpoint is current, and offer the two ways to one only once each has what it needs.
 
-        Both ways read the images currently found - one to check the file answers for them, the other
-        to resolve the paths it stores against them - so neither is offered before a dataset has been
-        loaded.
+        Loading resolves the paths a checkpoint stores against the images currently found, so it waits
+        on a dataset. Saving writes out the embeddings extracted, so it waits on them, and on any
+        running task, which would be replacing what is being written.
         """
         checkpoint = self._phenome.params.paths.checkpoint
         metadata_df = self._phenome.metadata_df
@@ -497,158 +714,162 @@ class ProcessingPanel(QWidget):
         # the same one. The whole path is a hover away rather than on screen, being long and rarely asked.
         self._current_checkpoint_label.setToolTip('' if checkpoint is None else str(checkpoint))
 
-        tooltip = '' if has_data else 'Please load data first.'
-        for button in (self._new_checkpoint_button, self._load_checkpoint_button):
-            button.setEnabled(has_data)
-            button.setToolTip(tooltip)
+        self._load_checkpoint_button.setEnabled(has_data)
+        self._load_checkpoint_button.setToolTip('' if has_data else 'Please load data first.')
+
+        has_embeddings = self._phenome.has_processed_images
+        self._save_checkpoint_button.setEnabled(has_embeddings and not self._processing_task_running)
+        if self._processing_task_running:
+            self._save_checkpoint_button.setToolTip('Please wait for the running task to finish.')
+        else:
+            self._save_checkpoint_button.setToolTip('' if has_embeddings else 'Please extract embeddings first.')
 
     def _on_advanced_parameters_clicked(self) -> None:
-        """ Opens a parameter form for advanced users.
+        """ Open the parameter form for advanced users.
 
-        The form is built on first use and kept afterwards, but its fields are reloaded from the current
-        parameters every time it opens, so the values of a cancelled edit are never kept nor shown again.
-        The parameters are only written back when the form is confirmed.
-
-        For now, the advanced parameters include the channel mode, the batch size and the number of
-        loader workers.
-        TODO: Think about which parameters should be here. Some parameters would probably instead be tied to the model used (resize, force_rgb, etc)?
+        The form is rebuilt on every use, as its fields are filled when it is constructed, so a cancelled
+        edit is never kept nor shown again. The parameters are only written back when the form is confirmed.
         """
-        if self._advanced_parameters_dialog is None:
-            self._advanced_parameters_dialog = self._build_advanced_parameters_dialog()
+        dialog = AdvancedProcessingParams(self, self._phenome.params.process)
 
-        self._channel_mode_combo.setCurrentText(self._phenome.params.process.channel_mode)
-        self._batch_size_spinbox.setValue(self._phenome.params.process.batch_size)
-        self._num_workers_spinbox.setValue(self._phenome.params.process.num_workers)
-
-        if self._advanced_parameters_dialog.exec_():
-            self._phenome.params.process.channel_mode = self._channel_mode_combo.currentText()
-            self._phenome.params.process.batch_size = self._batch_size_spinbox.value()
-            self._phenome.params.process.num_workers = self._num_workers_spinbox.value()
-
-    def _build_advanced_parameters_dialog(self) -> QDialog:
-        """ Build the advanced processing parameters window.
-
-        Only builds the form, without filling it. The fields are loaded from the parameters by the
-        caller, which also reads them back when the form is confirmed.
-
-        Returns:
-            The parameter form, parented to the panel so it closes with it.
-        """
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Processing parameters")
-        dialog.setFixedSize(300, 160)
-
-        form_layout = QFormLayout()
-
-        # What a multi-channel image is embedded as. First of the three, being the only one that
-        # decides what is embedded rather than how quickly: the other two leave the same embeddings.
-        self._channel_mode_combo = QComboBox()
-        self._channel_mode_combo.addItems(CHANNEL_MODE_CHOICES)
-        self._channel_mode_combo.setToolTip(
-            "How a multi-channel image reaches the model. 'split' embeds each channel on its own and "
-            "joins the results; 'combined' feeds the channels as one image. A checkpoint filled under "
-            "one is not resumed under the other."
-        )
-        form_layout.addRow("Channel mode", self._channel_mode_combo)
-
-        # Number of images PhenoMe feeds to the model at once
-        self._batch_size_spinbox = QSpinBox()
-        self._batch_size_spinbox.setRange(1, 1024)
-        form_layout.addRow("Batch size", self._batch_size_spinbox)
-
-        # Number of processes the images are read in, none of them by default: a worker is a Python
-        # started from nothing, which imports torch before it reads its first image, and the run waits
-        # on all of them before its first batch. Worth raising where starting a process is cheap and
-        # the images are slow to read.
-        self._num_workers_spinbox = QSpinBox()
-        self._num_workers_spinbox.setRange(0, MAX_WORKERS)
-        self._num_workers_spinbox.setToolTip(
-            'Processes the images are read in. 0 reads them in the processing thread, which starts '
-            'right away; more can read faster once started, at a wait before every run.'
-        )
-        form_layout.addRow("Num. workers", self._num_workers_spinbox)
-
-        # OK closes the form with an accepted result, which is what tells the caller to apply the values
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        form_layout.addRow(button_box)
-
-        dialog.setLayout(form_layout)
-        return dialog
+        if dialog.exec_():
+            self._phenome.params.process = dialog.get_params()
 
     def _on_process_clicked(self) -> None:
-        """ Begins the image processing/embedding extraction task.
+        """ Begins the processing task: the embedding extraction, then the properties when they are asked for.
 
-        The checkpoint is read before anything is started: PhenoMe resumes from the one it is pointed
-        at, and raises on one it cannot resume from, which is a long way into a run to find out. Asked
-        here, the same disagreement is put to the user while the run can still be called off.
+        With Resume progress ticked over embeddings already there, the run extends them, processing
+        only the images missing. They are checked first against the settings picked and the images
+        loaded: embeddings made another way could not be extended, and images held under paths naming
+        no loaded file would be processed again and appended twice. Either is put to the user, who can
+        have every image processed again instead, which is then the consent to replace them.
 
-        Only the disagreement is asked about. A checkpoint that agrees is handed to PhenoMe as it is,
-        which resumes it - processing the images it does not yet hold, or loading it and processing
-        nothing at all when it already holds them all.
+        Otherwise a run over embeddings already there - extracted here or read from a checkpoint -
+        asks whether they may be replaced. A resumed run replaces nothing and is not asked about.
+
+        Either way the analysis results are dropped once every question has been answered yes, the
+        embeddings they were computed from no longer being all there is; a run called off at any
+        question leaves everything as it was.
         """
-        mismatch = self._phenome.inspect_checkpoint()
+        held = self._phenome.has_processed_images
+        resume = self._phenome.params.process.resume_progress and held
 
-        force_reprocess = False
-        if mismatch is not None:
-            if not self._confirm_overwrite(mismatch):
-                logger.info('Extraction was called off, leaving the checkpoint as it was.')
-                return
-            force_reprocess = True
+        if resume:
+            mismatch = self._phenome.inspect_resume()
+            if mismatch is not None:
+                if not self._confirm_restart(mismatch):
+                    logger.info('Processing was called off, leaving the current results as they were.')
+                    return
+                resume = False
+        elif held and not self._confirm_replace_results():
+            logger.info('Processing was called off, leaving the current results as they were.')
+            return
+
+        # Computed from embeddings the run replaces or extends, so they would not answer for its own
+        if held:
+            self._phenome.clear_analysis()
+            self.analysis_cleared.emit()
 
         self._stop_event = threading.Event()
+        self._computing_properties = False
 
-        worker = self._process_images_worker(force_reprocess)
+        worker = self._process_images_worker(resume)
         worker.returned.connect(self._on_finish_process)
         worker.errored.connect(self._on_process_failed)
 
+        # Read before the run is let go of, the worker being what loads the model and settles this
+        status = 'Loading model...' if self._phenome.needs_model_load else 'Processing images...'
+
         # Put the tab in its running state before the run is let go of, rather than after: the lock is
         # what offers the stop, and the run is what the stop is offered on.
-        self._process_button.setText('Processing images...')
+        self._process_button.setText(status)
         self._set_processing_task_running(True)
 
-        # PhenoMe stays silent while it builds the dataloader and scans the checkpoint, so show a busy
-        # indicator until the first batch is reported.
+        # Neither the download nor PhenoMe, while it builds the dataloader, reports anything, so show a
+        # busy indicator until the first batch is reported.
         self._progress_bar.setRange(0, 0)
-        self._progress_bar.setFormat('Preparing...')
+        self._progress_bar.setFormat('Loading model...' if status == 'Loading model...' else 'Preparing...')
+        self._progress_bar.setToolTip('')
 
         worker.start()
 
-    def _confirm_overwrite(self, mismatch: CheckpointMismatch) -> bool:
-        """ Ask whether a checkpoint that answers for another run may be deleted and filled again.
+    def _on_model_ready(self) -> None:
+        """ Say the run has moved on from its model to the images, once the worker has the model.
 
-        The only way past a checkpoint PhenoMe will not resume from, short of naming another file: it
-        removes the file rather than writing over it, so a long extraction is lost with it, and the
-        properties in the same file go with it. Asked with the refusal as its default answer, the way
-        dropping the loaded results is asked.
+        Runs on the main thread via the model_ready signal. Repeats the state the click left where no
+        load was needed, which is harmless. The embeddings group is outlined as waiting until they are
+        extracted.
+        """
+        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
+        self._process_button.setText('Processing images...')
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setFormat('Preparing...')
+
+    def _on_properties_started(self) -> None:
+        """ Say the run has moved on from the embeddings to the properties.
+
+        Runs on the main thread via the properties_started signal, which lands before the first
+        property report and before any failure of the step, so the end of the task is read against it.
+        """
+        self._process_button.setText('Calculating properties...')
+        self._enter_properties_step()
+
+    def _enter_properties_step(self) -> None:
+        """ Mark the running task as having reached the properties, whichever button started it.
+
+        The embeddings are done by then, and their group is outlined as such; the properties group is
+        outlined as waiting until they are computed.
+        """
+        self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
+        self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
+        self._computing_properties = True
+
+        # PhenoMe stays silent while it resolves the image paths, so show a busy indicator until the
+        # first image is reported.
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setFormat('Preparing...')
+
+    def _confirm_replace_results(self) -> bool:
+        """ Ask whether the embeddings already there, and the results computed from them, may be replaced.
+
+        Asked with the refusal as its default answer, the way loading another dataset over the
+        current results is asked.
+
+        Returns:
+            True when the run may replace them.
+        """
+        answer = QMessageBox.question(
+            self,
+            'Overwrite results?',
+            'Processing the images again will overwrite the current embeddings and properties, and discard all results.\n\nProceed?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _confirm_restart(self, mismatch: CheckpointMismatch) -> bool:
+        """ Ask whether every image may be processed again, the embeddings already there not being extendable.
+
+        Asked with the refusal as its default answer, the way replacing the results is asked. Nothing
+        on disk is touched either way: the run is made in memory.
 
         Args:
-            mismatch: What the checkpoint holds that this run would not put there.
+            mismatch: What stands in the way of extending the embeddings already there.
         Returns:
-            True when the checkpoint may be deleted and the run made from scratch.
+            True when every image may be processed again, replacing the embeddings already there.
         """
-        checkpoint = self._phenome.params.paths.checkpoint
-        filled_with = (
-            'under different processing settings, or with a different model'
-            if mismatch.reason == MODEL_MISMATCH else 'from a different dataset'
-        )
+        mismatched = 'model' if mismatch.reason == MODEL_MISMATCH else 'dataset'
 
-        # Only the dataset mismatch has anything to add: what a run's parameters disagree on goes to
-        # the log, PhenoMe writing the whole comparison out there key by key itself.
-        detail = f'{mismatch.detail}\n\n' if mismatch.detail else ''
-
-        logger.warning(
-            "The checkpoint at '%s' was filled %s. %s", checkpoint, filled_with, mismatch.detail
-        )
+        # The question names only what differs; how it differs goes to the log
+        logger.warning('The %s does not match the embeddings held, which cannot be resumed: %s',
+                       mismatched, mismatch.detail)
 
         answer = QMessageBox.warning(
             self,
-            'Checkpoint does not match',
-            f"The checkpoint at {checkpoint} was filled {filled_with}.\n\n"
-            f"{detail}"
-            'Overwriting deletes the file, and the properties it holds along with the embeddings.\n\n'
-            'Overwrite the checkpoint?',
+            'Cannot resume',
+            f'There is a mismatch between the {mismatched} from the checkpoint and the current one; '
+            'progress cannot be resumed.\n\n'
+            'Overwrite all results?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -676,49 +897,69 @@ class ProcessingPanel(QWidget):
             self._progress_bar.setFormat(desc)
 
     def _on_finish_process(self) -> None:
-        """ Called when processing is done. Re-enables the button and changes text. """
-        # Releasing the lock also re-enables the properties button, whose step runs on the images
-        # processed here and only becomes available now.
-        self._process_button.setText('Extract Embeddings')
+        """ Called when processing is done. Re-enables the buttons and changes text. """
+        self._process_button.setText('Process Images')
+        self._compute_properties_button.setText('Compute Properties')
         self._set_processing_task_running(False)
 
-        # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
-        # here instead of relying on a final callback.
+        # A resume with nothing left to process returns without ever reporting progress, so settle the
+        # bar here instead of relying on a final callback.
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(1)
         self._progress_bar.setFormat('Done!')
 
     def _on_process_failed(self, error: Exception) -> None:
-        """ Reopen the buttons when the extraction raised, so another run can be attempted.
+        """ Reopen the controls when the task raised, so another run can be attempted.
 
-        The worker swallows the exception into this signal, and both buttons are held shut for the
+        The worker swallows the exception into this signal, and the controls are held shut for the
         duration of a task: with nobody listening, a raise leaves them shut for good and the tab has to
-        be restarted to be used again. PhenoMe raises here for a checkpoint it cannot resume from,
-        among other things, which the run before it was asked about but which can still arrive from a
-        checkpoint written between the question and the run.
+        be restarted to be used again.
 
-        A stop arrives the same way, the run being called off by raising out of the progress callback,
-        and is not reported as a failure: it was asked for, and it is picked up by asking for the run
-        again.
+        Read against the step the task had reached. A stop arrives the same way, the run being called
+        off by raising out of the progress callback, and is not reported as a failure: it was asked
+        for. An interrupted extraction - stopped or failed - keeps the embeddings it computed, which the
+        interface has put in the pipeline and autosaved by then, and the user is told where the
+        autosave is, it being theirs to load and resume from.
 
         Args:
-            error: The exception the extraction raised, as the worker caught it.
+            error: The exception the task raised, as the worker caught it.
         """
-        self._process_button.setText('Extract Embeddings')
+        self._process_button.setText('Process Images')
+        self._compute_properties_button.setText('Compute Properties')
         self._set_processing_task_running(False)
 
+        # The step the run was on did not finish, whether it was stopped or failed. Outlined after the
+        # unlock, which outlines the groups from what the pipeline holds, and until the next refresh:
+        # what a stopped extraction kept is then outlined as waiting to be resumed.
+        unfinished = self._properties_group if self._computing_properties else self._embeddings_group
+        unfinished.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
+
+        # Only an extraction autosaves, and only the run that just ended can have
+        autosave = None if self._computing_properties else self._phenome.last_autosave
+
         if isinstance(error, TaskStopped):
-            self._settle_bar('Stopped')
-            logger.info(
-                'The extraction was stopped. The checkpoint holds the batches it had committed; '
-                'extract the embeddings again to carry on from there.'
-            )
+            self._settle_bar('Stopped - progress autosaved' if autosave else 'Stopped')
+            self._progress_bar.setToolTip(f'Progress saved to {autosave}' if autosave else '')
+            if self._computing_properties:
+                logger.info('The properties calculation was stopped.')
+            else:
+                logger.info('The extraction was stopped.')
             return
 
         self._settle_bar('Failed')
 
-        logger.error('Could not extract the embeddings: %s', error)
-        QMessageBox.critical(self, 'Extraction failed', f'Could not extract the embeddings.\n\n{error}')
+        if self._computing_properties:
+            logger.error('Could not compute the properties: %s', error)
+            QMessageBox.critical(self, 'Properties failed', f'Could not compute the properties.\n\n{error}')
+        else:
+            logger.error('Could not extract the embeddings: %s', error)
+            saved = (
+                f'\n\nThe progress so far was saved to {autosave}. Load it and tick Resume progress to continue.'
+                if autosave else ''
+            )
+            QMessageBox.critical(
+                self, 'Extraction failed', f'Could not extract the embeddings.\n\n{error}{saved}'
+            )
 
     def _settle_bar(self, status: str) -> None:
         """ Take the progress bar out of the busy state a task that did not run to its end left it spinning in.
@@ -731,143 +972,91 @@ class ProcessingPanel(QWidget):
         self._progress_bar.setFormat(status)
 
     @thread_worker
-    def _process_images_worker(self, force_reprocess: bool = False) -> None:
-        """ Create worker to process images on a parallel thread.
+    def _process_images_worker(self, resume: bool = False) -> None:
+        """ Create worker to load the selected model, process images and compute their properties on a parallel thread.
 
-        PhenoMe reports after every batch, which the throttle thins out before it reaches the bar: a
-        report costs a hop to the main thread and a repaint, and the step is only worth taking when it
-        is big enough to show. The stop is read outside the throttle, every report being a chance to
-        take it and only a hundredth of them reaching the bar.
+        The model is loaded first, unless the one held already answers for the selected model and
+        device: a download of some hundreds of megabytes, which the button and the bar name until
+        model_ready says it is done. A failed load raises out of the worker before that, like a failed
+        extraction, and is reported the same way.
+
+        The properties follow the embeddings when they are asked for, read from the parameters only
+        once the extraction is done. A stopped or failed extraction raises before them, so they are
+        never computed over embeddings that are not all there.
+
+        PhenoMe reports after every batch, and after every image for the properties, which the
+        throttle thins out before it reaches the bar: a report costs a hop to the main thread and a
+        repaint, and the step is only worth taking when it is big enough to show. The stop is read
+        outside the throttle, every report being a chance to take it and only a hundredth of them
+        reaching the bar.
 
         Args:
-            force_reprocess: Whether to delete the checkpoint and process every image again,
-                which is only ever passed for a checkpoint the user has been asked about.
+            resume: Whether to extend the embeddings already there rather than process every image
+                again, only ever passed once they have been checked against the run.
         """
+        # No widget is touched from here: this runs off the GUI thread, where Qt cannot restyle or
+        # repaint one. Each step is announced through a signal, and the panel shows it on its own thread.
+        self._phenome.ensure_model_loaded()
+        self.model_ready.emit()
+
         self._phenome.process_images(
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
             ),
-            force_reprocess=force_reprocess
+            resume=resume
         )
 
-    def _on_properties_changed(self) -> None:
-        """ Update the properties preset parameter when the selection changes.
-
-        A changed preset is noted, as the next run has to be told to compute its properties again
-        rather than resume the ones the checkpoint holds, which were computed under the preset picked
-        before it. Picking a preset is the whole of the signal, so nothing has to be asked.
-        """
-        preset = self._props_selection_combo.currentText()
-        self._phenome.params.properties.preset = preset
-        self._preset_changed = True
-
-    def _refresh_props_button(self) -> None:
-        """ Enable the properties calculation button only once there are processed images and a checkpoint to write to, and no task is running.
-
-        PhenoMe computes the properties over the images held by the pipeline, and raises when there are
-        none, so the state is read from the interface. Called when building the tab, whenever a
-        checkpoint is come by, and whenever a task starts or finishes.
-
-        The two conditions come apart only for a moment: images are processed into a checkpoint, and
-        loading one brings its images with it, so a run with images and no checkpoint is one whose
-        dataset has just been dropped.
-        """
-        has_processed_images = self._phenome.has_processed_images
-        has_checkpoint = self._phenome.params.paths.checkpoint is not None
-
-        self._props_button.setEnabled(
-            has_processed_images and has_checkpoint and not self._processing_task_running
-        )
-
-        if self._processing_task_running:
-            self._props_button.setToolTip('Please wait for the running task to finish.')
-        elif not has_checkpoint:
-            self._props_button.setToolTip('Please create or load a checkpoint first.')
-        else:
-            self._props_button.setToolTip('' if has_processed_images else 'Please extract embeddings first.')
-
-    def _on_properties_clicked(self) -> None:
-        """ Begins the properties calculation task """
-        self._stop_event = threading.Event()
-
-        worker = self._compute_properties_worker(self._preset_changed)
-        worker.returned.connect(self._on_finish_properties)
-        worker.errored.connect(self._on_properties_failed)
-
-        # As in the extraction: the tab is locked, and the stop offered with it, before the run starts
-        self._props_button.setText('Calculating properties...')
-        self._set_processing_task_running(True)
-
-        # PhenoMe stays silent while it resolves the image paths and scans the checkpoint, so show a busy
-        # indicator until the first image is reported.
-        self._progress_bar.setRange(0, 0)
-        self._progress_bar.setFormat('Preparing...')
-
-        worker.start()
-
-    def _on_finish_properties(self) -> None:
-        """ Called when the properties calculation is done. Re-enables the button and changes text. """
-        self._props_button.setText('Calculate Properties')
-        self._set_processing_task_running(False)
-
-        # The preset now answers for what the checkpoint holds, this run having just computed it
-        self._preset_changed = False
-
-        # A warm checkpoint can make PhenoMe return without ever reporting progress, so settle the bar
-        # here instead of relying on a final callback.
-        self._progress_bar.setRange(0, 1)
-        self._progress_bar.setValue(1)
-        self._progress_bar.setFormat('Done!')
-
-    def _on_properties_failed(self, error: Exception) -> None:
-        """ Reopen the buttons when the properties calculation raised, so another run can be attempted.
-
-        The twin of the extraction's failure handler, and needed for the same reason: the buttons are
-        held shut for the duration of a task, and a raise nobody listens for never reopens them. The
-        changed preset is left standing, this run not having computed it.
-
-        A stop is not one of those failures, and answers for the preset differently. PhenoMe clears
-        the properties the checkpoint holds before it computes the first one, so a run that got as far
-        as reporting has already replaced them with the preset it was started under: the change has
-        been made, and saying otherwise would have the next run clear the partial properties it is
-        meant to carry on from.
-
-        Args:
-            error: The exception the calculation raised, as the worker caught it.
-        """
-        self._props_button.setText('Calculate Properties')
-        self._set_processing_task_running(False)
-
-        if isinstance(error, TaskStopped):
-            self._preset_changed = False
-            self._settle_bar('Stopped')
-            logger.info(
-                'The properties calculation was stopped. The checkpoint holds the images it had '
-                'committed; calculate the properties again to carry on from there.'
-            )
+        if not self._phenome.params.properties.compute:
             return
 
-        self._settle_bar('Failed')
-
-        logger.error('Could not compute the properties: %s', error)
-        QMessageBox.critical(self, 'Properties failed', f'Could not compute the properties.\n\n{error}')
-
-    @thread_worker
-    def _compute_properties_worker(self, force_update: bool = False) -> None:
-        """ Create worker to compute the properties on a parallel thread.
-
-        PhenoMe reports after every image here, which is far more often than the bar can be drawn, so
-        the throttle lets only a hundredth of the run through and the computation is left to run at
-        its own pace.
-
-        Args:
-            force_update: Whether to drop the properties the checkpoint holds and compute them
-                again, which a preset changed since the last run needs. The embeddings in the same
-                file are left where they are.
-        """
+        self.properties_started.emit()
         self._phenome.compute_properties(
             progress_callback=StoppableProgress(
                 ThrottledProgress(self.progress_updated.emit), self._stop_event
-            ),
-            force_update=force_update
+            )
         )
+
+    def _on_select_preset_clicked(self) -> None:
+        """ Open the window a preset is picked from, and select whichever it is closed on.
+
+        The window opens on the preset currently chosen and is rebuilt on every use. Nothing is written
+        until it is confirmed: a preset looked at and thought better of leaves the parameters as they
+        were. The preset is read when the properties are next computed, which is always for every image.
+        """
+        window = PropertyWindow(self, self._phenome.params.properties.preset)
+
+        if not window.exec_():
+            logger.info('No preset was picked, leaving the selected one as it is.')
+            return
+
+        self._phenome.params.properties.preset = window.selected_preset()
+        self._current_preset_label.setText(self._phenome.params.properties.preset)
+
+    def _on_properties_checkbox_changed(self) -> None:
+        """ Update the properties calculation parameter when the checkbox is toggled. """
+        self._phenome.params.properties.compute = self._props_checkbox.isChecked()
+
+    def _on_resume_checkbox_changed(self) -> None:
+        """ Have the next run extend the embeddings already there, or process every image again. """
+        self._phenome.params.process.resume_progress = self._resume_checkbox.isChecked()
+
+    def _refresh_groups(self) -> None:
+        """ Update the style of the embedding and properties groups to reflect their state.
+
+        This is mainly used for loading an existing checkpoint, or when a new dataset is loaded and results are cleared.
+        If embeddings or properties are present, the group is styled with a green border. Embeddings for only part
+        of the loaded images, as a stopped run leaves them, are styled as waiting to be resumed. Otherwise, the
+        default style is used.
+        """
+
+        if self._phenome.has_all_embeddings:
+            self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
+        elif self._phenome.has_processed_images:
+            self._embeddings_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
+        else:
+            self._embeddings_group.setStyleSheet("")
+
+        if self._phenome.has_properties:
+            self._properties_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
+        else:
+            self._properties_group.setStyleSheet("")

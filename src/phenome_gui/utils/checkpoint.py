@@ -1,120 +1,120 @@
-"""Reading a checkpoint before a run is made against it.
+"""Checking the embeddings already held before a run is made to extend them.
 
-PhenoMe resumes from whatever checkpoint it is pointed at, and raises when what it finds there does not
-answer for the run about to be made: images processed under other arguments, or other images
-altogether. Both raises come mid-run and from a worker thread, by which point the run is half done and
-there is nothing to do but report them. Read here beforehand, they become a question asked while the
+A resumed run keeps the embeddings the pipeline holds - read from a checkpoint or left by a stopped run -
+and processes only the images missing from them, appending what it computes. That is only sound when
+the new embeddings are made the way the held ones were, and when the images held are recognised among
+the ones loaded: an image held under a path that names no loaded file would not be skipped, and would
+be processed again and appended a second time. Both are checked here, from what is in memory, while the
 run can still be called off.
-
-Read-only throughout, and deliberately shy: a checkpoint that cannot be read, or one this module is
-unsure about, is reported as no mismatch at all and left to PhenoMe, which raises on what it will not
-resume from anyway. The cost of the two answers is not the same - the run this warns about is offered
-a checkpoint's deletion as its way out - so the module says nothing it is not sure of.
 """
 
 from dataclasses import dataclass
-from logging import getLogger
-from os.path import isfile, realpath
-from pathlib import Path
+from os.path import realpath
+from typing import Any
 
+import numpy as np
 from phenome.io import CheckpointManager
 
-logger = getLogger(__name__)
-
-# What a mismatch was found in, which decides what the caller offers to do about it
+# What a mismatch was found in, which decides how the question about it is put
 MODEL_MISMATCH = 'model'
 DATASET_MISMATCH = 'dataset'
-
-# What reading a checkpoint can go wrong with: PhenoMe refuses a file that is not one with a ValueError,
-# h5py raises OSError on a file it cannot make sense of, and a checkpoint written by another version can
-# leave either a key or a type unaccounted for. Caught together, as none of them is worth stopping a run
-# over: the run opens the same file itself, and says so through the usual failure path.
-UNREADABLE = (OSError, ValueError, KeyError, TypeError, RuntimeError)
 
 
 @dataclass(frozen=True)
 class CheckpointMismatch:
-    """ A checkpoint holding something other than what the run about to be made would put there.
+    """ Embeddings held that the run about to be made could not extend.
 
     Attributes:
         reason: MODEL_MISMATCH or DATASET_MISMATCH, naming which of the two was found.
-        detail: One line naming what differs, to be shown alongside the question. Left empty by
-            the parameter mismatch, which PhenoMe writes out key by key to the log itself: the reason
-            is the whole of what the question needs.
+        detail: One line naming what differs, to be shown alongside the question.
     """
 
     reason: str
     detail: str = ''
 
 
-def inspect_checkpoint(
-    checkpoint_path: Path | str | None,
-    processing_params: dict,
-    image_paths: list[str],
-) -> CheckpointMismatch | None:
-    """ Read an existing checkpoint, and say whether the run about to be made belongs in it.
+def image_key(path: Any) -> str:
+    """ The form an image's path is compared in, whichever way PhenoMe holds it.
+
+    PhenoMe holds a list of paths rather than one for an image it reads a channel at a time, which is
+    known by its first, the way the image viewer finds it.
 
     Args:
-        checkpoint_path: The checkpoint the run would be written to. A path to no
-            file is a run that starts fresh, and has nothing to disagree with.
-        processing_params: The arguments the run would be made under, as PhenoMe stores them.
-            Compared by PhenoMe's own comparator rather than key by key, which is what the checkpoint
-            will be validated with when the run starts.
-        image_paths: The images the run would process.
+        path: A path, or a list of them for an image read a channel at a time.
     Returns:
-        What was found, or None when the checkpoint agrees with the run,
-        holds nothing yet, or could not be read.
+        The real path of the image, symbolic links and relative parts resolved.
     """
-    if checkpoint_path is None or not isfile(checkpoint_path):
-        return None
+    if isinstance(path, list | tuple):
+        path = path[0]
+    return realpath(str(path))
 
-    try:
-        checkpoint = CheckpointManager(str(checkpoint_path), lazy=True)
-    except UNREADABLE as error:
-        # Only ever opened to ask a question, so a checkpoint that will not open is left to the run
-        # itself, which opens it again and reports what it finds through the usual failure path.
-        logger.warning("Could not read the checkpoint at '%s': %s", checkpoint_path, error)
-        return None
 
-    try:
-        mismatches = checkpoint.validate_processing_params(processing_params)
-        committed_paths = checkpoint.get_committed_paths() if checkpoint.n_committed else set()
-    except UNREADABLE as error:
-        logger.warning("Could not read the checkpoint at '%s': %s", checkpoint_path, error)
-        return None
-    finally:
-        # PhenoMe opens the same file moments later, so it is never left held open here
-        checkpoint.close()
+def inspect_held_embeddings(
+    held_params: dict | None,
+    held_paths: list,
+    current_params: dict,
+    loaded_paths: list,
+) -> CheckpointMismatch | None:
+    """ Say whether the embeddings held can be extended by the run about to be made.
 
-    if mismatches:
-        return CheckpointMismatch(MODEL_MISMATCH)
+    Args:
+        held_params: The arguments the held embeddings were made under, as PhenoMe keeps them. None
+            when unknown, in which case they are not compared.
+        held_paths: The images the embeddings are held for.
+        current_params: The arguments the run would be made under.
+        loaded_paths: The images currently loaded.
+    Returns:
+        What was found, or None when the run can extend the held embeddings.
+    """
+    differing = _differing_params(held_params, current_params)
+    if differing:
+        return CheckpointMismatch(
+            MODEL_MISMATCH,
+            ', '.join(f'{key}: {held!r} then, {current!r} now' for key, held, current in differing),
+        )
 
-    if _is_another_dataset(committed_paths, image_paths):
+    loaded = {image_key(path) for path in loaded_paths}
+    unknown = sum(image_key(path) not in loaded for path in held_paths)
+    if unknown:
         return CheckpointMismatch(
             DATASET_MISMATCH,
-            f'It holds {len(committed_paths)} image(s), none of them among the {len(image_paths)} '
+            f'{unknown} of the {len(held_paths)} image(s) held are not among the {len(loaded_paths)} '
             'currently loaded.'
         )
 
     return None
 
-def _is_another_dataset(committed_paths: set[str], image_paths: list[str]) -> bool:
-    """ Whether a checkpoint's images and the loaded ones have nothing at all in common.
 
-    Held to nothing in common rather than to anything missing, a checkpoint being filled one run at a
-    time: a dataset half processed is the ordinary way to meet one, and is what resuming is for. Only
-    a checkpoint sharing no image with the dataset loaded was filled from another one.
+def _differing_params(held: dict | None, current: dict) -> list[tuple[str, Any, Any]]:
+    """ The processing arguments the held embeddings and the run disagree on.
+
+    Compared over the keys PhenoMe itself validates a checkpoint on, and by its rules: a missing
+    channel normalisation reads as on, as in the checkpoints written before it was stored, and
+    sequences are compared as lists whatever their type.
 
     Args:
-        committed_paths: The images the checkpoint holds, as PhenoMe resolved them.
-        image_paths: The images currently loaded.
+        held: The arguments the held embeddings were made under, or None when unknown.
+        current: The arguments the run would be made under.
     Returns:
-        True only when both are known and no image is in both.
+        (key, held value, current value) for every key that differs.
     """
-    if not committed_paths or not image_paths:
-        return False
+    if not held:
+        return []
 
-    committed = {realpath(path) for path in committed_paths}
-    loaded = {realpath(path) for path in image_paths}
+    differing = []
+    for key in CheckpointManager._PARAM_KEYS:
+        held_value, current_value = held.get(key), current.get(key)
 
-    return committed.isdisjoint(loaded)
+        if key == 'l2_normalize_channels':
+            held_value = True if held_value is None else held_value
+            current_value = True if current_value is None else current_value
+
+        if isinstance(held_value, list | tuple | np.ndarray):
+            held_value = list(held_value)
+        if isinstance(current_value, list | tuple | np.ndarray):
+            current_value = list(current_value)
+
+        if held_value != current_value:
+            differing.append((key, held_value, current_value))
+
+    return differing

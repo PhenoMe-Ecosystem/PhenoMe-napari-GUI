@@ -6,7 +6,7 @@ import pandas as pd
 from magicgui.widgets import create_widget
 from napari.qt.threading import thread_worker
 from napari.utils import notifications
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
@@ -25,7 +25,7 @@ from ..utils.image_viewer import ImageViewer
 from ..utils.path_checking import check_csv_file_exists, check_directory_exists
 from ..utils.phenome_interface import PhenoMeInterface
 from .path_widget import DirectoryWidget, FileWidget, PathWidget
-from .styles import STYLESHEETS
+from .styles import GROUP_STYLESHEETS, STYLESHEETS
 from .table_dock import TableDockArea
 
 logger = logging.getLogger("main_logger")
@@ -114,7 +114,8 @@ class LoadingPanel(QWidget):
 
         # Group for data loading params, holding one page per metadata
         # structure and showing the one matching the checked radio button.
-        self._loading_group = loading_group = QGroupBox("Data loading")
+        self._loading_group = QGroupBox("Data loading")
+        self._loading_group.setObjectName("parentGroup")
         self._loading_stack = QStackedLayout()
 
         # .csv metadata widgets. Built empty: _on_structure_changed() fills every box from the
@@ -137,7 +138,23 @@ class LoadingPanel(QWidget):
         self._path_load_data_btn = QPushButton('Load Data')
 
         self._build_loading_group()
-        loading_group.setLayout(self._loading_stack)
+
+        # How many images the last load found, under the page stack so it reads under whichever Load
+        # Data button is shown
+        loaded_images_row = QHBoxLayout()
+        loaded_images_label = QLabel("Loaded images:")
+
+        self._loaded_images_value_label = QLabel()
+        self._loaded_images_value_label.setAlignment(Qt.AlignRight)
+
+        loaded_images_row.addWidget(loaded_images_label)
+        loaded_images_row.addWidget(self._loaded_images_value_label)
+        self._refresh_loaded_images_label()
+
+        loading_group_layout = QVBoxLayout()
+        loading_group_layout.addLayout(self._loading_stack)
+        loading_group_layout.addLayout(loaded_images_row)
+        self._loading_group.setLayout(loading_group_layout)
 
         # What each page's load reads: the box, what it is called in a tooltip, what it has to be,
         # and whether it may be left empty. The images are the one thing a load needs. Defined
@@ -181,7 +198,7 @@ class LoadingPanel(QWidget):
 
         self._table_area.setWidget(self._metadata_table.native)
         layout.addWidget(structure_group, 0)
-        layout.addWidget(loading_group, 0)
+        layout.addWidget(self._loading_group, 0)
         layout.addWidget(self._table_area, 1)
 
         self._on_directory_changed()
@@ -347,13 +364,13 @@ class LoadingPanel(QWidget):
         load()
 
     def _on_load_finished(self) -> None:
-        """ Show the dataset just loaded, and outline the buttons by whether any file was found. """
+        """ Show the dataset just loaded, and outline the group by whether any file was found. """
         # The interface drops the previous results before it reads a single file, so whoever shows
         # them is told whether or not the load itself got as far as finding any.
         self.results_cleared.emit()
 
         found = self._update_metadata_table(self._phenome.metadata_df)
-        self._set_loading(False, STYLESHEETS['STYLE_OK' if found else 'STYLE_ERROR'])
+        self._set_loading(False, GROUP_STYLESHEETS['STYLE_OK' if found else 'STYLE_ERROR'])
 
     def _on_load_failed(self, error: Exception) -> None:
         """ Say why a load raised, and leave the tab ready for another.
@@ -369,24 +386,22 @@ class LoadingPanel(QWidget):
 
         logger.error('Could not load the data: %s', error)
         notifications.show_error(f'Could not load data: {error}')
-        self._set_loading(False, STYLESHEETS['STYLE_ERROR'])
+        self._set_loading(False, GROUP_STYLESHEETS['STYLE_ERROR'])
 
     def _set_loading(self, loading: bool, outcome: str = '') -> None:
-        """ Lock the tab while a load runs, and outline the buttons by how it is going.
+        """ Lock the tab while a load runs, and outline the group by how it is going.
 
         The paths are read on the worker as the load starts, so the boxes and the structure are held
-        for the length of it rather than changed underneath it. A locked button keeps its outline,
-        which is what shows the load is still going.
+        for the length of it rather than changed underneath it.
 
         Args:
             loading: True as a load starts, False once it has finished.
             outcome: The outline the buttons are left with once it has finished. Unused while loading,
                 which always outlines them as waiting.
         """
-        sheet = STYLESHEETS['STYLE_WAIT'] if loading else outcome
-        for button in (self._csv_load_data_btn, self._path_load_data_btn):
-            button.setText('Loading data...' if loading else 'Load Data')
-            button.setStyleSheet(sheet)
+        sheet = GROUP_STYLESHEETS['STYLE_WAIT'] if loading else outcome
+
+        self._loading_group.setStyleSheet(sheet)
 
         self._structure_group.setEnabled(not loading)
         self._loading_group.setEnabled(not loading)
@@ -437,6 +452,8 @@ class LoadingPanel(QWidget):
         Returns:
             True if the table was updated successfully, False if the dataframe was None or empty.
         """
+        self._refresh_loaded_images_label()
+
         if metadata_df is None or metadata_df.empty:
             self._metadata_table.value = pd.DataFrame()  # Clear the table if no data is loaded
             self.data_loaded.emit()
@@ -446,6 +463,10 @@ class LoadingPanel(QWidget):
             self._metadata_table.value = metadata_df
             self.data_loaded.emit()
             return True
+
+    def _refresh_loaded_images_label(self) -> None:
+        """ Say how many images the dataset loaded holds, none before a load or after one finding nothing. """
+        self._loaded_images_value_label.setText(str(self._phenome.n_loaded_images))
 
     def _on_table_selection_changed(self) -> None:
         """ Display corresponding image and mask when a row is selected from the table. """
