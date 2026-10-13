@@ -42,6 +42,7 @@ from .plotting import (
     resolve_column,
 )
 from .selection_window import SelectionWindow
+from .styles import GROUP_STYLESHEETS
 
 logger = logging.getLogger("main_logger")
 
@@ -115,9 +116,10 @@ class InteractiveExplorerWindow(QDialog):
         controls_layout = QVBoxLayout()
 
         # Group for the projection
-        embedding_group = QGroupBox("Embedding")
+        self._embedding_group = QGroupBox("Embedding")
+        self._embedding_group.setObjectName("parentGroup")
         embedding_layout = QVBoxLayout()
-        embedding_group.setLayout(embedding_layout)
+        self._embedding_group.setLayout(embedding_layout)
 
         # Dimensionality reduction algorithm combo box
         method_row = QHBoxLayout()
@@ -240,7 +242,7 @@ class InteractiveExplorerWindow(QDialog):
 
         selection_group.setLayout(selection_layout)
 
-        controls_layout.addWidget(embedding_group)
+        controls_layout.addWidget(self._embedding_group)
         controls_layout.addWidget(appearance_group)
         controls_layout.addWidget(self._highlight_group)
         controls_layout.addWidget(selection_group)
@@ -265,8 +267,11 @@ class InteractiveExplorerWindow(QDialog):
 
         The window is built once and kept, where the parameter forms are rebuilt on every use, so what
         it holds has to be emptied by hand: the plot was drawn from images that are no longer loaded,
-        and the selection made on it points at places in results that are no longer there.
+        and the selection made on it points at places in results that are no longer there. The
+        Embedding group goes back to its default outline, the projection it reported on being gone.
         """
+        self._embedding_group.setStyleSheet('')
+
         # A shape may have been waited for, and there is nothing left to draw it over
         self._canvas.cancel_selection()
         self._box_select_button.setChecked(False)
@@ -531,6 +536,7 @@ class InteractiveExplorerWindow(QDialog):
         logger.info("Compute clicked, with parameters %s", self._phenome.params.explorer)
 
         self._compute_button.setEnabled(False)
+        self._embedding_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_WAIT'])
         worker = self._projection_worker()
         worker.returned.connect(self._on_finish_projection)
         worker.errored.connect(self._on_projection_failed)
@@ -548,6 +554,7 @@ class InteractiveExplorerWindow(QDialog):
         other parameters and no longer answers for the ones now on screen.
         """
         self._compute_button.setEnabled(True)
+        self._embedding_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
 
         projection_df = self._phenome.projection_df
         logger.info("Projected %d images.", 0 if projection_df is None else len(projection_df))
@@ -578,6 +585,7 @@ class InteractiveExplorerWindow(QDialog):
             error: The exception the projection raised, as the worker caught it.
         """
         self._compute_button.setEnabled(True)
+        self._embedding_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_ERROR'])
         logger.error("Could not compute the projection: %s", error)
 
     def _on_point_clicked(self, row: int) -> None:

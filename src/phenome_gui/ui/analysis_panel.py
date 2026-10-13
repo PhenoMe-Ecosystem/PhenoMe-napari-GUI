@@ -252,7 +252,7 @@ class AnalysisPanel(QWidget):
 
         # Update the label showing the number of clusters
         n_clusters = self._phenome.params.clustering.n_clusters
-        self._cluster_info_label.setText(f"Number of clusters:")
+        self._cluster_info_label.setText("Number of clusters:")
         self._cluster_value_label.setText(str(n_clusters))
 
     def _on_prototype_clicked(self) -> None:

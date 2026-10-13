@@ -17,6 +17,7 @@ from phenome_gui._widget import PhenoMeWidget
 from phenome_gui.ui.criteria_window import ExcludeWindow, FilterWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
 from phenome_gui.ui.plotting import BOX_SELECTION, LASSO_SELECTION
+from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils.params import (
     EMBEDDING_METHOD_CHOICES,
     SOURCE_CHOICES,
@@ -356,6 +357,69 @@ def test_a_failed_projection_reopens_the_button(
     assert loaded_explorer._compute_button.isEnabled()
 
 
+def outline(group) -> str:
+    """ How a group is outlined: 'ok', 'wait', 'bad', or 'none' for one left unstyled. """
+    names = {
+        GROUP_STYLESHEETS['STYLE_OK']: 'ok',
+        GROUP_STYLESHEETS['STYLE_WAIT']: 'wait',
+        GROUP_STYLESHEETS['STYLE_ERROR']: 'bad',
+    }
+    return names.get(group.styleSheet(), 'none')
+
+
+def test_the_embedding_group_is_named_for_the_outline_to_reach_it(explorer: InteractiveExplorerWindow) -> None:
+    """The outlines only match a group of that name, so a group without it is never outlined at all."""
+    assert explorer._embedding_group.objectName() == 'parentGroup'
+
+
+def test_a_projection_waits_then_is_done(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    stand_in = computing()
+    while_running = []
+    stand_in.on_call = lambda: while_running.append(outline(loaded_explorer._embedding_group))
+
+    loaded_explorer._compute_button.click()
+
+    assert while_running == ['wait']
+    assert outline(loaded_explorer._embedding_group) == 'ok'
+
+
+def test_an_empty_projection_is_still_done(
+    loaded_explorer: InteractiveExplorerWindow, computing, reduction
+) -> None:
+    """Nothing to project is a normal outcome, as it is for the other steps."""
+    computing()
+    reduction(None)
+
+    loaded_explorer._compute_button.click()
+
+    assert outline(loaded_explorer._embedding_group) == 'ok'
+
+
+def test_a_failed_projection_is_outlined_as_failed(
+    loaded_explorer: InteractiveExplorerWindow, computing
+) -> None:
+    stand_in = computing()
+
+    def _raise() -> None:
+        raise ValueError('perplexity must be less than n_samples')
+
+    stand_in.on_call = _raise
+
+    loaded_explorer._compute_button.click()
+
+    assert outline(loaded_explorer._embedding_group) == 'bad'
+
+
+def test_clearing_takes_the_outline_off(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
+    """The outline reported on a projection that is gone, a new dataset or a new run having replaced it."""
+    computing()
+    loaded_explorer._compute_button.click()
+
+    loaded_explorer.clear_results()
+
+    assert outline(loaded_explorer._embedding_group) == 'none'
+
+
 def test_computing_changes_no_parameter(loaded_explorer: InteractiveExplorerWindow, computing) -> None:
     """The combos are what set the parameters; the button only reads them."""
     computing()
@@ -441,7 +505,8 @@ def criteria_form(monkeypatch: pytest.MonkeyPatch):
         def _exec(dialog) -> int:
             opened.append(dialog)
             if field:
-                dialog._field_combo.setCurrentText(field)
+                # Found by its name: its row's text also counts its picks once it holds any
+                dialog._field_combo.setCurrentIndex(dialog._field_combo.findData(field))
             for text in picks:
                 for item in dialog._values_list.findItems(text, Qt.MatchFlag.MatchExactly):
                     item.setSelected(True)
