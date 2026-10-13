@@ -450,6 +450,51 @@ def test_refusing_to_process_again_keeps_everything(
     assert list(clustered._explorer_window._canvas._points['Index']) == drawn
 
 
+@pytest.fixture
+def checkpoint_loaded(clustered: PhenoMeWidget, written_checkpoint) -> PhenoMeWidget:
+    """ The clustered session, a checkpoint of the same dataset then loaded over it.
+
+    Written from the metadata without the cluster labels, as a checkpoint written before the clustering
+    would be: PhenoMe matches a checkpoint to the files by their metadata, which the labels are not.
+    """
+    labelled = clustered._phenome.metadata_df
+    clustered._phenome.metadata_df = labelled.drop(columns='cluster')
+    path = written_checkpoint(clustered._phenome, properties=False)
+    clustered._phenome.metadata_df = labelled
+
+    clustered.processing_panel._load_checkpoint(path)
+    return clustered
+
+
+def test_loading_a_checkpoint_wipes_the_explorer(checkpoint_loaded: PhenoMeWidget) -> None:
+    """Drawn from the embeddings the checkpoint replaced, so nothing on it answers for the ones now held."""
+    explorer = checkpoint_loaded._explorer_window
+    assert explorer._canvas._points is None
+    assert explorer._canvas._plot.listDataItems() == []
+    assert explorer._selected_indices == []
+    assert explorer._num_select_label.text() == '0 points selected.'
+    assert not explorer._highlight_group.isEnabled()
+
+
+def test_loading_a_checkpoint_empties_the_images_table(checkpoint_loaded: PhenoMeWidget) -> None:
+    assert checkpoint_loaded.analysis_panel._images_table.native.rowCount() == 0
+    assert checkpoint_loaded.analysis_panel._images_df is None
+
+
+def test_loading_a_checkpoint_takes_the_clusters_off(checkpoint_loaded: PhenoMeWidget) -> None:
+    """Off the metadata table and out of the explorer's colouring, the dataset itself staying."""
+    explorer = checkpoint_loaded._explorer_window
+
+    assert 'cluster' not in metadata_columns(checkpoint_loaded)
+    assert checkpoint_loaded.loading_panel._metadata_table.native.rowCount() == 6
+    assert 'cluster' not in [explorer._color_by_combo.itemText(i) for i in range(explorer._color_by_combo.count())]
+
+
+def test_loading_a_checkpoint_leaves_the_analysis_ready_to_run_again(checkpoint_loaded: PhenoMeWidget) -> None:
+    for name in ANALYSIS_BUTTONS:
+        assert getattr(checkpoint_loaded.analysis_panel, name).isEnabled(), name
+
+
 # ----------------------------------------------------------------------------
 # The real plugin, which nothing else exercises
 # ----------------------------------------------------------------------------

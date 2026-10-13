@@ -96,9 +96,9 @@ class ProcessingPanel(QWidget):
     # steps running on those have no other way of hearing that they are suddenly there.
     checkpoint_loaded = Signal()
 
-    # Emitted when a run is about to replace embeddings that were already there, the analysis results
-    # computed from them having just been dropped: the panels and windows showing those results have
-    # to let go of their own share of them.
+    # Emitted when a run is about to replace embeddings that were already there, or a loaded checkpoint
+    # has just replaced them, the analysis results computed from them having been dropped: the panels
+    # and windows showing those results have to let go of their own share of them.
     analysis_cleared = Signal()
 
     def __init__(
@@ -691,6 +691,10 @@ class ProcessingPanel(QWidget):
             return
 
         self.refresh_buttons()
+
+        # The embeddings it holds replace the ones the analysis results were computed from, which the
+        # interface has dropped: whoever shows those results lets go of them before hearing of the load
+        self.analysis_cleared.emit()
 
         # The embeddings it holds are what the analysis steps run on, and nothing else would tell them
         self.checkpoint_loaded.emit()

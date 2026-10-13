@@ -503,6 +503,10 @@ class PhenoMeInterface:
         match is checked first, and a checkpoint holding images that are not loaded, or none at all,
         is refused before anything is read into the pipeline.
 
+        The embeddings it holds replace the ones the pipeline held, so what was computed from those -
+        the cluster labels, the retrieved images, the projection - goes, as it does when a run replaces
+        them. Dropped once the checkpoint has been accepted, so a refused one leaves everything as it was.
+
         Args:
             path: The checkpoint file to read.
         Raises:
@@ -513,6 +517,9 @@ class PhenoMeInterface:
         held, matched, loaded = self.image_processing.checkpoint_coverage(str(path))
         if held == 0 or held != matched:
             raise ValueError(_coverage_mismatch(held, matched, loaded))
+
+        # Before the properties are read back below, which this also lets go of
+        self.clear_analysis()
 
         self.image_processing.load_results(str(path))
 

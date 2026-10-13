@@ -263,11 +263,12 @@ class InteractiveExplorerWindow(QDialog):
         self.refresh_choices()
 
     def clear_results(self) -> None:
-        """ Let go of the projection and of everything picked out on it, a new dataset having been loaded.
+        """ Let go of the projection and of everything picked out on it, the embeddings having been replaced.
 
         The window is built once and kept, where the parameter forms are rebuilt on every use, so what
-        it holds has to be emptied by hand: the plot was drawn from images that are no longer loaded,
-        and the selection made on it points at places in results that are no longer there. The
+        it holds has to be emptied by hand: the plot was drawn from embeddings that are no longer there -
+        another dataset loaded, a run made again or a checkpoint loaded - and the selection made on it
+        points at places in results that are gone with them. The
         Embedding group goes back to its default outline, the projection it reported on being gone.
         """
         self._embedding_group.setStyleSheet('')
