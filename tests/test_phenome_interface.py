@@ -2,12 +2,19 @@
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
+import torch
+from phenome.core.pipeline_results import PhenoMeResults
+from phenome.io import CheckpointManager
+from phenome.utils import ModelWrapper
 from pydantic import ValidationError
 
+from phenome_gui.registries.models import MODEL_OPTIONS
 from phenome_gui.utils import phenome_interface
 from phenome_gui.utils.checkpoint import (
+    DATASET_MISMATCH,
     MODEL_MISMATCH,
     CheckpointMismatch,
 )
@@ -18,12 +25,18 @@ from phenome_gui.utils.params import (
     Params,
 )
 from phenome_gui.utils.phenome_interface import (
+    AUTOSAVE_CHECKPOINT,
     DR_METHODS,
     PROJECTION_COMPONENTS,
     PhenoMeInterface,
 )
+from phenome_gui.utils.progress import TaskStopped
 
-from .conftest import CHECKPOINT_PROPERTIES
+from .conftest import CHECKPOINT_PROPERTIES, EMBEDDING_DIM, results_for
+
+# The one model the registry gives an argument of its own that PhenoMe's default disagrees with, read
+# off the registry rather than spelled out
+STEDFM_MODEL = next(name for name, key in MODEL_OPTIONS.items() if key == 'sted-fm')
 
 # ----------------------------------------------------------------------------
 # Parameters
@@ -43,11 +56,6 @@ def test_parameters_are_copied_not_shared(phenome: PhenoMeInterface) -> None:
 
     assert Params().clustering.n_clusters == 5
     assert PhenoMeInterface(seed=42).params.clustering.n_clusters == 5
-
-
-def test_a_parameter_round_trips(phenome: PhenoMeInterface) -> None:
-    phenome.params.prototypes.n_prototypes = 7
-    assert phenome.params.prototypes.n_prototypes == 7
 
 
 def test_the_criteria_start_unset(phenome: PhenoMeInterface) -> None:
@@ -108,17 +116,16 @@ def extraction(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> di
     """ Catch the arguments an extraction would be run under, rather than running one.
 
     The interface hands a model's own arguments down alongside the form's, so the interface is made to
-    look as it does once a model has been loaded: one that brings no arguments of its own.
+    look as it does once a model has been loaded.
 
     Returns:
         Filled with the keyword arguments handed down, once an extraction has been asked for.
     """
     phenome.model = object()
-    phenome.process_options = {}
 
     passed = {}
 
-    def _capture(model, checkpoint_path, **kwargs) -> None:
+    def _capture(model, **kwargs) -> None:
         passed.update(kwargs)
 
     monkeypatch.setattr(phenome.image_processing, 'process_images', _capture)
@@ -155,10 +162,10 @@ def test_the_channel_mode_reaches_phenome(phenome: PhenoMeInterface, extraction:
 
 
 def test_the_form_has_the_last_word_on_the_channel_mode(
-    phenome: PhenoMeInterface, extraction: dict
+    phenome: PhenoMeInterface, extraction: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A model may name the same argument, and what was picked is what runs - handed down once."""
-    phenome.process_options = {'channel_mode': 'split', 'force_rgb': False}
+    monkeypatch.setattr(phenome, 'model_options', lambda: {'channel_mode': 'split', 'force_rgb': False})
     phenome.params.process.channel_mode = 'combined'
 
     phenome.process_images()
@@ -172,7 +179,7 @@ def test_the_form_has_the_last_word_on_the_channel_mode(
 def test_a_model_keeps_the_arguments_the_form_does_not_set(
     phenome: PhenoMeInterface, extraction: dict
 ) -> None:
-    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.model = STEDFM_MODEL
 
     phenome.process_images()
 
@@ -201,15 +208,90 @@ def test_the_defaults_fill_in_what_neither_the_form_nor_the_model_sets(
     """PhenoMe fills these in itself, so a checkpoint is compared against them rather than against nothing."""
     params = phenome.processing_params()
 
-    assert params['resize_size'] == 224
+    assert params['channels'] is None
     assert params['force_rgb'] is True
+
+
+def test_the_checkpoint_is_compared_against_the_image_preparation_picked(phenome: PhenoMeInterface) -> None:
+    """Images prepared otherwise are other embeddings, which a checkpoint filled before cannot resume."""
+    phenome.params.process.resize_size = None
+    phenome.params.process.pad_size = 300
+    phenome.params.process.l2_normalize_channels = True
+
+    params = phenome.processing_params()
+
+    assert (params['resize_size'], params['pad_size'], params['l2_normalize_channels']) == (None, 300, True)
+
+
+# ----------------------------------------------------------------------------
+# How the images are prepared, which the form settles for every model
+# ----------------------------------------------------------------------------
+
+
+def preparation(passed: dict) -> tuple:
+    """ The resize size, pad size and channel normalisation an extraction was handed. """
+    return passed['resize_size'], passed['pad_size'], passed['l2_normalize_channels']
+
+
+def test_the_images_are_resized_and_left_unnormalised_by_default(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    phenome.process_images()
+
+    assert preparation(extraction) == (224, None, False)
+
+
+def test_the_image_preparation_picked_reaches_phenome(phenome: PhenoMeInterface, extraction: dict) -> None:
+    phenome.params.process.resize_size = None
+    phenome.params.process.pad_size = 300
+    phenome.params.process.l2_normalize_channels = True
+
+    phenome.process_images()
+
+    assert preparation(extraction) == (None, 300, True)
+
+
+def test_a_model_left_to_phenome_gets_no_transformations_of_its_own(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """PhenoMe then builds its own from the sizes handed to it alongside."""
+    phenome.process_images()
+
+    assert extraction['custom_transformations'] is None
+
+
+def test_a_model_preparing_its_own_images_follows_the_size_picked_last(
+    phenome: PhenoMeInterface, extraction: dict
+) -> None:
+    """Its transformations come with it when it is loaded, but the size can be picked again since."""
+    phenome.params.process.model = STEDFM_MODEL
+    phenome.params.process.resize_size = 96
+
+    phenome.process_images()
+
+    prepared = extraction['custom_transformations'](np.zeros((64, 48, 1), dtype=np.uint8))
+    assert tuple(prepared.shape) == (1, 96, 96)
+
+
+def test_a_model_no_longer_offered_has_no_transformations(phenome: PhenoMeInterface) -> None:
+    """The parameter outlives the registry, which must not raise before the load can name the model."""
+    phenome.params.process.model = 'Some - Retired Model'
+
+    assert phenome.model_transforms() is None
+
+
+@pytest.mark.parametrize('field', ['resize_size', 'pad_size'])
+def test_an_empty_size_raises(phenome: PhenoMeInterface, field: str) -> None:
+    """A size of nothing is no size; off is None."""
+    with pytest.raises(ValidationError):
+        setattr(phenome.params.process, field, 0)
 
 
 def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
     phenome: PhenoMeInterface, extraction: dict
 ) -> None:
     """Comparing a checkpoint against arguments the run does not use is comparing against nothing."""
-    phenome.process_options = {'force_rgb': False}
+    phenome.params.process.model = STEDFM_MODEL
     phenome.params.process.channel_mode = 'combined'
     compared = phenome.processing_params()
 
@@ -218,12 +300,113 @@ def test_the_compared_arguments_are_the_ones_the_run_is_made_with(
     assert all(compared[key] == extraction[key] for key in phenome.process_arguments())
 
 
+def test_the_checkpoint_is_compared_against_the_selected_model_before_it_is_loaded(
+    phenome: PhenoMeInterface
+) -> None:
+    """The comparison is made before the run that loads the model, so it cannot wait on the load."""
+    phenome.params.process.model = STEDFM_MODEL
+
+    assert phenome.model is None
+    assert phenome.processing_params()['force_rgb'] is False
+
+
+# ----------------------------------------------------------------------------
+# Loading the model, which the run does rather than the pick
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def downloads(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> list:
+    """ Stand in for the registry's model loading, which downloads a network.
+
+    Returns:
+        Filled with (registry name, device) for every load asked of the registry.
+    """
+    asked = []
+
+    def _load(model_name: str, device: str = 'cpu') -> tuple:
+        asked.append((model_name, device))
+        return object(), None, {}
+
+    monkeypatch.setattr(phenome.image_processing, 'load_model', _load)
+    return asked
+
+
+def test_a_model_is_loaded_on_the_first_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    assert phenome.needs_model_load
+
+    assert phenome.ensure_model_loaded()
+
+    assert downloads == [(MODEL_OPTIONS[phenome.params.process.model], 'cpu')]
+    assert phenome.model is not None
+    assert not phenome.needs_model_load
+
+
+def test_the_loaded_model_is_kept_for_the_next_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    """A second download of the same network would be hundreds of megabytes for nothing."""
+    phenome.ensure_model_loaded()
+
+    assert not phenome.ensure_model_loaded()
+
+    assert len(downloads) == 1
+
+
+def test_picking_another_model_loads_it_on_the_next_run(phenome: PhenoMeInterface, downloads: list) -> None:
+    phenome.ensure_model_loaded()
+
+    phenome.params.process.model = STEDFM_MODEL
+
+    assert phenome.needs_model_load
+    assert phenome.ensure_model_loaded()
+    assert downloads[-1] == ('sted-fm', 'cpu')
+
+
+def test_picking_another_device_loads_the_model_again(phenome: PhenoMeInterface, downloads: list) -> None:
+    """The network is moved onto its device as it is loaded, so the one held runs on the old device."""
+    phenome.ensure_model_loaded()
+
+    phenome.params.process.device = 'cuda'
+
+    assert phenome.ensure_model_loaded()
+    assert downloads[-1][1] == 'cuda'
+
+
+def test_an_unknown_model_raises_rather_than_leaving_nothing_loaded(
+    phenome: PhenoMeInterface, downloads: list
+) -> None:
+    """A load that silently did nothing would only fail later, halfway into the run, on no model at all."""
+    phenome.params.process.model = 'Some - Retired Model'
+
+    with pytest.raises(ValueError, match='Some - Retired Model'):
+        phenome.ensure_model_loaded()
+
+    assert downloads == []
+    assert phenome.needs_model_load
+
+
+def test_a_failed_load_leaves_nothing_counted_as_loaded(
+    phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next run has to try again, rather than run on whatever was held before."""
+    def _fail(model_name: str, device: str = 'cpu') -> tuple:
+        raise OSError('connection refused')
+
+    monkeypatch.setattr(phenome.image_processing, 'load_model', _fail)
+
+    with pytest.raises(OSError):
+        phenome.ensure_model_loaded()
+
+    assert phenome.needs_model_load
+
+
 @pytest.fixture
 def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
     """ Return a hook standing in for reading a checkpoint off disk.
 
     Neither half is let near a real file: writing one means embeddings, which means a model, and what
     is being checked is what the interface does with the two answers rather than PhenoMe's reading.
+    The checkpoint answers for the dataset in full, its match being checked against real files in the
+    tests of its own.
 
     Returns:
         Called as loading(properties=...), returning a record of what PhenoMe
@@ -236,6 +419,7 @@ def loading(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch):
             record['loaded'].append(path)
             phenome.pheno.results.properties = properties or []
 
+        monkeypatch.setattr(phenome.image_processing, 'checkpoint_coverage', lambda path: (6, 6, 6))
         monkeypatch.setattr(phenome.image_processing, 'load_results', _load)
         monkeypatch.setattr(
             phenome.image_processing, 'get_properties', lambda: pd.DataFrame({'area': [1.0, 2.0]})
@@ -318,10 +502,10 @@ def test_a_written_checkpoint_without_properties_reads_back_without_them(
 def test_a_written_checkpoint_agrees_with_the_run_that_would_resume_it(
     loaded: PhenoMeInterface, written_checkpoint
 ) -> None:
-    """Written under the arguments the interface runs with, so an extraction has nothing to ask about."""
+    """Written under the arguments the interface runs with, so a resume has nothing to ask about."""
     loaded.load_checkpoint(written_checkpoint(loaded))
 
-    assert loaded.inspect_checkpoint() is None
+    assert loaded.inspect_resume() is None
 
 
 def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
@@ -334,7 +518,7 @@ def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
 
     # Whatever reading it would find is beside the point, the load never asking
     monkeypatch.setattr(
-        phenome_interface, 'inspect_checkpoint',
+        phenome_interface, 'inspect_held_embeddings',
         lambda *args: CheckpointMismatch(MODEL_MISMATCH, 'channel_mode differs')
     )
 
@@ -344,21 +528,519 @@ def test_a_checkpoint_is_loaded_whatever_it_was_filled_under(
     assert phenome.params.paths.checkpoint == checkpoint
 
 
-def test_the_picked_channel_mode_reaches_the_checkpoint_reader(
+def test_the_picked_channel_mode_reaches_the_resume_check(
     phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What makes the overwrite prompt fire on a mode change rather than resuming the other run's embeddings."""
+    """What makes a mode change stop a resume rather than append embeddings of another kind."""
     read_with = {}
 
-    def _capture(path, processing_params, image_paths):
-        read_with.update(processing_params)
+    def _capture(held_params, held_paths, current_params, loaded_paths):
+        read_with.update(current_params)
 
-    monkeypatch.setattr(phenome_interface, 'inspect_checkpoint', _capture)
+    monkeypatch.setattr(phenome_interface, 'inspect_held_embeddings', _capture)
     phenome.params.process.channel_mode = 'combined'
 
-    phenome.inspect_checkpoint()
+    phenome.inspect_resume()
 
     assert read_with['channel_mode'] == 'combined'
+
+
+# ----------------------------------------------------------------------------
+# Where a run writes: nowhere, and what a resume hands PhenoMe
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def properties_step(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """ Catch the arguments the properties step would be run under, rather than running it.
+
+    Returns:
+        Filled with the keyword arguments handed down, once the step has been asked for.
+    """
+    passed = {}
+
+    def _capture(preset, **kwargs) -> pd.DataFrame:
+        passed.update(kwargs, preset=preset)
+        return pd.DataFrame({'area': [1.0]})
+
+    monkeypatch.setattr(phenome.image_processing, 'compute_properties', _capture)
+    return passed
+
+
+def held(interface: PhenoMeInterface, n_images: int, properties: bool = True) -> None:
+    """ Leave real results for the first images of the loaded dataset in the pipeline, as a stopped run does.
+
+    Args:
+        interface: The interface whose dataset the results answer for.
+        n_images: How many of the loaded images have their embeddings.
+        properties: Whether the results carry properties.
+    """
+    results = results_for(interface, properties)
+    interface.pheno.results = PhenoMeResults(
+        img_path=results.img_path[:n_images],
+        metadata=results.metadata[:n_images],
+        properties=results.properties[:n_images],
+        embeddings=results.embeddings[:n_images],
+    )
+    interface.pheno._processing_params = interface.processing_params()
+
+
+def test_a_run_never_writes_to_a_checkpoint(
+    phenome: PhenoMeInterface, extraction: dict, properties_step: dict, tmp_path: Path
+) -> None:
+    """The results stay in memory until saved, even with a checkpoint selected from a save or a load."""
+    phenome.params.paths.checkpoint = tmp_path / 'previous.hdf5'
+
+    phenome.process_images()
+    phenome.compute_properties()
+
+    for passed in (extraction, properties_step):
+        assert not {'checkpoint_path', 'lazy_checkpoint', 'force_update', 'force_reprocess'} & set(passed)
+
+
+def test_a_run_from_scratch_processes_every_image(loaded: PhenoMeInterface, extraction: dict) -> None:
+    held(loaded, 3)
+
+    loaded.process_images()
+
+    assert 'append' not in extraction
+    assert 'exclude' not in extraction
+
+
+def test_a_resume_excludes_the_images_held_and_appends_the_rest(
+    loaded: PhenoMeInterface, extraction: dict
+) -> None:
+    held(loaded, 3)
+
+    loaded.process_images(resume=True)
+
+    assert extraction['append'] is True
+    assert extraction['exclude'] == {'file_path': list(loaded.metadata_df['file_path'][:3])}
+
+
+def test_a_resume_drops_the_properties_held(loaded: PhenoMeInterface, extraction: dict) -> None:
+    """They would answer for the images held only, and the properties step computes them all anew."""
+    held(loaded, 3, properties=True)
+    loaded.properties_df = pd.DataFrame({'area': [1.0, 2.0, 3.0]})
+
+    loaded.process_images(resume=True)
+
+    assert not loaded.has_stored_properties
+    assert loaded.properties_df is None
+
+
+def test_a_resume_with_nothing_missing_runs_nothing(loaded: PhenoMeInterface, extraction: dict) -> None:
+    """PhenoMe would otherwise return early with the held embeddings taken out of the results."""
+    held(loaded, 6)
+
+    loaded.process_images(resume=True)
+
+    assert extraction == {}
+    assert loaded.has_all_embeddings
+
+
+def test_the_resume_check_reads_the_settings_the_embeddings_were_made_under(loaded: PhenoMeInterface) -> None:
+    held(loaded, 3)
+    assert loaded.inspect_resume() is None
+
+    loaded.params.process.channel_mode = 'combined'
+
+    assert loaded.inspect_resume().reason == MODEL_MISMATCH
+
+
+def test_the_resume_check_reads_the_images_held(loaded: PhenoMeInterface) -> None:
+    """An image the run would not recognise as done would be processed again and appended twice."""
+    held(loaded, 3)
+    loaded.pheno.results.img_path[0] = '/elsewhere/not_loaded.tif'
+
+    assert loaded.inspect_resume().reason == DATASET_MISMATCH
+
+
+def test_a_checkpoint_of_the_dataset_moved_elsewhere_can_be_resumed(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """PhenoMe resolves the paths it stores against the files found, which is what the exclusion matches."""
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+    path = written_checkpoint(loaded, name='part.hdf5')
+    load_copy(loaded, copied_dataset())
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.inspect_resume() is None
+    assert len(loaded.image_processing.loaded_paths_among(loaded.pheno.results.img_path)) == 3
+
+
+# ----------------------------------------------------------------------------
+# Saving a checkpoint, real files throughout
+# ----------------------------------------------------------------------------
+
+
+def test_saved_results_are_read_back_whole(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    """The point of a checkpoint: the embeddings and properties of a run come back in a later session."""
+    extracted(loaded, properties=True)
+    path = tmp_path / 'saved.hdf5'
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_a_save_becomes_the_selected_checkpoint(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    extracted(loaded)
+
+    loaded.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert loaded.params.paths.checkpoint == tmp_path / 'saved.hdf5'
+
+
+def test_saving_without_properties_reads_back_without_them(
+    loaded: PhenoMeInterface, extracted, tmp_path: Path
+) -> None:
+    """A run with the properties left out saves as the half-done run it is."""
+    extracted(loaded, properties=False)
+    path = tmp_path / 'saved.hdf5'
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+    assert loaded.properties_df is None
+
+
+def test_a_loaded_checkpoint_saves_to_a_copy_that_reads_back_whole(
+    loaded: PhenoMeInterface, written_checkpoint, tmp_path: Path
+) -> None:
+    """Its embeddings are still in the file it came from, which PhenoMe copies rather than writes out."""
+    original = written_checkpoint(loaded, properties=True)
+    loaded.load_checkpoint(original)
+    copy = tmp_path / 'copy.hdf5'
+
+    loaded.save_checkpoint(copy)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(copy)
+
+    assert original.is_file()
+    assert loaded.pheno.results.n_images == len(loaded.metadata_df)
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+
+
+def test_saving_over_a_file_replaces_it(loaded: PhenoMeInterface, extracted, tmp_path: Path) -> None:
+    path = tmp_path / 'saved.hdf5'
+    path.write_bytes(b'not a checkpoint')
+    extracted(loaded)
+
+    loaded.save_checkpoint(path)
+    loaded.load_data_csv()
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_processed_images
+
+
+def test_there_is_nothing_to_save_before_a_run(phenome: PhenoMeInterface, tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        phenome.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert not (tmp_path / 'saved.hdf5').exists()
+    assert phenome.params.paths.checkpoint is None
+
+
+def test_a_failed_save_keeps_the_checkpoint_selected_before(
+    loaded: PhenoMeInterface, extracted, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    extracted(loaded)
+    loaded.params.paths.checkpoint = tmp_path / 'previous.hdf5'
+
+    def _refuse(path) -> None:
+        raise OSError('disk full')
+
+    monkeypatch.setattr(loaded.image_processing, 'save_results', _refuse)
+
+    with pytest.raises(OSError):
+        loaded.save_checkpoint(tmp_path / 'saved.hdf5')
+
+    assert loaded.params.paths.checkpoint == tmp_path / 'previous.hdf5'
+
+
+# ----------------------------------------------------------------------------
+# Loading a checkpoint, which has to answer for exactly the dataset loaded
+# ----------------------------------------------------------------------------
+
+
+def load_copy(interface: PhenoMeInterface, copy: dict[str, Path]) -> PhenoMeInterface:
+    """ Load a copy of the test dataset into an interface, as the loading tab would.
+
+    Args:
+        interface: The interface to load into.
+        copy: The images directory, the masks directory and the metadata file of the copy.
+    Returns:
+        The same interface, holding the copy.
+    """
+    interface.params.paths.images = copy['images']
+    interface.params.paths.masks = copy['masks']
+    interface.params.paths.metadata = copy['metadata']
+    interface.load_data_csv()
+    return interface
+
+
+def test_a_checkpoint_of_another_dataset_is_refused(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """PhenoMe would load it as holding none of the images, which reads as a load that did nothing."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset(renamed=True))
+
+    with pytest.raises(ValueError, match='different dataset'):
+        loaded.load_checkpoint(path)
+
+
+def test_a_refused_checkpoint_leaves_the_results_alone(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset, extracted, tmp_path: Path
+) -> None:
+    """Refused before anything is read into the pipeline, so what was there is still there."""
+    path = written_checkpoint(loaded, name='other.hdf5')
+    load_copy(loaded, copied_dataset(renamed=True))
+    extracted(loaded)
+    loaded.params.paths.checkpoint = tmp_path / 'kept.hdf5'
+
+    with pytest.raises(ValueError):
+        loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == 6
+    assert loaded.pheno.results.embeddings is not None
+    assert loaded.params.paths.checkpoint == tmp_path / 'kept.hdf5'
+
+
+def test_a_checkpoint_of_more_images_than_are_loaded_is_refused(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """Loaded, it would quietly answer for part of what it holds."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+
+    with pytest.raises(ValueError, match=r'does not match.*6 image\(s\), 3 of which.*3 currently loaded'):
+        loaded.load_checkpoint(path)
+
+
+def test_a_checkpoint_of_part_of_the_loaded_images_loads(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """What a stopped run leaves behind: loaded as it is, for the next run to resume."""
+    load_copy(loaded, copied_dataset(indices=[0, 1, 2]))
+    path = written_checkpoint(loaded, name='part.hdf5')
+    load_copy(loaded, copied_dataset())
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.n_processed_images == 3
+    assert loaded.n_loaded_images == 6
+    assert not loaded.has_all_embeddings
+    assert loaded.params.paths.checkpoint == path
+
+
+def test_a_checkpoint_of_every_loaded_image_has_all_embeddings(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset())
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.has_all_embeddings
+
+
+def test_an_empty_checkpoint_is_refused(phenome: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run stopped before its first batch was written leaves nothing to load."""
+    monkeypatch.setattr(phenome.image_processing, 'checkpoint_coverage', lambda path: (0, 0, 6))
+
+    with pytest.raises(ValueError, match='holds no image'):
+        phenome.load_checkpoint('empty.hdf5')
+
+    assert phenome.params.paths.checkpoint is None
+
+
+def test_a_checkpoint_of_the_same_dataset_moved_elsewhere_still_loads(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    """PhenoMe matches a checkpoint to the files by what they are, not where they sit."""
+    path = written_checkpoint(loaded)
+    load_copy(loaded, copied_dataset())
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.pheno.results.n_images == 6
+    assert loaded.params.paths.checkpoint == path
+
+
+# ----------------------------------------------------------------------------
+# An interrupted extraction keeps what it computed, and autosaves it
+# ----------------------------------------------------------------------------
+
+
+def interrupted_after(step, error: Exception | None = None):
+    """ An extraction that runs a step of its own, then is interrupted.
+
+    Args:
+        step: Called with no arguments before the interruption, standing in for the batches processed.
+        error: What interrupts it, a stop unless told otherwise.
+    Returns:
+        Something to put in place of ImageProcessing.process_images.
+    """
+    def _run(model, **kwargs) -> None:
+        step()
+        raise error or TaskStopped('Task interrupted by user')
+
+    return _run
+
+
+def three_images_computed(interface: PhenoMeInterface):
+    """ A step leaving three images computed, the way PhenoMe leaves them partway through a run.
+
+    PhenoMe names the images in the results as it goes, but holds their embeddings apart until the end.
+    """
+    results = results_for(interface, properties=False)
+
+    def _step() -> None:
+        interface.pheno.results.img_path.extend(results.img_path[:3])
+        interface.pheno.results.metadata.extend(results.metadata[:3])
+        interface.pheno._emb_buffer.extend(results.embeddings[:3])
+
+    return _step
+
+
+@pytest.fixture
+def working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """ Run the test from a directory of its own, where an autosave would be written. """
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.mark.parametrize('error', [TaskStopped('Task interrupted by user'), RuntimeError('out of memory')])
+def test_an_interrupted_run_keeps_and_autosaves_what_it_computed(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path, error: Exception
+) -> None:
+    """A stop or a failure alike, without the autosave becoming the current checkpoint."""
+    loaded.model = object()
+    previous = working_directory / 'previous.hdf5'
+    loaded.params.paths.checkpoint = previous
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images', interrupted_after(three_images_computed(loaded), error)
+    )
+
+    with pytest.raises(type(error)):
+        loaded.process_images()
+
+    autosave = working_directory / AUTOSAVE_CHECKPOINT
+    assert loaded.last_autosave == autosave
+    assert loaded.pheno.results.embeddings.shape == (3, EMBEDDING_DIM)
+    assert loaded.params.paths.checkpoint == previous
+
+    # Loaded back, it is the progress to resume from
+    loaded.load_checkpoint(autosave)
+    assert loaded.n_processed_images == 3
+
+
+def test_a_run_interrupted_before_any_batch_autosaves_nothing(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
+) -> None:
+    loaded.model = object()
+    monkeypatch.setattr(loaded.image_processing, 'process_images', interrupted_after(lambda: None))
+
+    with pytest.raises(TaskStopped):
+        loaded.process_images()
+
+    assert loaded.last_autosave is None
+    assert not (working_directory / AUTOSAVE_CHECKPOINT).exists()
+
+
+def test_a_run_interrupted_halfway_through_a_batch_keeps_nothing(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
+) -> None:
+    """Paths named without their embeddings would be saved against the wrong rows."""
+    loaded.model = object()
+    step = three_images_computed(loaded)
+
+    def _misaligned() -> None:
+        step()
+        loaded.pheno._emb_buffer.pop()
+
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images', interrupted_after(_misaligned, RuntimeError('crash'))
+    )
+
+    with pytest.raises(RuntimeError, match='crash'):
+        loaded.process_images()
+
+    assert not loaded.has_processed_images
+    assert loaded.last_autosave is None
+
+
+def test_an_autosave_that_cannot_be_written_never_hides_the_interruption(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
+) -> None:
+    """The run's own failure is what the user is told about, and the progress stays in memory."""
+    loaded.model = object()
+    monkeypatch.setattr(
+        loaded.image_processing, 'process_images',
+        interrupted_after(three_images_computed(loaded), RuntimeError('out of memory')),
+    )
+
+    def _full_disk(path: str) -> None:
+        raise OSError('No space left on device')
+
+    monkeypatch.setattr(loaded.image_processing, 'save_results', _full_disk)
+
+    with pytest.raises(RuntimeError, match='out of memory'):
+        loaded.process_images()
+
+    assert loaded.last_autosave is None
+    assert loaded.n_processed_images == 3
+
+
+class FakeModel(ModelWrapper):
+    """ A model that needs no download: each image's embedding is its mean over every pixel. """
+
+    def _get_embeddings(self, tensor: torch.Tensor) -> torch.Tensor:
+        """ Reduce a batch of images to one value per channel.
+
+        Args:
+            tensor: The batch, as (B, C, H, W).
+        Returns:
+            The embeddings, as (B, C).
+        """
+        return tensor.mean(dim=(2, 3))
+
+
+def test_a_stopped_run_autosaves_and_resumes_from_the_loaded_autosave(
+    loaded: PhenoMeInterface, working_directory: Path
+) -> None:
+    """End to end through PhenoMe itself: no image is skipped, and none is processed twice."""
+    loaded.model = FakeModel(None, device=torch.device('cpu'))
+    loaded.params.process.batch_size = 2
+
+    def _stop_after_the_first_batch(current: int, total: int, desc: str = '') -> None:
+        raise TaskStopped('Task interrupted by user')
+
+    with pytest.raises(TaskStopped):
+        loaded.process_images(progress_callback=_stop_after_the_first_batch)
+
+    autosave = working_directory / AUTOSAVE_CHECKPOINT
+    loaded.load_checkpoint(autosave)
+    assert loaded.n_processed_images == 2
+    assert loaded.inspect_resume() is None
+
+    loaded.process_images(resume=True)
+
+    assert loaded.n_processed_images == 6
+    assert loaded.pheno.get_embeddings().shape[0] == 6
+    assert len({str(path) for path in loaded.pheno.results.img_path}) == 6
+
+    # The autosave it was resumed from is left as it was loaded
+    with CheckpointManager(str(autosave), lazy=True) as written:
+        assert written.n_committed == 2
 
 
 # ----------------------------------------------------------------------------
@@ -651,6 +1333,90 @@ def test_clearing_a_fresh_interface_changes_nothing(phenome: PhenoMeInterface) -
 
     assert phenome.has_results is False
     assert phenome.metadata_df is None
+
+
+# ----------------------------------------------------------------------------
+# Letting go of the analysis when the images are processed again
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('attribute', RESULT_FRAMES)
+def test_clearing_the_analysis_drops_every_computed_frame(
+    loaded: PhenoMeInterface, processed, attribute: str
+) -> None:
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert getattr(loaded, attribute) is None
+
+
+def test_clearing_the_analysis_takes_the_cluster_labels_out_of_the_metadata(loaded: PhenoMeInterface) -> None:
+    """The labels answer for the embeddings being replaced, where the rest of the metadata answers for the files."""
+    kept = list(loaded.metadata_df.columns)
+    loaded.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+
+    loaded.clear_analysis()
+
+    assert list(loaded.metadata_df.columns) == kept
+    assert len(loaded.metadata_df) == 6
+
+
+def test_clearing_the_analysis_keeps_the_dataset_the_checkpoint_and_the_embeddings(
+    loaded: PhenoMeInterface, processed
+) -> None:
+    """The run about to start replaces the embeddings itself, and reads the dataset and the checkpoint."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert len(loaded.metadata_df) == 6
+    assert loaded.params.paths.checkpoint == Path('previous.hdf5')
+    assert loaded.has_processed_images
+
+
+def test_clearing_the_analysis_forgets_the_parameters_naming_the_clusters(loaded: PhenoMeInterface) -> None:
+    loaded.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+    loaded.params.explorer.color_by = 'cluster'
+    loaded.params.explorer.filter = {'cluster': [0], 'drug_name': ['ctrl']}
+    loaded.params.explorer.exclude = {'cluster': [1]}
+    loaded.params.prototypes.group_by = 'cluster'
+    loaded.params.outliers.group_by = 'cluster'
+
+    loaded.clear_analysis()
+
+    assert loaded.params.explorer.color_by is None
+    assert loaded.params.explorer.filter == {'drug_name': ['ctrl']}
+    assert loaded.params.explorer.exclude is None
+    assert loaded.params.prototypes.group_by is None
+    assert loaded.params.outliers.group_by is None
+
+
+def test_clearing_the_analysis_keeps_the_parameters_naming_the_metadata(
+    loaded: PhenoMeInterface, processed
+) -> None:
+    """The columns the files came with are still there, so a choice made on them still stands."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert loaded.params.explorer.color_by == 'drug_name'
+    assert loaded.params.explorer.filter == {'drug_name': ['ctrl']}
+    assert loaded.params.explorer.exclude == {'time': [24]}
+    assert loaded.params.prototypes.group_by == 'drug_name'
+    assert loaded.params.outliers.group_by == 'time'
+
+
+@pytest.mark.parametrize('section', SOURCE_SECTIONS)
+def test_clearing_the_analysis_puts_every_feature_space_back(
+    loaded: PhenoMeInterface, processed, section: str
+) -> None:
+    """The properties went with the results, and a step left on them would raise."""
+    analysed(loaded, processed)
+
+    loaded.clear_analysis()
+
+    assert getattr(loaded.params, section).source == 'embeddings'
 
 
 # ----------------------------------------------------------------------------

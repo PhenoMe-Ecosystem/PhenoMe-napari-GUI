@@ -1,23 +1,27 @@
-"""Tests for the three parameter forms.
+"""Tests for the parameter forms.
 
-All three edit a copy of the parameters and only hand it back through get_params(), so the caller can
+All of them edit a copy of the parameters and only hand it back through get_params(), so the caller can
 apply a confirmed edit and discard a cancelled one. The prototype and outlier forms also share a group-by
-combo and a source combo, which are parametrised over both below.
+combo and a source combo, which are parametrised over both below. The advanced processing form is built
+from plain Qt widgets rather than magicgui ones, and is tested in a section of its own.
 """
 
 import pytest
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QDialogButtonBox, QWidget
 
+from phenome_gui.ui.advanced_processing_params import AdvancedProcessingParams
 from phenome_gui.ui.clustering_params import ClusterParamsWindow
 from phenome_gui.ui.prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
 from phenome_gui.utils.params import (
-    METHOD_CHOICES,
+    CHANNEL_MODE_CHOICES,
+    MAX_WORKERS,
     SOURCE_CHOICES,
     ClusteringParams,
     OutliersParams,
+    ProcessParams,
     PrototypesParams,
 )
 
@@ -129,12 +133,6 @@ def test_editing_the_form_leaves_the_caller_untouched(
 # ----------------------------------------------------------------------------
 
 
-def test_outlier_methods_are_the_two_phenome_knows(parent: QWidget) -> None:
-    dialog = OutliersParamsWindow(parent, OutliersParams(), COLUMNS)
-
-    assert items(dialog._method_dropdown) == METHOD_CHOICES == ['z-score', 'iqr']
-
-
 def test_outlier_form_tracks_all_four_values(parent: QWidget) -> None:
     dialog = OutliersParamsWindow(parent, OutliersParams(), COLUMNS, True)
 
@@ -202,3 +200,169 @@ def test_the_buttons_settle_the_dialog(parent: QWidget, form: type, model: type,
     rejected = form(parent, model(), *positional)
     rejected._cancel()
     assert rejected.result() == rejected.Rejected
+
+
+# ----------------------------------------------------------------------------
+# The advanced processing form
+# ----------------------------------------------------------------------------
+
+
+# Processing parameters other than the defaults in every field the form shows, and in some it does not
+EDITED = ProcessParams(
+    channel_mode='combined', batch_size=64, num_workers=2, device="cuda", resume_progress=True
+)
+
+
+def shown(dialog: AdvancedProcessingParams) -> tuple[str, int, int]:
+    """ The channel mode, batch size and worker count the form is currently showing. """
+    return (
+        dialog._channel_mode_combo.currentText(),
+        dialog._batch_size_spinbox.value(),
+        dialog._num_workers_spinbox.value(),
+    )
+
+
+def test_the_advanced_form_opens_on_the_values_it_was_given(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, EDITED)
+
+    assert shown(dialog) == ('combined', 64, 2)
+
+
+def test_the_advanced_form_hands_back_what_was_edited(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog._channel_mode_combo.setCurrentText('combined')
+    dialog._batch_size_spinbox.setValue(128)
+    dialog._num_workers_spinbox.setValue(4)
+
+    params = dialog.get_params()
+    assert (params.channel_mode, params.batch_size, params.num_workers) == ('combined', 128, 4)
+
+
+def test_the_advanced_form_keeps_the_fields_it_does_not_show(parent: QWidget) -> None:
+    """The model, the device and the checkpointing are picked elsewhere, and handed back as they came."""
+    dialog = AdvancedProcessingParams(parent, EDITED)
+
+    dialog._batch_size_spinbox.setValue(512)
+
+    assert dialog.get_params() == EDITED.model_copy(update={'batch_size': 512})
+
+
+def test_editing_the_advanced_form_leaves_the_caller_untouched(parent: QWidget) -> None:
+    params = ProcessParams()
+    before = params.model_copy(deep=True)
+    dialog = AdvancedProcessingParams(parent, params)
+
+    dialog._batch_size_spinbox.setValue(512)
+    edited = dialog.get_params()
+
+    assert params == before
+    assert edited != before
+
+
+def test_the_worker_field_offers_no_more_than_the_model_takes(parent: QWidget) -> None:
+    """A count the form can offer and the model rejects would raise on a confirmed edit."""
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    assert dialog._num_workers_spinbox.minimum() == 0
+    assert dialog._num_workers_spinbox.maximum() == MAX_WORKERS
+
+
+def test_the_channel_mode_offers_the_values_the_model_accepts(parent: QWidget) -> None:
+    """Offering anything else would raise on assignment, the field being typed as a literal."""
+    combo = AdvancedProcessingParams(parent, ProcessParams())._channel_mode_combo
+
+    assert [combo.itemText(row) for row in range(combo.count())] == CHANNEL_MODE_CHOICES
+
+
+@pytest.mark.parametrize(
+    ('button', 'result'),
+    [
+        pytest.param(QDialogButtonBox.StandardButton.Ok, 'Accepted', id='ok'),
+        pytest.param(QDialogButtonBox.StandardButton.Cancel, 'Rejected', id='cancel'),
+    ],
+)
+def test_the_advanced_form_buttons_settle_it(parent: QWidget, button, result: str) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog.findChild(QDialogButtonBox).button(button).click()
+
+    assert dialog.result() == getattr(dialog, result)
+
+
+def sizes(dialog: AdvancedProcessingParams) -> dict[str, tuple[bool, int, bool]]:
+    """ Each optional size as shown: whether its box is ticked, its value, and whether it can be edited. """
+    return {
+        'resize': (
+            dialog._resize_checkbox.isChecked(),
+            dialog._resize_spinbox.value(),
+            dialog._resize_spinbox.isEnabled(),
+        ),
+        'pad': (
+            dialog._pad_checkbox.isChecked(),
+            dialog._pad_spinbox.value(),
+            dialog._pad_spinbox.isEnabled(),
+        ),
+    }
+
+
+def test_the_form_opens_resizing_but_not_padding(parent: QWidget) -> None:
+    """Off, a size is still shown, and greyed out, so ticking its box offers one worth running with."""
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    assert sizes(dialog) == {'resize': (True, 224, True), 'pad': (False, 224, False)}
+    assert not dialog._l2_checkbox.isChecked()
+
+
+def test_the_form_opens_on_the_sizes_it_was_given(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(
+        parent, ProcessParams(resize_size=None, pad_size=300, l2_normalize_channels=True)
+    )
+
+    assert sizes(dialog) == {'resize': (False, 224, False), 'pad': (True, 300, True)}
+    assert dialog._l2_checkbox.isChecked()
+
+
+def test_unticking_a_size_hands_back_none(parent: QWidget) -> None:
+    """None is what PhenoMe reads as skipping the step, where False would be taken for a size."""
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog._resize_checkbox.setChecked(False)
+
+    assert dialog.get_params().resize_size is None
+
+
+def test_ticking_a_size_hands_back_its_value(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog._pad_checkbox.setChecked(True)
+    dialog._pad_spinbox.setValue(300)
+
+    assert dialog.get_params().pad_size == 300
+
+
+def test_a_size_can_only_be_edited_while_its_box_is_ticked(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog._pad_checkbox.setChecked(True)
+    dialog._resize_checkbox.setChecked(False)
+
+    assert dialog._pad_spinbox.isEnabled()
+    assert not dialog._resize_spinbox.isEnabled()
+
+
+def test_a_size_ticked_off_and_on_again_keeps_its_value(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams(resize_size=512))
+
+    dialog._resize_checkbox.setChecked(False)
+    dialog._resize_checkbox.setChecked(True)
+
+    assert dialog.get_params().resize_size == 512
+
+
+def test_ticking_the_channel_normalisation_hands_it_back(parent: QWidget) -> None:
+    dialog = AdvancedProcessingParams(parent, ProcessParams())
+
+    dialog._l2_checkbox.setChecked(True)
+
+    assert dialog.get_params().l2_normalize_channels is True

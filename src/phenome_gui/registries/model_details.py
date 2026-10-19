@@ -19,7 +19,7 @@ def get_dinov2_details() -> str:
     <b>Transforms applied at process:</b>
     <ul>
         <li>Duplicate to 3 channels if necessary</li>
-        <li>Standardization using ImageNET values</li>
+        <li>Standardization using ImageNet values</li>
     </ul>
     """
 
@@ -46,7 +46,7 @@ def get_stedfm_details() -> str:
 
     <b>Transforms applied at process:</b>
     <ul>
-        <li>Resize to 224x224</li>
+        <li>None</li>
     </ul>
     """
 
