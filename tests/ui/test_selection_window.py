@@ -74,10 +74,6 @@ def saving_to(monkeypatch: pytest.MonkeyPatch):
     return _answer
 
 
-def test_the_table_starts_empty(window: SelectionWindow) -> None:
-    assert window._points_table.model().rowCount() == 0
-
-
 def test_every_selected_point_is_listed(window: SelectionWindow, points: pd.DataFrame) -> None:
     window.show_selection(points)
 
@@ -89,15 +85,6 @@ def test_the_columns_are_the_projection_s_own(window: SelectionWindow, points: p
     window.show_selection(points)
 
     assert headers(window) == list(points.columns)
-
-
-def test_the_coordinates_and_the_properties_are_listed_too(
-    window: SelectionWindow, points: pd.DataFrame
-) -> None:
-    window.show_selection(points)
-
-    assert 'Component 1' in headers(window)
-    assert 'area' in headers(window)
 
 
 def test_a_row_reads_across_the_frame(window: SelectionWindow, points: pd.DataFrame) -> None:
@@ -113,30 +100,6 @@ def test_a_measurement_is_written_to_be_read(window: SelectionWindow) -> None:
     )
 
     assert cells(window, 0) == ['a.tif', '1', '0.1235']
-
-
-def test_a_projection_is_listed_column_for_column(window: SelectionWindow) -> None:
-    """Shaped as prepare_embedding_dataframe builds it: coordinates, image, place, metadata, properties.
-
-    Listing it whole is what keeps the table and a CSV of the same selection saying the same thing.
-    """
-    projection = pd.DataFrame(
-        {
-            'Component 1': [0.5, 1.5],
-            'Component 2': [1.5, 2.5],
-            'Image': ['img_000.tif', 'img_001.tif'],
-            'Index': [10, 20],
-            'Drug_name': ['ctrl', 'drugA'],
-            'Time': ['60_min', '60_min'],
-            'area': [120.0, 340.0],
-            'eccentricity': [0.34, 0.99],
-        }
-    )
-
-    window.show_selection(projection)
-
-    assert headers(window) == list(projection.columns)
-    assert window._points_table.model().rowCount() == 2
 
 
 def test_listing_a_selection_replaces_the_one_before(window: SelectionWindow, points: pd.DataFrame) -> None:

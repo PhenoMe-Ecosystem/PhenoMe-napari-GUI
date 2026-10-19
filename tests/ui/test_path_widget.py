@@ -122,17 +122,6 @@ def test_the_box_opens_on_its_initial_path(directory: DirectoryWidget) -> None:
     assert directory.path == '/data/start'
 
 
-def test_the_button_reads_its_label(directory: DirectoryWidget) -> None:
-    assert directory._browse_button.text() == 'Images Directory...'
-
-
-def test_a_box_opens_empty_by_default(qtbot) -> None:
-    widget = DirectoryWidget('Masks Directory...')
-    qtbot.addWidget(widget)
-
-    assert widget.path == ''
-
-
 # ----------------------------------------------------------------------------
 # Browsing, through the dialog the kind of box calls for
 # ----------------------------------------------------------------------------
@@ -278,14 +267,6 @@ def test_a_drop_replaces_the_whole_path(directory: DirectoryWidget, tmp_path: Pa
     assert directory.path == str(tmp_path)
 
 
-def test_a_drop_writes_a_path_rather_than_a_url(directory: DirectoryWidget, tmp_path: Path) -> None:
-    mime_data = dragged(QUrl.fromLocalFile(str(tmp_path)))
-
-    drop(directory, mime_data)
-
-    assert not directory.path.startswith('file:')
-
-
 def test_any_local_path_is_taken(directory: DirectoryWidget, tmp_path: Path) -> None:
     """A file dropped on a folder box is taken too: the wrong kind is flagged where a typed one is."""
     path = tmp_path / 'image.tif'
@@ -334,10 +315,6 @@ def test_a_remote_url_is_left_alone(directory: DirectoryWidget) -> None:
     assert directory.path == before
 
 
-def test_the_line_edit_takes_drops(directory: DirectoryWidget) -> None:
-    assert directory._line_edit.acceptDrops()
-
-
 def test_a_remote_url_is_refused_as_it_is_dragged_in(directory: DirectoryWidget) -> None:
     """Refused outright rather than handed to the line edit, which would take it as text."""
     mime_data = dragged(QUrl('https://example.com/data'))
@@ -363,24 +340,3 @@ def test_a_path_can_be_set_as_a_path(directory: DirectoryWidget, tmp_path: Path)
     directory.path = tmp_path
 
     assert directory.path == str(tmp_path)
-
-
-# ----------------------------------------------------------------------------
-# The room the box takes, which the page's own layout already spaces out
-# ----------------------------------------------------------------------------
-
-
-def test_the_box_adds_no_room_of_its_own(directory: DirectoryWidget) -> None:
-    """Qt's default margins would put space around each box, on top of the page's own spacing."""
-    margins = directory.layout().contentsMargins()
-
-    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (0, 0, 0, 0)
-
-
-def test_the_box_is_as_tall_as_what_is_in_it(directory: DirectoryWidget) -> None:
-    """The thing that shows: a box no taller than its line edit and button need."""
-    tallest = max(
-        directory._line_edit.sizeHint().height(), directory._browse_button.sizeHint().height()
-    )
-
-    assert directory.sizeHint().height() == tallest

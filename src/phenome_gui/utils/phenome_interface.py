@@ -1,5 +1,6 @@
 from logging import getLogger
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from phenome import PhenoMe
@@ -7,25 +8,36 @@ from phenome.utils import ProgressCallback
 from torch import cuda
 
 from ..registries.models import MODEL_OPTIONS
+from ..registries.process_options import OPTIONS_LOADERS
+from ..registries.transforms import TRANSFORMS_LOADERS
 from .analysis import PhenoMeAnalysis
-from .checkpoint import CheckpointMismatch, inspect_checkpoint
+from .checkpoint import (
+    DATASET_MISMATCH,
+    CheckpointMismatch,
+    inspect_held_embeddings,
+)
 from .data_loading import DataLoading
 from .image_processing import ImageProcessing
 from .params import Params
+
+if TYPE_CHECKING:
+    import torchvision.transforms as T
 
 logger = getLogger(__name__)
 
 # What PhenoMe.process_images() defaults the arguments the GUI never sets to. A checkpoint is validated
 # against these alongside the ones a model brings, so they are written out here rather than left
 # implicit: reading a checkpoint before a run means comparing it against what the run will really use.
-# The channel mode is not among them, being the form's to set.
+# The channel mode, the resize and pad sizes and the channel normalisation are not among them, being the
+# form's to set.
 PROCESS_DEFAULTS = {
     'channels': None,
-    'resize_size': 224,
-    'pad_size': None,
     'force_rgb': True,
-    'l2_normalize_channels': True,
 }
+
+# Where an interrupted extraction writes what it computed, in the working directory. Never selected as
+# the current checkpoint: it is loaded like any other to be resumed from.
+AUTOSAVE_CHECKPOINT = 'autosave.hdf5'
 
 # The GUI names its algorithms as the papers do, where PhenoMe knows them by a plain lower case key.
 # Keyed by the EmbeddingMethod choices, so every method the form can offer has a translation.
@@ -45,6 +57,52 @@ IDENTIFIER_MIN_ROWS = 10
 # only way back from a projected point to the image it stands for: the projection carries the name of
 # the image but not its path.
 PROJECTION_INDEX_COLUMN = 'Index'
+
+# Metadata column the clustering writes its labels into, which puts them wherever the metadata goes
+CLUSTER_COLUMN = 'cluster'
+
+
+def _without_cluster(criteria: dict[str, list] | None) -> dict[str, list] | None:
+    """ A projection criterion with the cluster labels taken out of it.
+
+    Args:
+        criteria: Values picked per metadata column, or None for no criterion.
+    Returns:
+        The same criterion without the cluster labels, or None when nothing else is left of it.
+    """
+    if not criteria:
+        return None
+
+    kept = {column: values for column, values in criteria.items() if column != CLUSTER_COLUMN}
+    return kept or None
+
+
+def _coverage_mismatch(held: int, matched: int, loaded: int) -> str:
+    """ Say how a checkpoint fails to answer for the dataset loaded.
+
+    A checkpoint answers for it when it holds some images and every one of them is loaded: holding
+    only part of the dataset is what a stopped run leaves behind, and is what resuming is for.
+
+    Args:
+        held: The images the checkpoint holds.
+        matched: How many of them match a loaded file.
+        loaded: How many files are loaded.
+    Returns:
+        One sentence naming the mismatch, with the counts it was read from.
+    """
+    if held == 0:
+        return 'It holds no image yet.'
+
+    if matched == 0:
+        return (
+            f'It was filled from a different dataset: it holds {held} image(s), none of them among '
+            f'the {loaded} currently loaded.'
+        )
+
+    return (
+        f'It does not match the loaded dataset: it holds {held} image(s), {matched} of which are '
+        f'among the {loaded} currently loaded.'
+    )
 
 
 def _as_phenome_path(path: Path | None) -> str | None:
@@ -88,9 +146,15 @@ class PhenoMeInterface:
         self.outliers_df = None
         self.projection_df = None
         self.model = None
-        self.process_options = None
-        self.transforms = None
+
+        # The model and the device the network in self.model was loaded for, as (GUI name, device),
+        # or None before any load. Read to tell whether a run can reuse it or has to load again.
+        self._loaded_model: tuple[str, str] | None = None
         self.cuda_available = cuda.is_available()
+
+        # Where the last extraction wrote what it computed before it was interrupted, or None when it
+        # was not interrupted or nothing could be written. Reset by every run, and read once it has ended.
+        self.last_autosave: Path | None = None
 
         self.data_loading = DataLoading(self.pheno)
         self.image_processing = ImageProcessing(self.pheno)
@@ -152,15 +216,53 @@ class PhenoMeInterface:
         self.params.prototypes.group_by = None
         self.params.outliers.group_by = None
 
-        # Each step's feature space, put back to the one needing no properties: the parameter forms
-        # close the choice when there are none, but leave whatever was picked before standing, and
-        # the step would then be run against properties that are no longer there.
+        self._reset_sources()
+
+        logger.info('Cleared the results of the previously loaded dataset.')
+
+    def clear_analysis(self) -> None:
+        """ Drop everything computed from the embeddings, which a new run is about to replace.
+
+        The dataset and the selected checkpoint stay, as does what the pipeline holds: the run replaces
+        the embeddings and the properties itself, PhenoMe emptying them as it starts. What goes is the
+        properties frame and the analysis results read off the embeddings - the cluster labels, which
+        also leave the metadata, the retrieved prototypes and outliers, and the projection - along with
+        the parameters naming them.
+        """
+        self.properties_df = None
+        self.clustering_df = None
+        self.prototypes_df = None
+        self.outliers_df = None
+        self.projection_df = None
+
+        if self.metadata_df is not None and CLUSTER_COLUMN in self.metadata_df.columns:
+            self.metadata_df = self.metadata_df.drop(columns=CLUSTER_COLUMN)
+
+        # The cluster labels were a metadata column like any other, so the parameters may name them
+        explorer = self.params.explorer
+        if explorer.color_by == CLUSTER_COLUMN:
+            explorer.color_by = None
+        explorer.filter = _without_cluster(explorer.filter)
+        explorer.exclude = _without_cluster(explorer.exclude)
+        for section in (self.params.prototypes, self.params.outliers):
+            if section.group_by == CLUSTER_COLUMN:
+                section.group_by = None
+
+        self._reset_sources()
+
+        logger.info('Cleared the analysis results computed from the previous embeddings.')
+
+    def _reset_sources(self) -> None:
+        """ Put each step's feature space back to the one needing no properties.
+
+        The parameter forms close the choice when there are no properties, but leave whatever was
+        picked before standing, and the step would then be run against properties that are no longer
+        there.
+        """
         for section in (
             self.params.clustering, self.params.prototypes, self.params.outliers, self.params.explorer
         ):
             section.source = type(section).model_fields['source'].default
-
-        logger.info('Cleared the results of the previously loaded dataset.')
 
     # ------------------------------------------------------------------
     # Data loading
@@ -207,26 +309,96 @@ class PhenoMeInterface:
     def load_model(self) -> None:
         """ Find the real model name from the user-friendly name and load it in the PhenoMe pipeline.
 
-        A model arrives with the transformations its images are to be prepared with and the arguments
-        its embeddings are to be extracted under, both read from the registries by the name it is
-        known by. They are kept here until the images are processed, which is where they are used, so
-        both are written to the log as they arrive: what a run was made under is otherwise nowhere.
+        A model arrives with the transformations its images are to be prepared with, read from the
+        registries by the name it is known by. They are kept here until the images are processed,
+        which is where they are used, and written to the log as they arrive: what a run was made
+        under is otherwise nowhere.
+
+        Raises:
+            ValueError: The selected model is not one the registries know, so there is nothing to load.
         """
         model_name = self.params.process.model
 
         real_model_name = MODEL_OPTIONS.get(model_name)
-        if real_model_name:
-            device = self.params.process.device
-            self.model, self.transforms, self.process_options = self.image_processing.load_model(real_model_name, device=device)
-
-            logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
-            logger.info(
-                "Its images are prepared with %s, and processed with %s.",
-                'its own transformations' if self.transforms is not None else "PhenoMe's own transformations",
-                str(self.process_options) if self.process_options else 'no arguments of its own'
+        if not real_model_name:
+            raise ValueError(
+                f"Model name '{model_name}' not recognized. Available options: {list(MODEL_OPTIONS)}"
             )
-        else:
-            logger.error("Model name '%s' not recognized. Available options: %s", model_name, list(MODEL_OPTIONS.keys()))
+
+        device = self.params.process.device
+
+        # Forgotten before the load rather than after it, so a load that raises leaves nothing
+        # claiming to be loaded
+        self._loaded_model = None
+        # The transforms that come with it are built for the default sizes; each run builds its own
+        # from the sizes picked in the form, through model_transforms()
+        self.model, _, _ = self.image_processing.load_model(real_model_name, device=device)
+        self._loaded_model = (model_name, device)
+
+        logger.info("Loaded '%s' (%s) on the %s.", model_name, real_model_name, device)
+        logger.info(
+            "Its images are prepared with %s.",
+            'its own transformations' if self.model_transforms() is not None else "PhenoMe's own transformations",
+        )
+
+    @property
+    def needs_model_load(self) -> bool:
+        """ Whether the next run has to load a model before it can extract anything.
+
+        True before any load, and whenever the model or the device has been picked again since: the
+        network held is then not the one the run is to be made with.
+
+        Returns:
+            True when the loaded network does not answer for the selected model and device.
+        """
+        return self._loaded_model != (self.params.process.model, self.params.process.device)
+
+    def ensure_model_loaded(self) -> bool:
+        """ Load the selected model, unless the one already held answers for it.
+
+        Called at the start of a run rather than when a model is picked: picking is only a choice,
+        and the download is left to the moment it is needed.
+
+        Returns:
+            True when a model was loaded, False when the one held was kept.
+        Raises:
+            ValueError: The selected model is not one the registries know.
+        """
+        if not self.needs_model_load:
+            return False
+
+        self.load_model()
+        return True
+
+    def model_options(self) -> dict:
+        """ The arguments the selected model's embeddings are extracted under, read from the registry.
+
+        Read by the name selected rather than off a loaded model: they are fixed per model, and a
+        checkpoint is compared against them before the run that loads it.
+
+        Returns:
+            The model's own process_images() arguments, or none for a model the registries do not know.
+        """
+        real_model_name = MODEL_OPTIONS.get(self.params.process.model)
+        options_loader = OPTIONS_LOADERS.get(real_model_name)
+        return options_loader() if options_loader else {}
+
+    def model_transforms(self) -> "T.Compose | None":
+        """ The transforms the selected model's images are prepared with, for the sizes picked in the form.
+
+        Built anew for every run rather than kept from the load: the resize and pad sizes can be picked
+        again after the model was loaded, and the run has to be made with the ones picked last.
+
+        Returns:
+            The model's own transforms, or None for a model leaving the preparation to PhenoMe, which
+            builds its own from the same sizes, or for a model the registries do not know.
+        """
+        real_model_name = MODEL_OPTIONS.get(self.params.process.model)
+        transforms_loader = TRANSFORMS_LOADERS.get(real_model_name)
+        if transforms_loader is None:
+            return None
+
+        return transforms_loader(self.params.process.resize_size, self.params.process.pad_size)
 
     def process_arguments(self) -> dict:
         """ The arguments a run is made with: the model's own, under what the form settles.
@@ -238,40 +410,79 @@ class PhenoMeInterface:
         Returns:
             The arguments handed to PhenoMe on top of the ones the run itself names.
         """
-        return {**(self.process_options or {}), 'channel_mode': self.params.process.channel_mode}
+        process = self.params.process
+        return {
+            **self.model_options(),
+            'channel_mode': process.channel_mode,
+            'resize_size': process.resize_size,
+            'pad_size': process.pad_size,
+            'l2_normalize_channels': process.l2_normalize_channels,
+        }
 
     def processing_params(self) -> dict:
         """ The arguments an embedding run would be made under, as PhenoMe stores them in a checkpoint.
 
         The arguments the run is really made with over PhenoMe's defaults, which is how
         process_images() below hands them down: what neither the form nor the model sets, PhenoMe
-        fills in itself. Read before a run to compare a checkpoint against it, so the comparison is
-        made against what the run will really use - the channel mode included, which is the first
-        thing PhenoMe refuses to resume a checkpoint across.
+        fills in itself. Read before a resumed run to compare the held embeddings against it, so the
+        comparison is made against what the run will really use - the channel mode included, which
+        embeddings made under another could not be extended across.
 
         Returns:
             The processing parameters, whether or not a model has been loaded.
         """
         return {**PROCESS_DEFAULTS, **self.process_arguments()}
 
-    def inspect_checkpoint(self) -> CheckpointMismatch | None:
-        """ Read the checkpoint an embedding run would be written to, before the run is started.
+    def inspect_resume(self) -> CheckpointMismatch | None:
+        """ Say whether a resumed run could extend the embeddings held, before it is started.
 
-        PhenoMe raises on a checkpoint it cannot resume from, from the thread the run is made on and
-        halfway through it. Asked here beforehand, the same disagreement can be put to the user while
-        there is still a choice to make about it.
+        Asked at the run rather than when the embeddings are come by, as what it compares can change
+        after the fact: the channel mode and the image preparation can be picked again between loading
+        a checkpoint and running against it. The held embeddings are compared against the settings
+        PhenoMe kept for them, and their images against the ones loaded: an image held under a path
+        naming no loaded file would not be skipped by the run, and would be appended a second time.
 
-        Asked at the run rather than when the checkpoint is come by, as what it compares can change
-        after the fact: the model and the channel mode both reach this comparison, and either can be
-        picked again between choosing a checkpoint and running against it.
+        Images read a channel at a time are named by a list of paths, which PhenoMe cannot filter on,
+        so they are never resumed: they are reported as not matching, and processed again.
 
         Returns:
-            What the checkpoint holds that this run would not put there, or
-            None when it agrees, is empty, does not exist, or could not be read.
+            What stands in the way of resuming, or None when the run can extend the held embeddings.
         """
-        image_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
+        loaded_paths = [] if self.metadata_df is None else self.metadata_df['file_path'].tolist()
 
-        return inspect_checkpoint(self.params.paths.checkpoint, self.processing_params(), image_paths)
+        if any(isinstance(path, list | tuple) for path in loaded_paths):
+            return CheckpointMismatch(
+                DATASET_MISMATCH, 'Images read a channel at a time cannot be resumed.'
+            )
+
+        return inspect_held_embeddings(
+            self.pheno._processing_params,
+            list(self.pheno.results.img_path),
+            self.processing_params(),
+            loaded_paths,
+        )
+
+    def save_checkpoint(self, path: Path | str) -> None:
+        """ Write every result the pipeline holds - embeddings and properties - to a checkpoint.
+
+        The file can be loaded back later to pick the dataset up where it was left. It becomes the
+        selected checkpoint once written, the one the panel names.
+
+        Args:
+            path: The checkpoint file to write, replaced if it already exists.
+        Raises:
+            ValueError: There are no results to save.
+            OSError: The file could not be written.
+        """
+        self.image_processing.save_results(str(path))
+
+        # Adopted last, so a save that raised leaves the previous checkpoint selected
+        self.params.paths.checkpoint = Path(path)
+
+        logger.info(
+            "Saved the checkpoint at '%s': %d image(s), properties %s.",
+            path, self.pheno.results.n_images, 'included' if self.has_stored_properties else 'not computed'
+        )
 
     def load_checkpoint(self, path: Path | str) -> None:
         """ Read an existing checkpoint into the pipeline.
@@ -285,12 +496,24 @@ class PhenoMeInterface:
         filled under, and the disagreement is the run's to find - by which time the settings may have
         been picked again anyway.
 
+        Every image a checkpoint holds has to match a file found, though not every file found has to
+        be in it: a run stopped halfway leaves a checkpoint holding part of the dataset, which is
+        loaded as it is and resumed by a run with Resume progress. PhenoMe would otherwise load the part that matches
+        and drop the rest without a word - nothing at all for a checkpoint of another dataset - so the
+        match is checked first, and a checkpoint holding images that are not loaded, or none at all,
+        is refused before anything is read into the pipeline.
+
         Args:
             path: The checkpoint file to read.
         Raises:
+            ValueError: The checkpoint does not answer for the dataset loaded, or is not a checkpoint.
             RuntimeError: No dataset has been loaded, so there are no files to resolve against.
             OSError: The file could not be read, or is held open by another process.
         """
+        held, matched, loaded = self.image_processing.checkpoint_coverage(str(path))
+        if held == 0 or held != matched:
+            raise ValueError(_coverage_mismatch(held, matched, loaded))
+
         self.image_processing.load_results(str(path))
 
         # Read back rather than left to the next run: the frame is what every property-based step
@@ -301,8 +524,9 @@ class PhenoMeInterface:
         self.params.paths.checkpoint = Path(path)
 
         logger.info(
-            "Loaded the checkpoint at '%s': %d image(s), properties %s.",
-            path, self.pheno.results.n_images, 'included' if self.properties_df is not None else 'not yet computed'
+            "Loaded the checkpoint at '%s': %d of %d image(s), properties %s.",
+            path, self.pheno.results.n_images, loaded,
+            'included' if self.properties_df is not None else 'not yet computed'
         )
 
     @property
@@ -317,42 +541,103 @@ class PhenoMeInterface:
         """
         return self.pheno.results.has_properties
 
-    def process_images(self, progress_callback: ProgressCallback | None=None, force_reprocess: bool=False) -> None:
+    def process_images(self, progress_callback: ProgressCallback | None=None, resume: bool=False) -> None:
         """ Process the images using PhenoMe.process_images(). Saves the embeddings in-place in the PhenoMe object.
 
-        Uses the params to feed arguments.
+        Uses the params to feed arguments. The run is made in memory, writing to no checkpoint.
+
+        A resumed run keeps the embeddings held and processes only the images missing from them,
+        appending what it computes. The properties held are let go of, no longer answering for every
+        image, and are computed anew by the properties step. A resume with no image missing has nothing
+        to run, and leaves everything as it is.
+
+        An interrupted run - stopped, or failed partway - keeps what it computed, and writes it to
+        AUTOSAVE_CHECKPOINT in the working directory before the interruption is re-raised. The file is
+        not selected as the current checkpoint: it is there to be loaded and resumed from.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each batch. Called from the
-            calling thread, so a caller running this in a worker thread must not touch widgets in it.
-            force_reprocess: Whether to delete the checkpoint and process every image again. PhenoMe
-                removes the file rather than writing over it, so everything it held is lost: only ever
-                passed for a checkpoint the user has been asked about.
+                calling thread, so a caller running this in a worker thread must not touch widgets in it.
+            resume: Whether to extend the embeddings held rather than process every image again. Only
+                ever passed once inspect_resume() has found nothing in the way.
+        Raises:
+            Exception: Whatever interrupted the run, TaskStopped for a stop, once its progress is kept.
         """
-        checkpoint_path = self.params.paths.checkpoint
+        self.last_autosave = None
+
+        arguments = self.process_arguments()
+
+        if resume:
+            missing = self.n_loaded_images - self.n_processed_images
+            if missing <= 0:
+                logger.info('Nothing left to process: all %d image(s) have their embeddings.', self.n_processed_images)
+                return
+
+            held = list(self.pheno.results.img_path)
+            arguments.update(
+                append=True, exclude={'file_path': self.image_processing.loaded_paths_among(held)}
+            )
+
+            if self.has_stored_properties:
+                logger.info('Dropped the properties held, which the images about to be processed would not have.')
+            self.pheno.results.properties = []
+            self.properties_df = None
+
+            logger.info('Resuming: %d image(s) held, %d to process.', len(held), missing)
 
         # Written out rather than left to the model that was loaded: the arguments an extraction ran
         # under are what its embeddings can be read against, and they are the registry's and the
         # form's rather than only what the form shows.
         num_workers = self.params.process.num_workers
-        arguments = self.process_arguments()
         logger.info(
             "Extracting embeddings with '%s', in batches of %d, read %s, %s.",
             self.params.process.model,
             self.params.process.batch_size,
             f'in {num_workers} worker process(es)' if num_workers else 'in the calling thread',
-            str(arguments)
+            str({key: value for key, value in arguments.items() if key != 'exclude'})
         )
 
-        self.image_processing.process_images(
-            self.model,
-            checkpoint_path,
-            progress_callback=progress_callback,
-            batch_size=self.params.process.batch_size,
-            num_workers=num_workers,
-            custom_transformations=self.transforms,
-            force_reprocess=force_reprocess,
-            **arguments
+        try:
+            self.image_processing.process_images(
+                self.model,
+                progress_callback=progress_callback,
+                batch_size=self.params.process.batch_size,
+                num_workers=num_workers,
+                custom_transformations=self.model_transforms(),
+                **arguments
+            )
+        except Exception:
+            self._keep_interrupted_extraction()
+            raise
+
+    def _keep_interrupted_extraction(self) -> None:
+        """ Keep what an interrupted extraction computed, and autosave it.
+
+        PhenoMe gathers a run's results into the pipeline only once the run is done, which an
+        interruption unwinds before, so the embeddings computed so far are stacked into the results
+        here. What the pipeline then holds is written to AUTOSAVE_CHECKPOINT in the working directory,
+        replacing the one before, without being selected as the current checkpoint.
+
+        Nothing raised here may take the place of what interrupted the run: an autosave that cannot be
+        written is only logged.
+        """
+        if not self.image_processing.keep_stopped_results():
+            logger.info('The interrupted run left nothing to keep.')
+            return
+
+        path = Path.cwd() / AUTOSAVE_CHECKPOINT
+        try:
+            self.image_processing.save_results(str(path))
+        except Exception as error:  # noqa: BLE001 - see below
+            # Caught whole: this runs while another exception is on its way out, and is only worth
+            # doing as long as it never takes that exception's place
+            logger.warning("Could not autosave the interrupted run to '%s': %s", path, error)
+            return
+
+        self.last_autosave = path
+        logger.info(
+            "Autosaved %d of %d image(s) processed before the interruption to '%s'.",
+            self.n_processed_images, self.n_loaded_images, path
         )
 
     @property
@@ -367,29 +652,52 @@ class PhenoMeInterface:
         """
         return self.pheno.results.n_images > 0
 
-    def compute_properties(self, progress_callback: ProgressCallback | None=None, force_update: bool=False) -> pd.DataFrame:
+    @property
+    def n_processed_images(self) -> int:
+        """ How many images the pipeline holds embeddings for, computed here or read from a checkpoint.
+
+        Returns:
+            The number of images processed, 0 before any run or load.
+        """
+        return self.pheno.results.n_images
+
+    @property
+    def n_loaded_images(self) -> int:
+        """ How many images the dataset loaded holds.
+
+        Returns:
+            The number of rows of the metadata, 0 when no dataset is loaded.
+        """
+        return 0 if self.metadata_df is None else len(self.metadata_df)
+
+    @property
+    def has_all_embeddings(self) -> bool:
+        """ Whether every image loaded has its embeddings, rather than only part of them.
+
+        Part of them is what a checkpoint left by a stopped run holds, which the analysis steps can
+        run on as it is but which the next run resumes to fill in.
+
+        Returns:
+            True when the pipeline holds embeddings for at least as many images as are loaded.
+        """
+        return self.has_processed_images and self.n_processed_images >= self.n_loaded_images
+
+    def compute_properties(self, progress_callback: ProgressCallback | None=None) -> pd.DataFrame:
         """ Compute the per-image properties using PhenoMe.compute_properties(). Stores them in self.properties_df.
 
-        Uses the params to feed arguments.
+        Uses the params to feed arguments. Computed in memory for every image, whatever properties
+        were held before.
 
         Args:
             progress_callback: Hook called as (current, total, desc) after each image. Called from the
                 calling thread, so a caller running this in a worker thread must not touch widgets in it.
-            force_update: Whether to drop the properties the checkpoint holds and compute them all
-                again, which a preset computed over a checkpoint filled under another one needs:
-                PhenoMe otherwise resumes, and warns about the property keys it cannot find. Only the
-                properties are cleared, the embeddings in the same file being left where they are.
         Returns:
             One row per image, holding the image path and the computed properties.
         """
-        checkpoint_path = self.params.paths.checkpoint
-
         # PhenoMe only knows its presets by their lower case name, while the GUI displays them capitalized
         preset = self.params.properties.preset.lower()
 
-        self.properties_df = self.image_processing.compute_properties(
-            preset, checkpoint_path, progress_callback=progress_callback, force_update=force_update
-        )
+        self.properties_df = self.image_processing.compute_properties(preset, progress_callback=progress_callback)
         return self.properties_df
 
     # ------------------------------------------------------------------
@@ -438,7 +746,7 @@ class PhenoMeInterface:
 
         # PhenoMe leaves the label empty for the DBSCAN noise points, which would turn the whole column
         # to floats and show the labels as '0.0'. The nullable integer type keeps them whole.
-        self.metadata_df['cluster'] = self.metadata_df['file_path'].map(labels).astype('Int64')
+        self.metadata_df[CLUSTER_COLUMN] = self.metadata_df['file_path'].map(labels).astype('Int64')
 
     def get_prototype_images(self) -> pd.DataFrame:
         """ Find the prototype images of each group using PhenoMe.find_prototypes(). Stores them in self.prototypes_df.

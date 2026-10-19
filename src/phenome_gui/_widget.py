@@ -91,6 +91,13 @@ class PhenoMeWidget(QWidget):
         self.loading_panel.results_cleared.connect(self.analysis_panel.clear_results)
         self.loading_panel.results_cleared.connect(self._on_results_cleared)
 
+        # Processing the images again replaces the embeddings the analysis results were computed
+        # from, so those go too: the retrieved images, the cluster labels in the metadata table, and
+        # whatever the explorer drew. The dataset itself stays.
+        self.processing_panel.analysis_cleared.connect(self.analysis_panel.clear_results)
+        self.processing_panel.analysis_cleared.connect(self.loading_panel.refresh_table)
+        self.processing_panel.analysis_cleared.connect(self._on_analysis_cleared)
+
         # A load empties the pipeline on a worker thread, so the steps that run against it hold off
         # until it has finished rather than run against what is being taken away underneath them
         self.loading_panel.loading_changed.connect(self._on_loading_changed)
@@ -128,6 +135,15 @@ class PhenoMeWidget(QWidget):
         """
         self._image_viewer.clear()
 
+        if self._explorer_window is not None:
+            self._explorer_window.clear_results()
+
+    def _on_analysis_cleared(self) -> None:
+        """ Let go of what the explorer drew from embeddings a new run is about to replace.
+
+        The image on the napari canvas stays, being an image of the dataset still loaded rather than
+        anything computed from it. The explorer is only reached for once it has been opened.
+        """
         if self._explorer_window is not None:
             self._explorer_window.clear_results()
 

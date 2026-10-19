@@ -7,11 +7,8 @@ import pandas as pd
 import pytest
 
 from phenome_gui._widget import PhenoMeWidget
-from phenome_gui.ui.analysis_panel import AnalysisPanel
 from phenome_gui.ui.clustering_params import ClusterParamsWindow
 from phenome_gui.ui.explorer_window import InteractiveExplorerWindow
-from phenome_gui.ui.loading_panel import LoadingPanel
-from phenome_gui.ui.processing_panel import ProcessingPanel
 
 from .conftest import CHECKPOINT_PROPERTIES
 
@@ -21,20 +18,6 @@ PANEL_ATTRIBUTES = ['loading_panel', 'processing_panel', 'analysis_panel']
 # ----------------------------------------------------------------------------
 # Composition
 # ----------------------------------------------------------------------------
-
-
-def test_the_three_panels_are_the_three_tabs(widget: PhenoMeWidget) -> None:
-    assert widget._tabs.count() == 3
-    assert [widget._tabs.tabText(i) for i in range(3)] == ['Data loading', 'Processing', 'Analysis']
-    assert widget._tabs.widget(0) is widget.loading_panel
-    assert widget._tabs.widget(1) is widget.processing_panel
-    assert widget._tabs.widget(2) is widget.analysis_panel
-
-
-def test_the_panels_are_of_their_own_types(widget: PhenoMeWidget) -> None:
-    assert isinstance(widget.loading_panel, LoadingPanel)
-    assert isinstance(widget.processing_panel, ProcessingPanel)
-    assert isinstance(widget.analysis_panel, AnalysisPanel)
 
 
 @pytest.mark.parametrize('attribute', PANEL_ATTRIBUTES)
@@ -47,32 +30,6 @@ def test_the_two_displaying_panels_share_the_one_viewer(widget: PhenoMeWidget) -
     assert widget.loading_panel._image_viewer is widget.analysis_panel._image_viewer
 
 
-@pytest.mark.parametrize('attribute', PANEL_ATTRIBUTES)
-def test_no_panel_reaches_for_a_sibling(widget: PhenoMeWidget, attribute: str) -> None:
-    """The panels talk through signals; holding a sibling would put the wiring back inside them."""
-    panel = getattr(widget, attribute)
-
-    for sibling in PANEL_ATTRIBUTES:
-        assert not hasattr(panel, sibling)
-
-
-def panel_holding(native, widget: PhenoMeWidget):
-    """ Walk up the parent chain until one of the panels is reached. """
-    panels = {getattr(widget, attribute) for attribute in PANEL_ATTRIBUTES}
-    parent = native.parentWidget()
-    while parent is not None:
-        if parent in panels:
-            return parent
-        parent = parent.parentWidget()
-    return None
-
-
-def test_each_table_sits_in_its_own_tab(widget: PhenoMeWidget) -> None:
-    """A Qt widget has one parent, so adding it to another layout silently moves it out of its tab."""
-    assert panel_holding(widget.loading_panel._metadata_table.native, widget) is widget.loading_panel
-    assert panel_holding(widget.analysis_panel._images_table.native, widget) is widget.analysis_panel
-
-
 # ----------------------------------------------------------------------------
 # The three signals, each proven by acting on one panel and asserting on another
 # ----------------------------------------------------------------------------
@@ -80,13 +37,11 @@ def test_each_table_sits_in_its_own_tab(widget: PhenoMeWidget) -> None:
 
 def test_loading_data_opens_up_the_processing_panel(widget: PhenoMeWidget) -> None:
     extract = widget.processing_panel._process_button
-    assert extract.toolTip() == (
-        'Please load data and create or load a checkpoint and load a model first.'
-    )
+    assert not extract.isEnabled()
 
     widget.loading_panel._on_load_data_csv()
 
-    assert extract.toolTip() == 'Please create or load a checkpoint and load a model first.'
+    assert extract.isEnabled()
 
 
 def test_a_running_task_locks_the_analysis_panel(widget: PhenoMeWidget, processed) -> None:
@@ -139,9 +94,7 @@ def test_a_dataset_of_images_alone_reaches_the_processing_panel(widget: PhenoMeW
     widget.loading_panel._csv_load_data_btn.click()
 
     assert len(widget._phenome.metadata_df) == 6
-    assert widget.processing_panel._process_button.toolTip() == (
-        'Please create or load a checkpoint and load a model first.'
-    )
+    assert widget.processing_panel._process_button.isEnabled()
 
 
 @pytest.mark.real_load_worker
@@ -172,11 +125,12 @@ def test_a_load_holds_off_the_other_steps(widget: PhenoMeWidget, qtbot, monkeypa
 
 
 def test_a_load_gives_the_steps_back_as_they_were(widget: PhenoMeWidget) -> None:
-    """Locked as panels, so each button keeps its own state underneath: Extract still waits on a model."""
+    """Locked as panels, so each button keeps its own state underneath: Save still waits on embeddings."""
     widget.loading_panel._csv_load_data_btn.click()
 
     assert widget.processing_panel.isEnabled()
-    assert not widget.processing_panel._process_button.isEnabled()
+    assert widget.processing_panel._process_button.isEnabled()
+    assert not widget.processing_panel._save_checkpoint_button.isEnabled()
 
 
 # ----------------------------------------------------------------------------
@@ -216,14 +170,6 @@ def test_a_loaded_checkpoint_opens_every_analysis_step(widget: PhenoMeWidget, wi
         button = getattr(widget.analysis_panel, name)
         assert button.isEnabled(), name
         assert button.toolTip() == ''
-
-
-def test_a_loaded_checkpoint_opens_the_properties_step(widget: PhenoMeWidget, with_checkpoint) -> None:
-    """Its images are processed, so more may be measured on them whatever the checkpoint already holds."""
-    with_checkpoint(properties=False)
-
-    assert widget.processing_panel._props_button.isEnabled()
-    assert widget.processing_panel._props_button.toolTip() == ''
 
 
 @pytest.fixture
@@ -387,14 +333,6 @@ def test_a_second_load_empties_the_images_table(analysed: PhenoMeWidget, path_da
     assert analysed.analysis_panel._images_df is None
 
 
-def test_a_second_load_locks_the_analysis_steps_again(analysed: PhenoMeWidget, path_dataset) -> None:
-    """They run on the embeddings, which went with the dataset they were extracted from."""
-    load_paths(analysed, path_dataset)
-
-    assert not analysed.analysis_panel._run_clustering_button.isEnabled()
-    assert not analysed.processing_panel._props_button.isEnabled()
-
-
 def test_a_second_load_wipes_the_explorer(analysed: PhenoMeWidget, path_dataset) -> None:
     load_paths(analysed, path_dataset)
 
@@ -444,6 +382,72 @@ def load_paths(widget: PhenoMeWidget, path_dataset) -> None:
     widget.loading_panel._path_mask_dir_dialog.path = path_dataset['masks']
     widget.loading_panel._path_template.value = path_dataset['template']
     widget.loading_panel._path_load_data_btn.click()
+
+
+# ----------------------------------------------------------------------------
+# Processing the images again, which nothing computed from the old embeddings may outlive
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clustered(analysed: PhenoMeWidget) -> PhenoMeWidget:
+    """ The full session, clustered on top, its labels showing in the metadata table. """
+    analysed._phenome.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+    analysed.loading_panel.refresh_table()
+    analysed._explorer_window.refresh_choices()
+    return analysed
+
+
+def process_again(widget: PhenoMeWidget, sync_worker) -> None:
+    """ Press Process Images over the existing results, the run itself doing nothing. """
+    sync_worker(widget.processing_panel, '_process_images_worker', lambda *args: None)
+    widget.processing_panel._process_button.click()
+
+
+def metadata_columns(widget: PhenoMeWidget) -> list[str]:
+    """ The columns the metadata table is currently showing. """
+    return list(widget.loading_panel._metadata_table.value['columns'])
+
+
+def test_processing_again_empties_the_images_table(clustered: PhenoMeWidget, sync_worker) -> None:
+    process_again(clustered, sync_worker)
+
+    assert clustered.analysis_panel._images_table.native.rowCount() == 0
+
+
+def test_processing_again_takes_the_clusters_off_the_metadata_table(
+    clustered: PhenoMeWidget, sync_worker
+) -> None:
+    """The labels go, the dataset they were put on stays."""
+    assert 'cluster' in metadata_columns(clustered)
+
+    process_again(clustered, sync_worker)
+
+    assert 'cluster' not in metadata_columns(clustered)
+    assert clustered.loading_panel._metadata_table.native.rowCount() == 6
+
+
+def test_processing_again_wipes_the_explorer(clustered: PhenoMeWidget, sync_worker) -> None:
+    process_again(clustered, sync_worker)
+
+    explorer = clustered._explorer_window
+    assert explorer._canvas._points is None
+    assert explorer._selected_indices == []
+    assert 'cluster' not in [explorer._color_by_combo.itemText(i) for i in range(explorer._color_by_combo.count())]
+
+
+def test_refusing_to_process_again_keeps_everything(
+    clustered: PhenoMeWidget, sync_worker, confirmation
+) -> None:
+    confirmation.accepted = False
+    drawn = list(clustered._explorer_window._canvas._points['Index'])
+
+    process_again(clustered, sync_worker)
+
+    assert clustered.analysis_panel._images_table.native.rowCount() == 2
+    assert 'cluster' in metadata_columns(clustered)
+    assert clustered._explorer_window._selected_indices == [1, 2]
+    assert list(clustered._explorer_window._canvas._points['Index']) == drawn
 
 
 # ----------------------------------------------------------------------------

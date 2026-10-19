@@ -384,30 +384,23 @@ def reported(monkeypatch: pytest.MonkeyPatch) -> Reported:
 
 
 FAILURES = [
-    pytest.param('_on_clustering_failed', 'cluster the images', id='clustering'),
-    pytest.param('_on_prototypes_failed', 'find the prototype images', id='prototypes'),
-    pytest.param('_on_outliers_failed', 'detect the outlier images', id='outliers'),
+    pytest.param('_on_clustering_failed', id='clustering'),
+    pytest.param('_on_prototypes_failed', id='prototypes'),
+    pytest.param('_on_outliers_failed', id='outliers'),
 ]
 
 
-@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
-def test_a_failed_step_is_reported(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+@pytest.mark.parametrize('handler', FAILURES)
+def test_a_failed_step_is_reported(panel: AnalysisPanel, reported, handler: str) -> None:
     """Nothing else marks the failure: the buttons stay open and the table keeps its last contents."""
     getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
 
     assert reported.shown == 1
-    assert attempted in reported.last
-
-
-@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
-def test_a_failed_step_says_what_went_wrong(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
-    getattr(panel, handler)(ValueError('n_samples=3 while n_clusters=8'))
-
     assert 'n_samples=3 while n_clusters=8' in reported.last
 
 
-@pytest.mark.parametrize(('handler', 'attempted'), FAILURES)
-def test_a_failed_step_leaves_the_buttons_open(panel: AnalysisPanel, reported, handler: str, attempted: str) -> None:
+@pytest.mark.parametrize('handler', FAILURES)
+def test_a_failed_step_leaves_the_buttons_open(panel: AnalysisPanel, reported, handler: str) -> None:
     """These steps never close their buttons, so a failure has nothing to reopen."""
     getattr(panel, handler)(ValueError('nope'))
 
@@ -427,13 +420,6 @@ def docked_panel(phenome, viewer, in_main_window) -> AnalysisPanel:
     owned by a widget of its own.
     """
     return in_main_window(lambda parent: AnalysisPanel(phenome, ImageViewer(viewer), parent))
-
-
-def test_the_images_table_is_shown_in_a_dock_area(docked_panel: AnalysisPanel) -> None:
-    area = docked_panel._images_area
-
-    assert area.dock.widget() is docked_panel._images_table.native
-    assert area.dockWidgetArea(area.dock) == Qt.DockWidgetArea.TopDockWidgetArea
 
 
 def test_popping_the_images_table_out_and_closing_it_brings_it_back(

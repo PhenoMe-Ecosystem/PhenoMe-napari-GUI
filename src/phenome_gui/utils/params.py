@@ -56,10 +56,10 @@ class PathParams(ParamsBase):
     `template` is a filename pattern rather than a path, and is typed as such so it is never coerced
     into a Path. Empty means no metadata, the same as an empty metadata file.
 
-    `checkpoint` is None until one has been created or loaded, and goes back to None whenever another
+    `checkpoint` is None until one has been saved or loaded, and goes back to None whenever another
     dataset is loaded: a checkpoint holds the results of the images it was filled from and answers for
-    no others. Nothing is processed while it is None, which is the whole of the gate - the embeddings
-    and the properties are written to it, so a run without one would have nowhere to put them.
+    no others. It names the file last saved or loaded, which no run ever writes to: a run is made in
+    memory, and an interrupted one is autosaved to a file of its own that is not selected here.
     """
 
     images: Path | None = None
@@ -87,6 +87,18 @@ class ProcessParams(ParamsBase):
     run waits on all of them before its first batch, which is most of the wait before a run appears to
     start. Worth raising where starting a process is cheap and the images are slow to read, which is
     why the choice is offered rather than settled here.
+
+    `resume_progress` says whether a run keeps the embeddings already held - read from a checkpoint or
+    left by a stopped run - and processes only the images missing from them, rather than every image
+    again. Either way the run is made in memory; offered in the GUI as the "Resume progress" checkbox.
+
+    `resize_size` and `pad_size` are how an image is brought to the model's input size: padded up to
+    `pad_size` on each side when smaller, then resized to `resize_size` square. None skips the step,
+    which is what PhenoMe reads as no padding or no resizing. They apply to every model, the ones
+    preparing their images themselves being given the same two values.
+
+    `l2_normalize_channels` scales each channel's embedding to unit length before they are joined, so
+    every channel weighs the same in a 'split' embedding. Ignored in 'combined' mode.
     """
 
     model: str = 'DINOv2 - Small'
@@ -94,6 +106,10 @@ class ProcessParams(ParamsBase):
     channel_mode: ChannelMode = 'split'
     batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0, le=MAX_WORKERS)
+    resume_progress: bool = False
+    resize_size: int | None = Field(default=224, ge=1)
+    pad_size: int | None = Field(default=None, ge=1)
+    l2_normalize_channels: bool = False
 
 
 class PropertiesParams(ParamsBase):
@@ -101,9 +117,13 @@ class PropertiesParams(ParamsBase):
 
     The preset is stored capitalised as the GUI displays it; PhenoMe knows its presets by their lower
     case name, and the interface folds the case on the way down.
+
+    `compute` says whether a run computes the properties once the embeddings are extracted, the two
+    being one task in the GUI.
     """
 
     preset: PropertiesPreset = 'Basic'
+    compute: bool = True
 
 
 class ClusteringParams(ParamsBase):
