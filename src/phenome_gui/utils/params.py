@@ -62,9 +62,9 @@ class PathParams(ParamsBase):
     memory, and an interrupted one is autosaved to a file of its own that is not selected here.
     """
 
-    images: Path | None = Path("/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_images")
-    masks: Path | None = Path("/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/Ecoli_masks")
-    metadata: Path | None = Path("/Users/renaud/datasets/PhenoMe/toy_dataset/Ecoli_toy_example/metadata.csv")
+    images: Path | None = None
+    masks: Path | None = None
+    metadata: Path | None = None
     template: str | None = '.../(drug_name)/(time)/(filename).*'
     checkpoint: Path | None = None
 
