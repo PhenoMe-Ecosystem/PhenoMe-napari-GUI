@@ -1,7 +1,7 @@
 name: phenome-gui
 display_name: PhenoMe GUI
 # use 'hidden' to remove plugin from napari hub search results, switch to 'public' to make it visible
-visibility: hidden
+visibility: public
 # see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
 # categories: []
 contributions:
