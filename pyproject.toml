@@ -1,6 +1,6 @@
 [project]
 name = "phenome-gui"
-version = "0.2.2"
+version = "0.2.3"
 description = "GUI integration of the PhenoMe phenotyping framework"
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,7 @@ authors = [
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Framework :: napari",
-    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",

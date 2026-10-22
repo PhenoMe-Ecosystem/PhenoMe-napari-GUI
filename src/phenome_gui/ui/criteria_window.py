@@ -9,6 +9,7 @@ import logging
 
 import pandas as pd
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QBrush, QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -18,9 +19,12 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
+
+from .styles import COLOR_OK
 
 logger = logging.getLogger("main_logger")
 
@@ -31,14 +35,21 @@ class _CriteriaWindow(QDialog):
     One field at a time: the values it holds are listed on the left, the ones already picked on the
     right, and the two buttons move a selection from one list to the other. The picks are kept per
     field rather than in one heap, so leaving a field and coming back to it shows what was picked
-    there - which is also the shape PhenoMe wants them in, a mapping of field to values.
+    there - which is also the shape PhenoMe wants them in, a mapping of field to values. A field holding
+    picks has its row in the field list shown in green, with the number of values picked beside its
+    name, so the picks of the fields not shown are not out of sight.
+
+    Each row of the field list carries the field's name as its data, its text being free to say more:
+    the name is what every lookup reads.
 
     Never used directly: the two subclasses below name it, and nothing else about them differs.
     """
 
-    # What the window is called, and what the list of picked values is headed with
+    # What the window is called, what the list of picked values is headed with, and what is said of
+    # the values picked on a field, beside its name in the field list
     WINDOW_TITLE = ''
     PICKED_LABEL = ''
+    PICKED_VERB = ''
 
     def __init__(
         self,
@@ -81,9 +92,14 @@ class _CriteriaWindow(QDialog):
         field_row = QHBoxLayout()
         field_row.addWidget(QLabel("Field: "))
         self._field_combo = QComboBox()
-        self._field_combo.addItems(self._columns)
+        for field in self._columns:
+            self._field_combo.addItem(field, field)
         self._field_combo.setEnabled(bool(self._columns))
         self._field_combo.setToolTip('' if self._columns else 'Please load data first.')
+
+        # Drawn by a plain item delegate, which paints a row's own background. The macOS style draws
+        # the list as a native menu otherwise, and leaves out the colour marking a field holding picks.
+        self._field_combo.setItemDelegate(QStyledItemDelegate(self._field_combo))
         field_row.addWidget(self._field_combo, 1)
         layout.addLayout(field_row)
 
@@ -112,7 +128,8 @@ class _CriteriaWindow(QDialog):
         for values in (self._values_list, self._picked_list):
             values.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
-        self._field_combo.currentTextChanged.connect(self._on_field_changed)
+        # On the row rather than on its text, which changes whenever the field's picks are counted
+        self._field_combo.currentIndexChanged.connect(self._on_field_changed)
         self._add_button.clicked.connect(self._on_add_clicked)
         self._remove_button.clicked.connect(self._on_remove_clicked)
         self._clear_button.clicked.connect(self._on_clear_clicked)
@@ -147,7 +164,7 @@ class _CriteriaWindow(QDialog):
             The distinct values of the field, as the metadata holds them, empty when there is
             no field or no data.
         """
-        field = self._field_combo.currentText()
+        field = self._current_field()
         if not field or self._metadata_df is None or field not in self._metadata_df.columns:
             return []
 
@@ -167,7 +184,7 @@ class _CriteriaWindow(QDialog):
         by equality against a metadata that holds the cluster labels as numbers: a cluster picked as
         '1' would go down as text and match no image at all.
         """
-        picked = self._criteria.get(self._field_combo.currentText(), [])
+        picked = self._criteria.get(self._current_field(), [])
 
         self._values_list.clear()
         for value in self._field_values():
@@ -178,9 +195,38 @@ class _CriteriaWindow(QDialog):
         for value in picked:
             self._add_value(self._picked_list, value)
 
-        # Closed when there is nothing anywhere to let go of, which is also the only word the form
-        # gives on whether the fields it is not showing hold anything
+        # Closed when there is nothing anywhere to let go of
         self._clear_button.setEnabled(bool(self.get_criteria()))
+
+        self._refresh_field_marks()
+
+    def _current_field(self) -> str:
+        """ The name of the field currently shown, read from its row rather than from the text it shows.
+
+        Returns:
+            The field's name, empty when there is no field to show.
+        """
+        return self._field_combo.currentData() or ''
+
+    def _refresh_field_marks(self) -> None:
+        """ Mark every field holding picks: its row in green, and the number of values picked beside its name.
+
+        The other fields are shown by their bare name, as the style draws them. Gone over whole after
+        every change, the fields being a handful: a pick, a removal and a clear can each change which
+        fields hold picks, the clear all of them at once.
+        """
+        for index in range(self._field_combo.count()):
+            field = self._field_combo.itemData(index)
+            n_picked = len(self._criteria.get(field, []))
+
+            label = field
+            if n_picked:
+                label = f"{field} ({n_picked} {'value' if n_picked == 1 else 'values'} {self.PICKED_VERB})"
+
+            self._field_combo.setItemText(index, label)
+            self._field_combo.setItemData(
+                index, QBrush(QColor(COLOR_OK)) if n_picked else None, Qt.ItemDataRole.BackgroundRole
+            )
 
     def _add_value(self, values: QListWidget, value) -> None:
         """ List one value, keeping it alongside the text it is shown as.
@@ -230,7 +276,7 @@ class _CriteriaWindow(QDialog):
         if not selected:
             return
 
-        field = self._field_combo.currentText()
+        field = self._current_field()
         picked = self._criteria.setdefault(field, [])
 
         if pick:
@@ -263,6 +309,7 @@ class FilterWindow(_CriteriaWindow):
 
     WINDOW_TITLE = 'Filter Images'
     PICKED_LABEL = 'Filtered Values'
+    PICKED_VERB = 'filtered'
 
 
 class ExcludeWindow(_CriteriaWindow):
@@ -274,3 +321,4 @@ class ExcludeWindow(_CriteriaWindow):
 
     WINDOW_TITLE = 'Exclude Images'
     PICKED_LABEL = 'Excluded Values'
+    PICKED_VERB = 'excluded'

@@ -39,6 +39,8 @@ MIN_CONTINUOUS = 8
 # this surface, so the two go together.
 SURFACE = '#1a1a19'
 
+LEGEND = "#272726a4"
+
 # Axes and labels, kept recessive so the points are what is read first
 AXIS_COLOUR = '#898781'
 
@@ -418,6 +420,7 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
 
         self._plot = self.addPlot(row=0, col=0, viewBox=self._viewbox)
         self._legend = self._plot.addLegend(offset=(-10, 10))
+        self._legend.setBrush(pg.mkBrush(LEGEND))
 
         # Floated over the plot when a measured column is drawn, and taken off again when it is not
         self._colorbar = None
