@@ -39,9 +39,11 @@ pip install "napari[all]" phenome-gui
 
 ## Usage
 
-A [manual](docs/README.md) is provided for more specific explanations.
-
 This napari plugin integrates the [PhenoMe] phenotyping pipeline in a user-friendly graphical interface. To summarize, PhenoMe is a framework for phenotyping biological image data using embeddings extracted using vision models and physical properties. 
+
+As a first step, take a look at the [tutorial](docs/TUTORIAL.md) for a simple step-by-step explanation.
+
+A [manual](docs/MANUAL.md) is provided for more specific explanations about every functionality.
 
 This plugin allows users to easily execute the PhenoMe pipeline in a guided manner, following the three main steps:
 
