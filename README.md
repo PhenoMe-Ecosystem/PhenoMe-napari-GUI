@@ -1,6 +1,6 @@
 # PhenoMe GUI - A napari plugin
 
-[![License MIT](https://img.shields.io/pypi/l/phenome-gui.svg?color=green)](https://github.com/PhenoMe-Ecosystem/PhenoMe-GUI/raw/main/LICENSE)
+[![License MIT](https://img.shields.io/pypi/l/phenome-gui.svg?color=green)](https://github.com/PhenoMe-Ecosystem/PhenoMe-napari-GUI/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/phenome-gui.svg?color=green)](https://pypi.org/project/phenome-gui)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/phenome-gui)](https://napari-hub.org/plugins/phenome-gui)
 [![npe2](https://img.shields.io/badge/plugin-npe2-blue?link=https://napari.org/stable/plugins/index.html)](https://napari.org/stable/plugins/index.html)

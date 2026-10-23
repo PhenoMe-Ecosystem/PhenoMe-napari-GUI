@@ -31,7 +31,7 @@ dependencies = [
     "magicgui",
     "qtpy",
     "scikit-image",
-    "phenome @ git+ssh://git@github.com/AAitorG/PhenoMe.git", # temporaire, enlever si sur PyPI 
+    "phenome",
     "stedfm @ git+https://github.com/FLClab/STED-FM.git", # temporaire, enlever si sur PyPI
     "pydantic>=2",
     "pyqtgraph>=0.14.0",
@@ -67,10 +67,6 @@ constraint-dependencies = ["numpy<2.5"]
 members = [
     "external/PhenoMe",
 ]
-
-[tool.uv.sources]
-phenome = { workspace = true, editable = true }
-stedfm = { git = "https://github.com/FLClab/STED-FM.git" }
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13"]
