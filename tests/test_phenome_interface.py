@@ -814,6 +814,59 @@ def test_a_refused_checkpoint_leaves_the_results_alone(
     assert loaded.params.paths.checkpoint == tmp_path / 'kept.hdf5'
 
 
+def with_analysis_results(interface: PhenoMeInterface) -> None:
+    """ Leave results of every analysis step in an interface, as though each had been run on its embeddings. """
+    paths = list(interface.metadata_df['file_path'])
+    interface.clustering_df = pd.DataFrame({'image_path': paths, 'cluster': [0, 1] * 3})
+    interface.metadata_df['cluster'] = pd.array([0, 1] * 3, dtype='Int64')
+    interface.prototypes_df = pd.DataFrame({'image_path': paths[:2]})
+    interface.outliers_df = pd.DataFrame({'image_path': paths[2:3]})
+    interface.projection_df = pd.DataFrame({'Component 1': [0.0], 'Component 2': [0.0]})
+
+
+def test_a_loaded_checkpoint_drops_what_the_previous_embeddings_gave(
+    loaded: PhenoMeInterface, written_checkpoint
+) -> None:
+    """Computed from embeddings the checkpoint has just replaced, so none of it answers for the new ones."""
+    path = written_checkpoint(loaded)
+    with_analysis_results(loaded)
+
+    loaded.load_checkpoint(path)
+
+    assert loaded.clustering_df is None
+    assert loaded.prototypes_df is None
+    assert loaded.outliers_df is None
+    assert loaded.projection_df is None
+    assert 'cluster' not in loaded.metadata_df.columns
+
+
+def test_a_loaded_checkpoint_still_brings_its_properties(loaded: PhenoMeInterface, written_checkpoint) -> None:
+    """Dropped with the analysis results, then read back from the checkpoint."""
+    path = written_checkpoint(loaded, properties=True)
+    with_analysis_results(loaded)
+    loaded.properties_df = pd.DataFrame({'stale': [0.0] * 6})
+
+    loaded.load_checkpoint(path)
+
+    assert set(CHECKPOINT_PROPERTIES) <= set(loaded.properties_df.columns)
+    assert 'stale' not in loaded.properties_df.columns
+
+
+def test_a_refused_checkpoint_keeps_the_analysis_results(
+    loaded: PhenoMeInterface, written_checkpoint, copied_dataset
+) -> None:
+    path = written_checkpoint(loaded, name='other.hdf5')
+    load_copy(loaded, copied_dataset(renamed=True))
+    with_analysis_results(loaded)
+
+    with pytest.raises(ValueError):
+        loaded.load_checkpoint(path)
+
+    assert loaded.clustering_df is not None
+    assert loaded.projection_df is not None
+    assert 'cluster' in loaded.metadata_df.columns
+
+
 def test_a_checkpoint_of_more_images_than_are_loaded_is_refused(
     loaded: PhenoMeInterface, written_checkpoint, copied_dataset
 ) -> None:

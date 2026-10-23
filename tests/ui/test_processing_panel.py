@@ -1615,6 +1615,31 @@ def reading(panel: ProcessingPanel, monkeypatch: pytest.MonkeyPatch):
     return _stub
 
 
+def test_a_loaded_checkpoint_drops_the_analysis_before_it_is_announced(
+    loaded: ProcessingPanel, picking, reading, tmp_path: Path
+) -> None:
+    """Whoever shows the old results lets go of them before the steps reopen on the new embeddings."""
+    reading()
+    picking(tmp_path / 'previous.hdf5')
+    heard = []
+    loaded.analysis_cleared.connect(lambda: heard.append('cleared'))
+    loaded.checkpoint_loaded.connect(lambda: heard.append('loaded'))
+
+    loaded._load_checkpoint_button.click()
+
+    assert heard == ['cleared', 'loaded']
+
+
+def test_a_checkpoint_that_will_not_open_drops_nothing(
+    loaded: ProcessingPanel, picking, reading, reported, tmp_path: Path, qtbot
+) -> None:
+    reading(raises=OSError('locked'))
+    picking(tmp_path / 'previous.hdf5')
+
+    with qtbot.assertNotEmitted(loaded.analysis_cleared):
+        loaded._load_checkpoint_button.click()
+
+
 def test_a_loaded_checkpoint_is_named_on_the_label(
     loaded: ProcessingPanel, picking, reading, tmp_path: Path
 ) -> None:

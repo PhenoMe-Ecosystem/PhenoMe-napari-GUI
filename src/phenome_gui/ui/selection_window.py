@@ -139,7 +139,7 @@ class SelectionWindow(QDialog):
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save text File As",
-            "",
+            "selection_indices.txt",
             "Text file (*.txt)"
         )
 
@@ -155,7 +155,7 @@ class SelectionWindow(QDialog):
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save CSV File As",
-            "",
+            "selection_data.csv",
             "CSV file (*.csv)"
         )
 

@@ -12,6 +12,7 @@ from phenome_gui.ui.prototypes_outliers_params import (
     OutliersParamsWindow,
     PrototypesParamsWindow,
 )
+from phenome_gui.ui.styles import GROUP_STYLESHEETS
 from phenome_gui.utils.image_viewer import ImageViewer
 
 
@@ -405,6 +406,95 @@ def test_a_failed_step_leaves_the_buttons_open(panel: AnalysisPanel, reported, h
     getattr(panel, handler)(ValueError('nope'))
 
     assert all(button.isEnabled() for button in buttons(panel))
+
+
+# ----------------------------------------------------------------------------
+# The outline of each group, following the step it holds
+# ----------------------------------------------------------------------------
+
+
+def outline(group) -> str:
+    """ How a group is outlined: 'ok', 'wait', 'bad', or 'none' for one left unstyled. """
+    names = {
+        GROUP_STYLESHEETS['STYLE_OK']: 'ok',
+        GROUP_STYLESHEETS['STYLE_WAIT']: 'wait',
+        GROUP_STYLESHEETS['STYLE_ERROR']: 'bad',
+    }
+    return names.get(group.styleSheet(), 'none')
+
+
+@pytest.mark.parametrize('group', ['_clustering_group', '_images_group'])
+def test_both_groups_are_named_for_the_outline_to_reach_them(panel: AnalysisPanel, group: str) -> None:
+    """The outlines only match a group of that name, so a group without it is never outlined at all."""
+    assert getattr(panel, group).objectName() == 'parentGroup'
+
+
+def test_a_clustering_waits_then_is_done(panel: AnalysisPanel, sync_worker, qtbot) -> None:
+    during = []
+    paths = list(panel._phenome.metadata_df['file_path'])
+
+    def _cluster(**kwargs) -> pd.DataFrame:
+        during.append(outline(panel._clustering_group))
+        return pd.DataFrame({'image_path': paths, 'cluster': [0, 1] * 3})
+
+    panel._phenome.pheno.compute_clustering = _cluster
+    sync_worker(panel, '_compute_clustering_worker', panel._phenome.compute_clustering)
+
+    panel._on_run_clustering_clicked()
+
+    assert during == ['wait']
+    assert outline(panel._clustering_group) == 'ok'
+
+
+@pytest.mark.parametrize(('form', 'handler', 'worker', 'call', 'pheno_method'), [
+    (PrototypesParamsWindow, '_on_prototype_clicked', '_prototypes_worker', 'get_prototype_images', 'find_prototypes'),
+    (OutliersParamsWindow, '_on_outlier_clicked', '_outliers_worker', 'get_outlier_images', 'detect_outliers'),
+])
+@pytest.mark.parametrize('n_found', [3, 0])
+def test_a_retrieval_waits_then_is_done_whatever_it_found(
+    panel: AnalysisPanel, dialog_result, sync_worker, form, handler, worker, call, pheno_method, n_found: int
+) -> None:
+    """Nothing past the threshold is a result like any other, and is outlined as one."""
+    during = []
+    paths = list(panel._phenome.metadata_df['file_path'])[:n_found]
+
+    def _retrieve(**kwargs) -> pd.DataFrame:
+        during.append(outline(panel._images_group))
+        return prototype_frame(paths)
+
+    setattr(panel._phenome.pheno, pheno_method, _retrieve)
+    sync_worker(panel, worker, getattr(panel._phenome, call))
+    dialog_result(form, accepted=True, _group_by_dropdown='drug_name')
+
+    getattr(panel, handler)()
+
+    assert during == ['wait']
+    assert outline(panel._images_group) == 'ok'
+
+
+@pytest.mark.parametrize(('handler', 'group'), [
+    ('_on_clustering_failed', '_clustering_group'),
+    ('_on_prototypes_failed', '_images_group'),
+    ('_on_outliers_failed', '_images_group'),
+])
+def test_a_failed_step_outlines_its_group_as_failed(
+    panel: AnalysisPanel, reported, handler: str, group: str
+) -> None:
+    getattr(panel, handler)(ValueError('nope'))
+
+    assert outline(getattr(panel, group)) == 'bad'
+
+
+def test_discarding_the_results_clears_both_outlines(panel: AnalysisPanel) -> None:
+    """The outlines reported on results that are gone, a new dataset or a new run having replaced them."""
+    panel._on_finish_clustering()
+    panel._update_images_table(prototype_frame(list(panel._phenome.metadata_df['file_path'])[:3]), None)
+    panel._images_group.setStyleSheet(GROUP_STYLESHEETS['STYLE_OK'])
+
+    panel.clear_results()
+
+    assert outline(panel._clustering_group) == 'none'
+    assert outline(panel._images_group) == 'none'
 
 
 # ----------------------------------------------------------------------------
