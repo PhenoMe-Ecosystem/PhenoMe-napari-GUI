@@ -1,0 +1,11 @@
+{
+  "extraKnownMarketplaces": {
+    "predis-plugins": {
+      "source": { "source": "git", "url": "git@git.valeria.science:predis/claude-plugins.git" },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "predis-standard@predis-plugins": true
+  }
+}

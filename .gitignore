@@ -83,6 +83,3 @@ venv/
 
 # Big files
 *.hdf5
-
-# Claude instructions
-.claude/
