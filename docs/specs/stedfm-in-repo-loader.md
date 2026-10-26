@@ -2,8 +2,8 @@
 title: Load STED-FM in-repo and drop the stedfm dependency
 status: Draft            # Draft | Approved
 date: 2026-10-26
-jira_project:            # set by spec-to-jira
-jira_epic:               # set by spec-to-jira
+jira_project: FPG
+jira_epic: FPG-44
 ---
 
 # Load STED-FM in-repo and drop the stedfm dependency
@@ -44,10 +44,9 @@ Users see no change in the GUI. The model keeps its name and still works with sa
 7. As a plugin user, I want a corrupted or tampered download to be refused, so that I never run on wrong weights.
 8. As a plugin user, I want a failed download to show a clear message in the existing "Extraction failed" dialog, so that I know what went wrong and where.
 9. As a plugin user, I want an interrupted download to leave no corrupt file behind, so that the next run downloads it again cleanly.
-10. As a plugin user upgrading from an earlier version, I want to know that `~/.stedfm/` is no longer used, so that I can delete it to free disk space.
-11. As a developer, I want the STED-FM model to keep the same interface as `stedfm`'s linear probe, so that trained STED-FM linear-probe checkpoints load into it unchanged.
-12. As a developer, I want to pick the pooling mode (`avg`, `token`, `patch`) and get the patch tokens back if needed, so that alternative embeddings stay possible.
-13. As a maintainer, I want no code copied from STED-FM, so that the repository stays MIT-licensed.
+10. As a developer, I want the STED-FM model to keep the same interface as `stedfm`'s linear probe, so that trained STED-FM linear-probe checkpoints load into it unchanged.
+11. As a developer, I want to pick the pooling mode (`avg`, `token`, `patch`) and get the patch tokens back if needed, so that alternative embeddings stay possible.
+12. As a maintainer, I want no code copied from STED-FM, so that the repository stays MIT-licensed.
 
 ## Implementation Decisions
 
@@ -85,7 +84,6 @@ Users see no change in the GUI. The model keeps its name and still works with sa
   - The partial-freezing path (`num_blocks` other than `"all"`) is not reproduced, because `stedfm` only raises `NotImplementedError` there.
 - **Wrapper.** `STEDFMWrapper` keeps its current behaviour: it builds the classifier on the requested device and returns `forward_features` as the embeddings.
 - **Registry.** The key `"sted-fm"`, the display name `"STED-FM - Small"`, the STED-FM transforms and the STED-FM process options stay unchanged.
-- **Docs.** The README notes that `~/.stedfm/` is no longer used and can be deleted to free about 576 MB.
 
 ## Testing Decisions
 
@@ -114,7 +112,7 @@ Users see no change in the GUI. The model keeps its name and still works with sa
 - Training or fine-tuning the linear probe, and partial backbone freezing.
 - Re-hosting or redistributing the weights, including a stripped backbone-only file.
 - A README or model-description section on the STED-FM weights license.
-- Reading, migrating or deleting the existing `~/.stedfm/` cache.
+- Reading, migrating, deleting or documenting the existing `~/.stedfm/` cache.
 - Any change to the DINOv2 models.
 
 ## Open Questions
@@ -131,4 +129,12 @@ Users see no change in the GUI. The model keeps its name and still works with sa
 
 ## Jira tickets
 
-<Filled in by spec-to-jira.>
+Epic: [FPG-44](https://cervo-team.atlassian.net/browse/FPG-44)
+
+| Ticket | Summary |
+|--------|---------|
+| [FPG-45](https://cervo-team.atlassian.net/browse/FPG-45) | Implement the STED-FM classifier on timm with the same structure as stedfm's LinearProbe |
+| [FPG-46](https://cervo-team.atlassian.net/browse/FPG-46) | Implement the STED-FM weights download, hash check and backbone cache |
+| [FPG-47](https://cervo-team.atlassian.net/browse/FPG-47) | Wire the in-repo STED-FM loader into the model registry |
+| [FPG-48](https://cervo-team.atlassian.net/browse/FPG-48) | Verify the in-repo STED-FM model matches stedfm on the real weights |
+| [FPG-49](https://cervo-team.atlassian.net/browse/FPG-49) | Replace the stedfm dependency with timm |
