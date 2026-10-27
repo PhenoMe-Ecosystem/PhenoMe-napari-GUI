@@ -21,7 +21,12 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-If you you already have napari installed, this plugin can be installed directly from the napari hub. Otherwise, follow these instructions to install napari:
+If you you already have napari installed, this plugin can be installed directly from the napari hub. On napari:
+
+`Plugins -> Install/Uninstall plugins -> search for "PhenoMe GUI"`
+
+
+Otherwise, follow these instructions to install napari:
 
 https://napari.org/stable/getting_started/installation.html
 
