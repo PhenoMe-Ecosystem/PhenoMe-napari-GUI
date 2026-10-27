@@ -1,4 +1,0 @@
-- **Language:** English only - all code, comments, docs, examples, commits, configs, errors, tests
-- **Tools:** Validate code using Ruff
-- **Style:** Generate typing and documentation following google docstrings https://google.github.io/styleguide/pyguide.html
-- **Tests:** When creating new functions, write the corresponding tests for behavior. Do not test for trivial elements such as fixed GUI elements or values.
