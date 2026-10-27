@@ -19,7 +19,10 @@ import pytest
 import torch
 
 from phenome_gui.registries import stedfm
+from phenome_gui.registries.models import STEDFMWrapper, get_model
+from phenome_gui.registries.process_options import get_stedfm_options
 from phenome_gui.registries.stedfm import STEDFM
+from phenome_gui.registries.transforms import get_stedfm_transforms
 
 # Two single-channel images, at the size the model was trained on
 BATCH = 2
@@ -296,3 +299,56 @@ def test_a_download_cut_off_partway_leaves_nothing_behind(
         stedfm.load_backbone_weights()
 
     assert cached_files(hub) == []
+
+
+# ----------------------------------------------------------------------------
+# Through the registry
+# ----------------------------------------------------------------------------
+
+
+def test_the_registry_gives_the_pretrained_model_with_its_transformations_and_arguments(
+    hub: dict,
+) -> None:
+    model, transforms, options = get_model('sted-fm')
+
+    assert isinstance(model, STEDFMWrapper)
+    assert repr(transforms) == repr(get_stedfm_transforms())
+    assert options == get_stedfm_options()
+
+
+def test_the_model_the_registry_gives_holds_the_downloaded_backbone(hub: dict, archive: dict) -> None:
+    model, _, _ = get_model('sted-fm')
+    loaded = model.model.backbone.state_dict()
+
+    assert all(torch.equal(loaded[name], tensor) for name, tensor in archive['backbone'].items())
+
+
+def test_the_model_the_registry_gives_embeds_each_image_in_one_vector(hub: dict) -> None:
+    """The mean of the patch tokens, one vector per image, as PhenoMe reads its embeddings."""
+    model, _, _ = get_model('sted-fm')
+
+    with torch.no_grad():
+        embeddings = model.extract_embeddings(IMAGES)
+
+    assert embeddings.shape == (BATCH, DIM)
+
+
+def test_the_model_is_downloaded_once_for_every_run(hub: dict) -> None:
+    """Another run, or the same model asked for on another device, reads the weights already kept."""
+    get_model('sted-fm')
+    get_model('sted-fm')
+
+    assert len(hub['downloads']) == 1
+
+
+def test_a_failed_download_reaches_whoever_asked_for_the_model(
+    hub: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raised to the processing worker, which shows it in the dialog reporting the failed extraction."""
+    def _offline(url: str, destination: str, *args, **kwargs) -> None:
+        raise URLError('nodename nor servname provided')
+
+    monkeypatch.setattr(stedfm, 'download_url_to_file', _offline)
+
+    with pytest.raises(RuntimeError, match=stedfm.WEIGHTS_URL):
+        get_model('sted-fm')
