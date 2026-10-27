@@ -32,7 +32,6 @@ dependencies = [
     "qtpy",
     "scikit-image",
     "phenome>=1.5.1",
-    "stedfm @ git+https://github.com/FLClab/STED-FM.git", # temporaire, enlever si sur PyPI
     "timm>=1.0",
     "pydantic>=2",
     "pyqtgraph>=0.14.0",
@@ -63,11 +62,6 @@ phenome-gui = "phenome_gui:napari.yaml"
 # pre-wheel releases, which then fail to build from source.
 # Remove once numba supports numpy 2.5.
 constraint-dependencies = ["numpy<2.5"]
-
-[tool.uv.workspace]
-members = [
-    "external/PhenoMe",
-]
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13"]
