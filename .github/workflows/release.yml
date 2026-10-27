@@ -41,7 +41,7 @@ jobs:
         run: uv build --no-sources
 
       - name: Publish to TestPyPI
-        run: uv publish
+        run: uv publish --publish-url https://test.pypi.org/legacy/
 
       - name: Create the GitHub Release
         env:
