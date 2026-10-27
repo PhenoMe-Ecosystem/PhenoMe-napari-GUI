@@ -33,6 +33,7 @@ dependencies = [
     "scikit-image",
     "phenome",
     "stedfm @ git+https://github.com/FLClab/STED-FM.git", # temporaire, enlever si sur PyPI
+    "timm>=1.0",
     "pydantic>=2",
     "pyqtgraph>=0.14.0",
     "superqt",

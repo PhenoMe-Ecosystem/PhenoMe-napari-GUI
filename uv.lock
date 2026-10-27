@@ -3335,6 +3335,7 @@ dependencies = [
     { name = "scikit-image" },
     { name = "stedfm" },
     { name = "superqt" },
+    { name = "timm" },
 ]
 
 [package.optional-dependencies]
@@ -3364,6 +3365,7 @@ requires-dist = [
     { name = "scikit-image" },
     { name = "stedfm", git = "https://github.com/FLClab/STED-FM.git" },
     { name = "superqt" },
+    { name = "timm", specifier = ">=1.0" },
 ]
 provides-extras = ["all"]
 

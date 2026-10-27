@@ -83,3 +83,8 @@ venv/
 
 # Big files
 *.hdf5
+
+# Claude
+.claude/
+.claude/settings.local.json
+docs/specs/
