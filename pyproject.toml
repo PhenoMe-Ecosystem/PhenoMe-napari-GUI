@@ -1,6 +1,6 @@
 [project]
 name = "phenome-gui"
-version = "0.2.3"
+version = "0.3.0"
 description = "GUI integration of the PhenoMe phenotyping framework"
 readme = "README.md"
 license = "MIT"
