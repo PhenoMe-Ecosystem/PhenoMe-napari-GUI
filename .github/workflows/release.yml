@@ -13,10 +13,10 @@ jobs:
     # The environment the TestPyPI Trusted Publisher is bound to
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/phenome-napari-gui/
+
     permissions:
-      contents: write   # gh release create
       id-token: write   # Trusted Publishing to TestPyPI
+      contents: read
 
     steps:
       - uses: actions/checkout@v7
