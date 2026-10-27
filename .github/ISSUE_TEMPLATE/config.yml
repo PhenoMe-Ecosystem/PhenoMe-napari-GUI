@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 Tutorial and manual
+    url: https://github.com/PhenoMe-Ecosystem/PhenoMe-napari-GUI/tree/main/docs
+    about: Check the tutorial and manual for usage questions before opening an issue.
+  - name: 🔬 PhenoMe framework issues
+    url: https://github.com/AAitorG/PhenoMe/issues
+    about: Report problems with the underlying PhenoMe pipeline (models, properties, analysis algorithms) there.
+  - name: 💬 napari community forum
+    url: https://forum.image.sc/tag/napari
+    about: Ask general napari questions on the image.sc forum.

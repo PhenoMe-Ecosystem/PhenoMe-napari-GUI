@@ -48,7 +48,11 @@ class ImageViewer:
             name = names[i] if names else "Image"
 
             image = imread(img)
-            self._viewer.add_image(image, name=name, metadata=metadata)
+
+            # Stated rather than left to napari, which only guesses RGB when both sides exceed 30 pixels and
+            # otherwise shows a small colour image as a greyscale stack of its rows
+            is_rgb = image.ndim == 3 and image.shape[-1] in (3, 4)
+            self._viewer.add_image(image, name=name, metadata=metadata, rgb=is_rgb)
 
             if mask_paths and mask_paths[i]:
                 mask = imread(mask_paths[i])

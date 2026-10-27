@@ -226,6 +226,11 @@ class StubResults:
         """ Whether the results carry properties, as PhenoMe reads its own. """
         return any(self.properties)
 
+    @property
+    def has_embeddings(self) -> bool:
+        """ Whether the results carry embeddings, which every image they name is processed with. """
+        return self.n_images > 0
+
 
 @pytest.fixture
 def processed():
@@ -346,9 +351,9 @@ class RecordingViewer:
         self.layers = FakeLayers()
         self.added: list[dict[str, Any]] = []
 
-    def add_image(self, data, name=None, metadata=None) -> None:
+    def add_image(self, data, name=None, metadata=None, rgb=None) -> None:
         """ Record an image layer. """
-        self.added.append({'kind': 'image', 'data': data, 'name': name, 'metadata': metadata})
+        self.added.append({'kind': 'image', 'data': data, 'name': name, 'metadata': metadata, 'rgb': rgb})
 
     def add_labels(self, data, name=None, metadata=None) -> None:
         """ Record a labels layer. """

@@ -1,0 +1,64 @@
+name: ✨ Feature request
+description: Suggest a new feature or an improvement to the plugin.
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe the problem you are
+        trying to solve first, then the solution you have in mind: knowing the
+        *why* helps us find the best *how*.
+
+        Feature requests about the phenotyping methods themselves (new models,
+        new properties, new analysis algorithms) may be better suited for the
+        [PhenoMe repository](https://github.com/AAitorG/PhenoMe/issues).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related step
+      description: Which part of the plugin would this feature concern?
+      options:
+        - Data loading
+        - Image processing
+        - Analysis
+        - User interface / usability
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        Describe the problem or the workflow you would like to enable. Is your
+        feature request related to a limitation or a frustration?
+      placeholder: When analysing experiments with many conditions, I often need to... but currently I have to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe how you would like the feature to work. Mockups, sketches or
+        screenshots of similar tools are very welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any alternative solutions or workarounds you have considered or currently use.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other context, references (papers, other software) or example data related to the request.
+

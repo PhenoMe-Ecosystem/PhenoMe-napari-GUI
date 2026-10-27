@@ -1,0 +1,122 @@
+name: 🐛 Bug report
+description: Report something that is broken or behaves unexpectedly in the plugin.
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in the form below
+        as precisely as possible: a clear description and reproducible steps are
+        the fastest way to get a fix.
+
+        If the problem comes from the PhenoMe pipeline itself (and not from the
+        napari interface), please report it on the
+        [PhenoMe repository](https://github.com/AAitorG/PhenoMe/issues) instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: When I click on "Run" in the Image processing panel, the progress bar stays at 0% and...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected step
+      description: In which part of the plugin does the bug occur?
+      options:
+        - Installation
+        - Data loading
+        - Image processing
+        - Analysis
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        List the exact steps (and the parameters you used) to reproduce the bug.
+        If the bug can be triggered from code, please share a minimal snippet instead.
+      placeholder: |
+        1. Open napari and launch the PhenoMe GUI widget
+        2. In the Data loading panel, select a folder of 50 .tif images
+        3. Choose model "..." in the Image processing panel and click "Run"
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: |
+        What actually happened? If applicable, add screenshots or a short screen
+        recording (you can drag and drop files here).
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Error message / traceback
+      description: |
+        Paste the **full** error message or traceback, if any. You can find it in
+        the terminal used to launch napari, or in the napari console / notification
+        panel. This will be automatically formatted as code, so no need for backticks.
+      render: shell
+
+  - type: textarea
+    id: data
+    attributes:
+      label: Data description
+      description: |
+        Describe the images you were working with: file format, dimensions,
+        bit depth, number of channels, number of images, folder structure...
+        If possible, share a small sample that reproduces the issue.
+      placeholder: 120 single-channel 16-bit .tif images, 512x512 px, split in 2 condition folders.
+
+  - type: textarea
+    id: napari-info
+    attributes:
+      label: napari information
+      description: |
+        Paste the output of `napari --info` (run in the environment where the plugin
+        is installed), or use *Help > Info* in napari and copy the text.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: PhenoMe and PyTorch versions
+      description: |
+        Paste the output of the following command, run in the same environment:
+
+        ```bash
+        python -c "import importlib.metadata as m, torch; [print(p, m.version(p)) for p in ('phenome-gui', 'phenome', 'torch')]; print('CUDA available:', torch.cuda.is_available(), '| MPS available:', torch.backends.mps.is_available())"
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that could help (installation method, GPU model, workaround found, ...).

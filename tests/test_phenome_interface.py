@@ -952,13 +952,12 @@ def interrupted_after(step, error: Exception | None = None):
 def three_images_computed(interface: PhenoMeInterface):
     """ A step leaving three images computed, the way PhenoMe leaves them partway through a run.
 
-    PhenoMe names the images in the results as it goes, but holds their embeddings apart until the end.
+    PhenoMe names every image in the results as the dataset is loaded, but holds their embeddings
+    apart until the end of the run.
     """
     results = results_for(interface, properties=False)
 
     def _step() -> None:
-        interface.pheno.results.img_path.extend(results.img_path[:3])
-        interface.pheno.results.metadata.extend(results.metadata[:3])
         interface.pheno._emb_buffer.extend(results.embeddings[:3])
 
     return _step
@@ -1009,16 +1008,15 @@ def test_a_run_interrupted_before_any_batch_autosaves_nothing(
     assert not (working_directory / AUTOSAVE_CHECKPOINT).exists()
 
 
-def test_a_run_interrupted_halfway_through_a_batch_keeps_nothing(
+def test_a_run_holding_more_embeddings_than_images_keeps_nothing(
     loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
 ) -> None:
-    """Paths named without their embeddings would be saved against the wrong rows."""
+    """Embeddings no image is named for would be saved against the wrong rows."""
     loaded.model = object()
-    step = three_images_computed(loaded)
+    embeddings = results_for(loaded, properties=False).embeddings
 
     def _misaligned() -> None:
-        step()
-        loaded.pheno._emb_buffer.pop()
+        loaded.pheno._emb_buffer.extend([*embeddings, embeddings[0]])
 
     monkeypatch.setattr(
         loaded.image_processing, 'process_images', interrupted_after(_misaligned, RuntimeError('crash'))
@@ -1029,6 +1027,34 @@ def test_a_run_interrupted_halfway_through_a_batch_keeps_nothing(
 
     assert not loaded.has_processed_images
     assert loaded.last_autosave is None
+
+
+def test_a_run_stopped_after_an_image_failed_to_load_keeps_the_images_it_embedded(
+    loaded: PhenoMeInterface, monkeypatch: pytest.MonkeyPatch, working_directory: Path
+) -> None:
+    """An image that failed has no embedding, which every image named after it would be shifted onto.
+
+    Through PhenoMe's own run, with only the extraction stood in for: the second image fails to load,
+    the first and the third are embedded, and the run is stopped.
+    """
+    loaded.model = object()
+    results = results_for(loaded, properties=False)
+
+    def _extraction(*args, failed_paths=None, **kwargs) -> None:
+        loaded.pheno._emb_buffer.extend([results.embeddings[0], results.embeddings[2]])
+        failed_paths.append(results.img_path[1])
+        raise TaskStopped('Task interrupted by user')
+
+    monkeypatch.setattr(loaded.pheno, '_run_embedding_extraction', _extraction)
+
+    with pytest.raises(TaskStopped):
+        loaded.process_images()
+
+    assert [str(path) for path in loaded.pheno.results.img_path] == [
+        str(results.img_path[0]), str(results.img_path[2])
+    ]
+    assert np.array_equal(loaded.pheno.results.embeddings, results.embeddings[[0, 2]])
+    assert loaded.last_autosave == working_directory / AUTOSAVE_CHECKPOINT
 
 
 def test_an_autosave_that_cannot_be_written_never_hides_the_interruption(
@@ -1297,7 +1323,8 @@ def test_loading_empties_the_pipeline(phenome: PhenoMeInterface, processed) -> N
 
     phenome.load_data_csv()
 
-    assert phenome.pheno.results.n_images == 0
+    assert not phenome.pheno.has_embeddings
+    assert phenome.n_processed_images == 0
     assert phenome.has_results is False
 
 

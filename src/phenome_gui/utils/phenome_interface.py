@@ -455,6 +455,7 @@ class PhenoMeInterface:
                 DATASET_MISMATCH, 'Images read a channel at a time cannot be resumed.'
             )
 
+        # Only asked with embeddings held, when the images the results name are the ones they are held for
         return inspect_held_embeddings(
             self.pheno._processing_params,
             list(self.pheno.results.img_path),
@@ -481,7 +482,7 @@ class PhenoMeInterface:
 
         logger.info(
             "Saved the checkpoint at '%s': %d image(s), properties %s.",
-            path, self.pheno.results.n_images, 'included' if self.has_stored_properties else 'not computed'
+            path, self.n_processed_images, 'included' if self.has_stored_properties else 'not computed'
         )
 
     def load_checkpoint(self, path: Path | str) -> None:
@@ -532,7 +533,7 @@ class PhenoMeInterface:
 
         logger.info(
             "Loaded the checkpoint at '%s': %d of %d image(s), properties %s.",
-            path, self.pheno.results.n_images, loaded,
+            path, self.n_processed_images, loaded,
             'included' if self.properties_df is not None else 'not yet computed'
         )
 
@@ -580,6 +581,7 @@ class PhenoMeInterface:
                 logger.info('Nothing left to process: all %d image(s) have their embeddings.', self.n_processed_images)
                 return
 
+            # With embeddings held, the images the results name are the ones they are held for
             held = list(self.pheno.results.img_path)
             arguments.update(
                 append=True, exclude={'file_path': self.image_processing.loaded_paths_among(held)}
@@ -651,22 +653,27 @@ class PhenoMeInterface:
     def has_processed_images(self) -> bool:
         """ Whether images have been processed, which the properties step needs to run.
 
-        Reads the same state PhenoMe itself checks in compute_properties(), rather than tracking
-        the processing step separately.
+        Asked of PhenoMe's embeddings rather than of the images its results name: those are named as
+        soon as a dataset is loaded, before a single one is processed. The embeddings are there whether
+        they were computed in memory or are read from a checkpoint.
 
         Returns:
             True once the pipeline holds processed images.
         """
-        return self.pheno.results.n_images > 0
+        return self.pheno.has_embeddings
 
     @property
     def n_processed_images(self) -> int:
         """ How many images the pipeline holds embeddings for, computed here or read from a checkpoint.
 
+        Once there are embeddings, the images PhenoMe's results name are exactly the ones embedded:
+        a run drops the images that failed to load, and a checkpoint is read as the rows it holds.
+        Before then, they are only the images loaded.
+
         Returns:
             The number of images processed, 0 before any run or load.
         """
-        return self.pheno.results.n_images
+        return self.pheno.results.n_images if self.pheno.has_embeddings else 0
 
     @property
     def n_loaded_images(self) -> int:
