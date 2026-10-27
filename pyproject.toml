@@ -31,7 +31,7 @@ dependencies = [
     "magicgui",
     "qtpy",
     "scikit-image",
-    "phenome",
+    "phenome>=1.5.1",
     "stedfm @ git+https://github.com/FLClab/STED-FM.git", # temporaire, enlever si sur PyPI
     "timm>=1.0",
     "pydantic>=2",

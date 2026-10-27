@@ -226,6 +226,11 @@ class StubResults:
         """ Whether the results carry properties, as PhenoMe reads its own. """
         return any(self.properties)
 
+    @property
+    def has_embeddings(self) -> bool:
+        """ Whether the results carry embeddings, which every image they name is processed with. """
+        return self.n_images > 0
+
 
 @pytest.fixture
 def processed():

@@ -3358,7 +3358,7 @@ requires-dist = [
     { name = "magicgui" },
     { name = "napari", extras = ["all"], marker = "extra == 'all'" },
     { name = "numpy" },
-    { name = "phenome" },
+    { name = "phenome", specifier = ">=1.5.1" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyqtgraph", specifier = ">=0.14.0" },
     { name = "qtpy" },
