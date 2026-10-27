@@ -1,19 +1,35 @@
 """The STED-FM ViT-S model, built in this repository rather than imported from the stedfm package.
 
-STED-FM's own code is licensed CC BY-NC 4.0, which this MIT repository cannot take in, so none of it
-is copied here: the model is rebuilt on timm's ViT, with the same structure, the same state_dict keys
+The model is rebuilt on timm's ViT, with the same structure, the same state_dict keys
 and the same embeddings as the linear probe the stedfm package builds around its pretrained backbone.
 Only the weights are STED-FM's, and they are downloaded at runtime rather than redistributed.
 """
 
+import hashlib
+import os
+import tempfile
+import zipfile
+from pathlib import Path
+
 import torch
 from timm.models.vision_transformer import vit_small_patch16_224
+from torch.hub import download_url_to_file
 
 # The ways the backbone's tokens can be pooled into the embedding of an image
 GLOBAL_POOLS = ('avg', 'token', 'patch')
 
+# The official STED-FM ViT-S weights, pretrained on STED images, and the digest the file is checked against
+WEIGHTS_URL = 'https://s3.valeria.science/flclab-foundation-models/models/mae-small-sted.zip'
+WEIGHTS_SHA256 = 'd0daba42e0087511695243a8bb5f0e756378d13a5181639ccdb40ca3a9dd793d'
 
-class STEDFMClassifier(torch.nn.Module):
+# The backbone's tensors alone, as they are kept in the torch hub cache once downloaded
+BACKBONE_FILENAME = 'stedfm_mae_small_sted_backbone.pth'
+
+# What the backbone's tensors are named under in the pretraining checkpoint, beside its MAE decoder's
+BACKBONE_PREFIX = 'backbone.vit.'
+
+
+class STEDFM(torch.nn.Module):
     """ The STED-FM backbone, frozen, with a linear classification head on top.
 
     The structure is that of the stedfm package's linear probe, down to the names of its parts, so a
@@ -52,7 +68,7 @@ class STEDFMClassifier(torch.nn.Module):
             torch.nn.Linear(in_features=self.backbone.embed_dim, out_features=num_classes),
         )
 
-    def train(self, mode: bool = True) -> 'STEDFMClassifier':
+    def train(self, mode: bool = True) -> 'STEDFM':
         """ Switch the head between training and evaluation, the backbone staying in evaluation.
 
         The backbone is frozen, so it is never trained: left in training mode it would only run its
@@ -107,3 +123,118 @@ class STEDFMClassifier(torch.nn.Module):
         """
         features = self.forward_features(x)
         return self.classification_head(features), features
+
+
+def backbone_cache_path() -> Path:
+    """ Where the backbone's weights are kept once downloaded, beside the other torch hub checkpoints.
+
+    Read from torch at every call, so a hub directory set with TORCH_HOME or torch.hub.set_dir() is
+    the one used.
+
+    Returns:
+        The path of the cached backbone file, whether or not it exists yet.
+    """
+    return Path(torch.hub.get_dir()) / 'checkpoints' / BACKBONE_FILENAME
+
+
+def load_backbone_weights() -> dict[str, torch.Tensor]:
+    """ The pretrained weights of the STED-FM backbone, downloaded the first time they are asked for.
+
+    The checkpoint published by STED-FM's authors is downloaded from WEIGHTS_URL, checked against
+    WEIGHTS_SHA256, and cut down to the backbone, which is all the embeddings are read from: the MAE
+    decoder it was pretrained with and the optimiser's state are left out, and the file kept in the
+    torch hub cache is a third of the size. Later calls read that file, without the network. The cache
+    the stedfm package keeps in ~/.stedfm is never read.
+
+    Returns:
+        The backbone's tensors, under the names of the timm ViT they load into with strict=True.
+    Raises:
+        RuntimeError: The weights could not be downloaded, or what was downloaded is not them.
+    """
+    path = backbone_cache_path()
+    if not path.exists():
+        _cache_backbone_weights(path)
+    return torch.load(path, map_location='cpu', weights_only=True)
+
+
+def _cache_backbone_weights(path: Path) -> None:
+    """ Download the STED-FM checkpoint, check it, and keep its backbone at the given path.
+
+    Everything is written to a scratch folder beside the cache, removed whatever happens, and the
+    backbone file is only renamed into place once it is whole: an interrupted download, a failed
+    check or a full disk leaves no file behind, and the next call downloads again.
+
+    Args:
+        path: Where the backbone file is kept.
+    Raises:
+        RuntimeError: The weights could not be downloaded, or what was downloaded is not them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(dir=path.parent) as scratch:
+        archive = Path(scratch) / Path(WEIGHTS_URL).name
+        try:
+            download_url_to_file(WEIGHTS_URL, str(archive))
+        except OSError as error:
+            raise RuntimeError(
+                f'Could not download the STED-FM weights from {WEIGHTS_URL} to {path}: {error}'
+            ) from error
+
+        digest = _sha256(archive)
+        if digest != WEIGHTS_SHA256:
+            raise RuntimeError(
+                f'The STED-FM weights downloaded from {WEIGHTS_URL} are not the expected file: their '
+                f'SHA-256 is {digest} rather than {WEIGHTS_SHA256}. Nothing was kept at {path}.'
+            )
+
+        partial = Path(scratch) / f'{BACKBONE_FILENAME}.part'
+        torch.save(_read_backbone(archive), partial)
+        os.replace(partial, path)
+
+
+def _sha256(path: Path) -> str:
+    """ The SHA-256 digest of a file, read a chunk at a time.
+
+    Args:
+        path: The file to digest.
+    Returns:
+        The digest, as lower-case hexadecimal.
+    """
+    digest = hashlib.sha256()
+    with open(path, 'rb') as file:
+        for chunk in iter(lambda: file.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_backbone(archive: Path) -> dict[str, torch.Tensor]:
+    """ The backbone's tensors, read out of the STED-FM checkpoint archive.
+
+    The archive holds a single Lightning checkpoint, read straight out of it, whose state_dict names
+    the backbone's tensors under BACKBONE_PREFIX: they are kept under the names left once it is
+    taken off, the timm ViT's own, its 1000-class head included.
+
+    Args:
+        archive: The zip file downloaded from WEIGHTS_URL.
+    Returns:
+        The backbone's tensors.
+    Raises:
+        RuntimeError: The archive holds no checkpoint, or no backbone in it.
+    """
+    with zipfile.ZipFile(archive) as files:
+        checkpoints = [name for name in files.namelist() if name.endswith('.pth')]
+        if len(checkpoints) != 1:
+            raise RuntimeError(
+                f'The STED-FM weights from {WEIGHTS_URL} hold {len(checkpoints)} checkpoints rather than one.'
+            )
+        with files.open(checkpoints[0]) as file:
+            checkpoint = torch.load(file, map_location='cpu', weights_only=True)
+
+    backbone = {
+        name.removeprefix(BACKBONE_PREFIX): tensor
+        for name, tensor in checkpoint.get('state_dict', {}).items()
+        if name.startswith(BACKBONE_PREFIX)
+    }
+    if not backbone:
+        raise RuntimeError(f'The STED-FM weights from {WEIGHTS_URL} hold no backbone.')
+    return backbone
