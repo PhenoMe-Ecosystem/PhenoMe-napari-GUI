@@ -30,12 +30,13 @@ BACKBONE_PREFIX = 'backbone.vit.'
 
 
 class STEDFM(torch.nn.Module):
-    """ The STED-FM backbone, frozen, with a linear classification head on top.
+    """ The STED-FM backbone, with a linear classification head on top.
 
     The structure is that of the stedfm package's linear probe, down to the names of its parts, so a
     state_dict saved from one loads into the other: a timm ViT-S/16 as the backbone, its own 1000-class
     head included, and a batch-normalised linear head the backbone's features are classified by. The
-    head is left as it is built, randomly initialised: the embeddings are read before it.
+    head is left as it is built, randomly initialised: the embeddings are read before it. The model is
+    only ever used for inference, its embeddings read in evaluation mode.
     """
 
     def __init__(self, in_channels: int = 1, num_classes: int = 4, global_pool: str = 'avg') -> None:
@@ -59,30 +60,11 @@ class STEDFM(torch.nn.Module):
         self.global_pool = global_pool
 
         self.backbone = vit_small_patch16_224(in_chans=in_channels, num_classes=1000, pretrained=False)
-        # Only the head is ever meant to learn: the backbone is the pretrained network, kept as it is
-        for parameter in self.backbone.parameters():
-            parameter.requires_grad = False
 
         self.classification_head = torch.nn.Sequential(
             torch.nn.BatchNorm1d(num_features=self.backbone.embed_dim, affine=False, eps=1e-6),
             torch.nn.Linear(in_features=self.backbone.embed_dim, out_features=num_classes),
         )
-
-    def train(self, mode: bool = True) -> 'STEDFM':
-        """ Switch the head between training and evaluation, the backbone staying in evaluation.
-
-        The backbone is frozen, so it is never trained: left in training mode it would only run its
-        dropout, and give different features for the same image.
-
-        Args:
-            mode: True for training, False for evaluation.
-
-        Returns:
-            The model itself.
-        """
-        super().train(mode)
-        self.backbone.eval()
-        return self
 
     def forward_features(
         self, x: torch.Tensor, return_patches: bool = False

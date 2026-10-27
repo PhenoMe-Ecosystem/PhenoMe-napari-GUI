@@ -2,7 +2,7 @@
 
 The model has to be the one the stedfm package builds, part for part, so that its state_dict and its
 embeddings are the same. What these tests hold is the behaviour that makes them the same: the tokens
-the embedding is pooled from, what the classification head is given, and what stays frozen.
+the embedding is pooled from, and what the classification head is given.
 
 The model is built with the weights timm initialises it with: nothing is downloaded, the real weights
 mattering to none of this. Where the weights themselves are tested, the download is stood in for by
@@ -120,27 +120,6 @@ def test_the_head_predicts_the_number_of_classes_asked_for() -> None:
         logits, _ = STEDFM(num_classes=7).eval()(IMAGES)
 
     assert logits.shape == (BATCH, 7)
-
-
-# ----------------------------------------------------------------------------
-# What is frozen
-# ----------------------------------------------------------------------------
-
-
-def test_the_backbone_is_frozen(model: STEDFM) -> None:
-    """The pretrained network is kept as it is: only the head could ever learn."""
-    assert not any(parameter.requires_grad for parameter in model.backbone.parameters())
-    assert all(parameter.requires_grad for parameter in model.classification_head.parameters())
-
-
-def test_training_leaves_the_backbone_in_evaluation() -> None:
-    """In training mode the backbone would run its dropout, and give the same image other features."""
-    model = STEDFM()
-
-    assert model.train() is model
-    assert model.training
-    assert model.classification_head.training
-    assert not any(module.training for module in model.backbone.modules())
 
 
 # ----------------------------------------------------------------------------
