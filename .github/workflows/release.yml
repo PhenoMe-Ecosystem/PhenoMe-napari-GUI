@@ -1,0 +1,45 @@
+name: Release
+
+# Runs on version tags only, such as v0.3.0, and never on plain pushes or pull requests
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    name: Build, publish to TestPyPI and release
+    runs-on: ubuntu-latest
+    # The environment the TestPyPI Trusted Publisher is bound to
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/phenome-gui/
+    permissions:
+      contents: write   # gh release create
+      id-token: write   # Trusted Publishing to TestPyPI
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv version --short --frozen)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME is for version $tag, but pyproject.toml is at version $version."
+            exit 1
+          fi
+          echo "Releasing version $version."
+
+      - name: Build the sdist and the wheel
+        run: uv build --no-sources
+
+      - name: Publish to TestPyPI
+        run: uv publish
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
