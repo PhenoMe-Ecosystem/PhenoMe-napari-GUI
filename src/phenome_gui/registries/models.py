@@ -1,36 +1,46 @@
-from typing import TYPE_CHECKING
-
 import torch
 from phenome import load_dinov2_model
 from phenome.utils import ModelWrapper
-from stedfm import get_pretrained_model_v2
 
 from .process_options import OPTIONS_LOADERS
+from .stedfm import STEDFM, load_backbone_weights
 from .transforms import TRANSFORMS_LOADERS
 
-if TYPE_CHECKING:
-    import torch
 
 class STEDFMWrapper(ModelWrapper):
-    def __init__(self, device: str='cpu', in_channels: int=1, ):
-        # Load the pretrained STED-FM model
-        model, cfg = get_pretrained_model_v2(
-            name = "mae-lightning-small",
-            weights = "MAE_SMALL_STED",
-            in_channels=in_channels, # For single channel images
-            as_classifier=True,
-            # global_pool = "patch" # Returns the embeddings for all patches
-        )
+    """ The pretrained STED-FM ViT-S, as PhenoMe extracts embeddings with it.
 
-        # Change input to 3 channels to fit PhenoMe pipeline
-        # model.backbone.patch_embed.proj = torch.nn.Conv2d(3, 384, kernel_size=(16,16), stride=(16,16))
+    The model is the one built in this repository, with the pretrained backbone loaded into it: the
+    embedding of an image is the mean of the backbone's patch tokens, its class token left out.
+    """
 
-        # Initialize the parent class which moves the model to the device and sets it to eval()
+    def __init__(self, device: str = 'cpu', in_channels: int = 1) -> None:
+        """ Build the model and load the pretrained backbone into it.
+
+        The weights are downloaded the first time a model is built, and read from the torch hub cache
+        afterwards.
+
+        Args:
+            device: The device to load the model on.
+            in_channels: The number of channels the images are given in, a single one for STED-FM.
+        Raises:
+            RuntimeError: The weights could not be downloaded, or what was downloaded is not them.
+        """
+        model = STEDFM(in_channels=in_channels)
+        model.backbone.load_state_dict(load_backbone_weights(), strict=True)
+
+        # Moves the model onto the device and puts it in evaluation
         super().__init__(model=model, device=device)
 
     def _get_embeddings(self, tensor: torch.Tensor) -> torch.Tensor:
-        out = self.model.forward_features(tensor)
-        return out
+        """ The embeddings of a batch of images.
+
+        Args:
+            tensor: The images, as a (N, C, H, W) tensor.
+        Returns:
+            The (N, 384) embeddings.
+        """
+        return self.model.forward_features(tensor)
 
 def get_dino_model(model_name: str, device: str = "cpu") -> "ModelWrapper":
     """Load a DINOv2 model for embedding extraction.
@@ -48,6 +58,7 @@ def get_stedfm_model(model_name: str, device: str = "cpu") -> "ModelWrapper":
     """Load the STED-FM ViT-S model for embedding extraction.
 
     Args:
+        model_name: Name of the model, as registered. There is only one STED-FM model.
         device: The device to load the model on.
 
     Returns:

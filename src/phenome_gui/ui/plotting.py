@@ -4,8 +4,12 @@ Holds no PhenoMe state: it is handed the coordinates to draw and the name of the
 them by, and knows nothing about where either came from.
 """
 
+import importlib
 import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from xml.dom.minidom import Element
 
 import numpy as np
 import pandas as pd
@@ -119,6 +123,73 @@ EXPORT_FORMATS = {
     'svg': exporters.SVGExporter,
     'png': exporters.ImageExporter,
 }
+
+# pyqtgraph's SVG exporter, as a module rather than as the class pyqtgraph.exporters names after it,
+# which shadows the module it is defined in
+SVG_EXPORTER_MODULE = importlib.import_module('pyqtgraph.exporters.SVGExporter')
+
+# The commands closing a subpath, which Qt writes from 6.11 as tokens of their own at the end of a
+# closed shape's path data
+CLOSE_COMMANDS = ('Z', 'z')
+
+# The signature of pyqtgraph's coordinate pass, correctCoordinates(node, defs, item, options)
+CoordinatesPass = Callable[[Element, list[Element], object, dict], None]
+
+
+def _keeping_closed_paths(correct: CoordinatesPass) -> CoordinatesPass:
+    """ pyqtgraph's coordinate pass, made to read the path data Qt writes from 6.11.
+
+    The pass applies each group's transform to the coordinates of the paths in it, splitting a path's
+    data on its spaces and reading every token as an x,y pair. From Qt 6.11, a closed shape's path ends
+    in a close command of its own, which the pass cannot read as a pair and fails on: the plot's own
+    background is one, so no SVG could be written. The close commands are taken out before the pass and
+    put back where they were after it, the pass rewriting a path one token for one. Remove once
+    pyqtgraph reads Qt 6.11's path data.
+
+    Args:
+        correct: pyqtgraph's coordinate pass.
+    Returns:
+        The same pass, leaving each close command where it was in its path.
+    """
+    def correct_keeping_closed_paths(
+        node: Element, defs: list[Element], item: object, options: dict
+    ) -> None:
+        closed = []
+        for path in node.getElementsByTagName('path'):
+            tokens = path.getAttribute('d').split()
+            closes = [(i, token) for i, token in enumerate(tokens) if token in CLOSE_COMMANDS]
+            if closes:
+                closed.append((path, closes))
+                path.setAttribute('d', ' '.join(t for t in tokens if t not in CLOSE_COMMANDS))
+
+        correct(node, defs, item, options)
+
+        # Put back in the order they were taken out, so each lands where it was among the others
+        for path, closes in closed:
+            tokens = path.getAttribute('d').split()
+            for i, token in closes:
+                tokens.insert(i, token)
+            path.setAttribute('d', ' '.join(tokens))
+
+    return correct_keeping_closed_paths
+
+
+@contextmanager
+def _closed_paths_tolerated() -> Iterator[None]:
+    """ Have pyqtgraph's SVG exporter read closed paths for as long as the context is held.
+
+    The exporter looks its coordinate pass up every time it draws an item, so it is the one swapped
+    for the time of an export, and put back afterwards whether or not the export went through.
+
+    Yields:
+        Nothing, the exporter being changed in place.
+    """
+    correct = SVG_EXPORTER_MODULE.correctCoordinates
+    SVG_EXPORTER_MODULE.correctCoordinates = _keeping_closed_paths(correct)
+    try:
+        yield
+    finally:
+        SVG_EXPORTER_MODULE.correctCoordinates = correct
 
 
 def is_continuous(values: pd.Series, name: str) -> bool:
@@ -1188,7 +1259,9 @@ class ExplorerPlot(pg.GraphicsLayoutWidget):
             raise ValueError(f"Unrecognized file type '{extension}'; must be one of {offered}.")
 
         self.setBackground(None)
-        EXPORT_FORMATS[key](self._plot).export(str(path))
+        # Only the SVG exporter goes through the coordinate pass; the PNG one draws the plot as it is
+        with _closed_paths_tolerated():
+            EXPORT_FORMATS[key](self._plot).export(str(path))
         logger.info("Wrote the plot to '%s'.", path)
         self.setBackground(SURFACE)
 

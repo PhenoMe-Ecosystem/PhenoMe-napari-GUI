@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -28,6 +30,9 @@ class ImageProcessing:
         """
         self.pheno = pheno
 
+        # The images the last run failed to load, as PhenoMe lists them while the run goes
+        self._failed_paths: list = []
+
     def load_model(self, model_name: str, device: str='cpu') -> None:
         """ Load the model for embedding extraction.
 
@@ -52,10 +57,45 @@ class ImageProcessing:
                 PhenoMe's own.
             **kwargs: Any arguments included in the PhenoMe process_images() method.
         """
-        self.pheno.process_images(model_wrapper=model_wrapper,
-                                  progress_callback=progress_callback,
-                                  custom_transformations=custom_transformations,
-                                  **kwargs)
+        self._failed_paths = []
+        with self._recording_failed_loads():
+            self.pheno.process_images(model_wrapper=model_wrapper,
+                                      progress_callback=progress_callback,
+                                      custom_transformations=custom_transformations,
+                                      **kwargs)
+
+    @contextmanager
+    def _recording_failed_loads(self) -> Iterator[None]:
+        """ Keep hold of the list PhenoMe names the images it fails to load in, for as long as a run goes.
+
+        PhenoMe drops those images from its results only once the run is done, and the list it keeps
+        them in is local to process_images(), so an interrupted run would otherwise leave no trace of
+        which images have no embedding. The list is handed to the extraction step, which is wrapped
+        here to hold on to it, and keep_stopped_results() reads it back.
+
+        Reaches for PhenoMe's private extraction step, kept here beside the other private calls. The
+        wrapper is set on the pipeline itself and taken off afterwards, putting back whatever stood
+        there before.
+
+        Yields:
+            Nothing: the run is made inside the block.
+        """
+        shadowed = vars(self.pheno).get('_run_embedding_extraction')
+        extract = self.pheno._run_embedding_extraction
+
+        def _recording(*args, failed_paths: list | None = None, **kwargs):
+            if failed_paths is not None:
+                self._failed_paths = failed_paths
+            return extract(*args, failed_paths=failed_paths, **kwargs)
+
+        self.pheno._run_embedding_extraction = _recording
+        try:
+            yield
+        finally:
+            if shadowed is None:
+                del self.pheno._run_embedding_extraction
+            else:
+                self.pheno._run_embedding_extraction = shadowed
 
     def loaded_paths_among(self, held_paths: list) -> list:
         """ The loaded images' paths, as PhenoMe's file table holds them, for the images among the ones held.
@@ -77,28 +117,43 @@ class ImageProcessing:
     def keep_stopped_results(self) -> bool:
         """ Make the embeddings an in-memory extraction computed before it was interrupted part of the results.
 
-        PhenoMe appends the paths and the metadata to the results as it goes, but holds the embeddings
-        in a buffer it only stacks into the results once the run is done, which an interruption unwinds
-        before. Stacked here instead, so the results answer for the images they name. The rows agree
-        when the run was unwound between two batches, which is where a stop is raised; a failure
-        caught halfway through appending one is let go of whole rather than kept misaligned.
+        PhenoMe names every image of the run in the results before processing any, and holds the
+        embeddings in a buffer it only stacks into the results once the run is done, which an
+        interruption unwinds before - as it does dropping the images that failed to load. Both are done
+        here instead: the images that failed are dropped, and the results cut down to the images the
+        buffer holds embeddings for, which are the first ones named, in the order they were processed.
+        A resumed run names the images held first, their embeddings leading the buffer as well.
 
-        Reaches for PhenoMe's private buffer and finalising step, kept here beside the other ones.
+        More embeddings than images named could not be matched to them, and are let go of whole rather
+        than kept misaligned.
+
+        Reaches for PhenoMe's private buffer, catalog and finalising step, kept here beside the other ones.
 
         Returns:
             True when results were kept, False when there were none or they could not be kept.
         """
-        n_named = self.pheno.results.n_images
-        if n_named != len(self.pheno._emb_buffer):
+        if self._failed_paths:
+            self.pheno._drop_failed_catalog_paths(self._failed_paths)
+            self._failed_paths = []
+
+        results = self.pheno.results
+        n_named, n_embedded = results.n_images, len(self.pheno._emb_buffer)
+        if n_embedded == 0:
+            return False
+
+        if n_embedded > n_named:
             logger.warning(
                 'Dropped what the interrupted run computed: %d image(s) named against %d embedding(s).',
-                n_named, len(self.pheno._emb_buffer)
+                n_named, n_embedded
             )
             self.pheno.reset()
             return False
 
+        results.img_path = results.img_path[:n_embedded]
+        results.metadata = results.metadata[:n_embedded]
+        results.properties = results.properties[:n_embedded]
         self.pheno._finalize_results()
-        return n_named > 0
+        return True
 
     def save_results(self, checkpoint_path: str) -> None:
         """ Write everything the pipeline holds - embeddings, properties and processing parameters - to a checkpoint.

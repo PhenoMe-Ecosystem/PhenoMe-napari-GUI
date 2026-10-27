@@ -4,6 +4,7 @@ The canvas is handed a projection and the name of a column to colour it by, and 
 so the frames here are written by hand rather than computed.
 """
 
+import xml.dom.minidom as xml
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,9 @@ from phenome_gui.ui.plotting import (
     SELECTION_ALPHA,
     SELECTION_COLOUR,
     SERIES_COLOURS,
+    SVG_EXPORTER_MODULE,
     ExplorerPlot,
+    _closed_paths_tolerated,
     group_order,
     is_continuous,
 )
@@ -1442,6 +1445,61 @@ def test_a_file_type_the_canvas_cannot_write_is_refused(drawn: ExplorerPlot, tmp
         drawn.export_plot(written, 'jpg')
 
     assert not written.exists()
+
+
+def corrected(d: str) -> str:
+    """ Run pyqtgraph's coordinate pass, as an export swaps it, over a single path.
+
+    Written by hand rather than drawn, so the path data is Qt 6.11's whichever Qt is installed.
+
+    Args:
+        d: The path's data, in a group moved by (10, 20).
+    Returns:
+        The path's data once the pass has applied the move to it.
+    """
+    document = xml.parseString(f'<g><g transform="matrix(1,0,0,1,10,20)"><path d="{d}"/></g></g>')
+
+    with _closed_paths_tolerated():
+        SVG_EXPORTER_MODULE.correctCoordinates(document.documentElement, [], None, {})
+
+    return document.getElementsByTagName('path')[0].getAttribute('d')
+
+
+def test_a_closed_path_is_moved_and_kept_closed() -> None:
+    assert corrected('M0,0 L5,0 L5,5 Z ') == 'M10.0,20.0 L15.0,20.0 L15.0,25.0 Z'
+
+
+def test_every_subpath_of_a_path_is_kept_closed() -> None:
+    assert corrected('M0,0 L5,0 Z M1,1 L2,2 Z') == 'M10.0,20.0 L15.0,20.0 Z M11.0,21.0 L12.0,22.0 Z'
+
+
+def test_an_open_path_is_moved_as_pyqtgraph_moves_it() -> None:
+    """Left to pyqtgraph alone, down to the space it ends the rewritten path with."""
+    assert corrected('M0,0 L5,0') == 'M10.0,20.0 L15.0,20.0 '
+
+
+def test_writing_an_svg_leaves_pyqtgraph_as_it_was(drawn: ExplorerPlot, tmp_path: Path) -> None:
+    correct = SVG_EXPORTER_MODULE.correctCoordinates
+
+    drawn.export_plot(tmp_path / 'plot.svg', 'svg')
+
+    assert SVG_EXPORTER_MODULE.correctCoordinates is correct
+
+
+def test_an_svg_that_could_not_be_written_leaves_pyqtgraph_as_it_was(
+    drawn: ExplorerPlot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    correct = SVG_EXPORTER_MODULE.correctCoordinates
+
+    def refused(self, fileName=None, toBytes=False, copy=False):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(pg.exporters.SVGExporter, 'export', refused)
+
+    with pytest.raises(OSError, match='disk full'):
+        drawn.export_plot(tmp_path / 'plot.svg', 'svg')
+
+    assert SVG_EXPORTER_MODULE.correctCoordinates is correct
 
 
 def test_an_empty_canvas_is_still_written(plot: ExplorerPlot, tmp_path: Path) -> None:
